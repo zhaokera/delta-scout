@@ -161,18 +161,45 @@ export const panzhiAdapter: SourceAdapter = {
         priceCny: parsePrice(rawText)
       });
     });
-    return items.length > 0
-      ? { kind: "ok", items }
-      : { kind: "blocked", reason: "structure_changed" };
+    if (items.length > 0 || $(".goods-list-with-game").length > 0) {
+      return { kind: "ok", items };
+    }
+    return { kind: "blocked", reason: "structure_changed" };
   },
 
-  nextPage(html) {
+  nextPage(html, currentRequest) {
     const $ = load(html);
-    const link = $("a[rel='next'][href]").first();
-    const href = link.attr("href");
-    return href && isVisibleLink(link)
-      ? { url: absoluteUrl(BASE_URL, href) }
-      : null;
+    if (
+      $(".goods-list-with-game").length > 0 &&
+      $("a[href*='/goodsDetails/']").length === 0
+    ) {
+      return null;
+    }
+
+    let currentUrl: URL;
+    try {
+      currentUrl = new URL(currentRequest.url);
+    } catch {
+      return null;
+    }
+    if (
+      currentUrl.origin !== "https://www.pzds.com" ||
+      currentUrl.pathname !== "/goodsList/391/6"
+    ) {
+      return null;
+    }
+
+    const pageValues = currentUrl.searchParams.getAll("page");
+    if (pageValues.length > 1) return null;
+    const pageText = pageValues[0] ?? "1";
+    if (!/^[1-9]\d*$/.test(pageText)) return null;
+    const page = Number(pageText);
+    if (!Number.isSafeInteger(page) || page === Number.MAX_SAFE_INTEGER) {
+      return null;
+    }
+
+    currentUrl.searchParams.set("page", String(page + 1));
+    return { url: currentUrl.toString() };
   },
 
   detailRequest(summary) {

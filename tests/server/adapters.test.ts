@@ -25,7 +25,7 @@ describe("panzhi adapter", () => {
     });
   });
 
-  it("parses summaries and only follows a real next link", async () => {
+  it("parses Panzhi product summaries", async () => {
     const html = await fixture("panzhi-list.html");
     const result = panzhiAdapter.parseList(html);
     expect(result.kind).toBe("ok");
@@ -37,6 +37,10 @@ describe("panzhi adapter", () => {
       url: "https://www.pzds.com/goodsDetails/SA2PEAK/6",
       priceCny: 5288
     });
+  });
+
+  it("increments deterministic Panzhi result URLs without changing filters", async () => {
+    const html = await fixture("panzhi-list-page-2.html");
     expect(
       panzhiAdapter.nextPage(html, {
         url: "https://www.pzds.com/goodsList/391/6"
@@ -45,10 +49,69 @@ describe("panzhi adapter", () => {
       url: "https://www.pzds.com/goodsList/391/6?page=2"
     });
     expect(
-      panzhiAdapter.nextPage(await fixture("panzhi-list-page-2.html"), {
-        url: "https://www.pzds.com/goodsList/391/6?page=2"
+      panzhiAdapter.nextPage(html, {
+        url:
+          "https://www.pzds.com/goodsList/391/6?page=2&sort=price&keyword=M7&game=391"
+      })
+    ).toEqual({
+      url:
+        "https://www.pzds.com/goodsList/391/6?page=3&sort=price&keyword=M7&game=391"
+    });
+  });
+
+  it.each([
+    "https://example.com/goodsList/391/6?page=2",
+    "https://www.pzds.com/goodsList/391/7?page=2",
+    "https://www.pzds.com/goodsList/391/6?page=",
+    "https://www.pzds.com/goodsList/391/6?page=next",
+    "https://www.pzds.com/goodsList/391/6?page=0",
+    "https://www.pzds.com/goodsList/391/6?page=-1",
+    "https://www.pzds.com/goodsList/391/6?page=1.5"
+  ])("rejects an invalid Panzhi result URL: %s", async (url) => {
+    expect(
+      panzhiAdapter.nextPage(await fixture("panzhi-list.html"), { url })
+    ).toBeNull();
+  });
+
+  it("treats only a verified empty Panzhi catalog as a natural end", () => {
+    const html = `
+      <main class="goods-list-with-game">
+        <p>暂时没有符合条件的商品</p>
+      </main>
+    `;
+
+    expect(panzhiAdapter.parseList(html)).toEqual({
+      kind: "ok",
+      items: []
+    });
+    expect(
+      panzhiAdapter.nextPage(html, {
+        url: "https://www.pzds.com/goodsList/391/6?page=3"
       })
     ).toBeNull();
+  });
+
+  it.each([
+    [
+      "arbitrary HTML",
+      "<html><body><article>平台公告</article></body></html>",
+      "structure_changed"
+    ],
+    [
+      "a login page",
+      "<html><body><form action='/login'><input name='password'></form></body></html>",
+      "structure_changed"
+    ],
+    [
+      "a captcha page",
+      "<html><body><div>请完成安全验证</div></body></html>",
+      "captcha_required"
+    ]
+  ])("blocks %s instead of treating it as an empty catalog", (_label, html, reason) => {
+    expect(panzhiAdapter.parseList(html)).toEqual({
+      kind: "blocked",
+      reason
+    });
   });
 
   it("parses detail evidence and account safety fields", async () => {
