@@ -1,5 +1,6 @@
 import {
   act,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -38,22 +39,30 @@ function makeSourceStatus(
 function makeApi({
   sources = [],
   getSources = async () => sources,
-  getListings = async () => []
+  getListings = async () => [],
+  getListing,
+  refresh = async () => undefined
 }: {
   sources?: SourceStatusView[];
   getSources?: ScoutApi["getSources"];
   getListings?: ScoutApi["getListings"];
+  getListing?: ScoutApi["getListing"];
+  refresh?: ScoutApi["refresh"];
 } = {}): ScoutApi {
-  return {
-    getSources: vi.fn(getSources),
-    getListings: vi.fn(getListings),
-    getListing: vi.fn(async (key) => {
+  const resolveListing =
+    getListing ??
+    (async (key: string) => {
       const listings = await getListings("pool");
       const listing = listings.find((candidate) => candidate.key === key);
       if (!listing) throw new Error("not found");
       return listing;
-    }),
-    refresh: vi.fn(async () => undefined)
+    });
+
+  return {
+    getSources: vi.fn(getSources),
+    getListings: vi.fn(getListings),
+    getListing: vi.fn(resolveListing),
+    refresh: vi.fn(refresh)
   };
 }
 
@@ -302,6 +311,236 @@ describe("App shell", () => {
     expect(
       screen.getByRole("button", { name: /PZ-LATEST.*¥1,888/ })
     ).toBeInTheDocument();
+  });
+
+  it("keeps the latest detail when an earlier selection resolves last", async () => {
+    const listingA = makeListing({
+      key: "jiaoyimao:detail-a",
+      source: "jiaoyimao",
+      sourceListingId: "DETAIL-A"
+    });
+    const listingB = makeListing({
+      key: "panzhi:detail-b",
+      source: "panzhi",
+      sourceListingId: "DETAIL-B"
+    });
+    const detailA = deferred<Listing>();
+    const detailB = deferred<Listing>();
+    const api = makeApi({
+      getListings: async () => [listingA, listingB],
+      getListing: async (key) =>
+        key === listingA.key ? detailA.promise : detailB.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: /DETAIL-A.*¥1,888/
+      })
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: /DETAIL-B.*¥1,888/
+      })
+    );
+
+    await act(async () => {
+      detailB.resolve(
+        makeListing({
+          ...listingB,
+          totalAssetsM: 777
+        })
+      );
+    });
+    const detail = screen.getByRole("complementary", {
+      name: "候选详情"
+    });
+    expect(within(detail).getByText("DETAIL-B")).toBeInTheDocument();
+    expect(within(detail).getByText("777M")).toBeInTheDocument();
+
+    await act(async () => {
+      detailA.resolve(
+        makeListing({
+          ...listingA,
+          totalAssetsM: 111
+        })
+      );
+    });
+
+    expect(within(detail).getByText("DETAIL-B")).toBeInTheDocument();
+    expect(within(detail).getByText("777M")).toBeInTheDocument();
+    expect(within(detail).queryByText("111M")).not.toBeInTheDocument();
+  });
+
+  it("keeps the latest detail busy when a stale request rejects", async () => {
+    const listingA = makeListing({
+      key: "jiaoyimao:stale-detail",
+      source: "jiaoyimao",
+      sourceListingId: "STALE-DETAIL"
+    });
+    const listingB = makeListing({
+      key: "panzhi:current-detail",
+      source: "panzhi",
+      sourceListingId: "CURRENT-DETAIL"
+    });
+    const detailA = deferred<Listing>();
+    const detailB = deferred<Listing>();
+    const api = makeApi({
+      getListings: async () => [listingA, listingB],
+      getListing: async (key) =>
+        key === listingA.key ? detailA.promise : detailB.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: /STALE-DETAIL.*¥1,888/
+      })
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: /CURRENT-DETAIL.*¥1,888/
+      })
+    );
+    const detail = screen.getByRole("complementary", {
+      name: "候选详情"
+    });
+
+    await act(async () => {
+      detailA.reject(new Error("旧详情失败"));
+    });
+
+    expect(within(detail).getByText("CURRENT-DETAIL")).toBeInTheDocument();
+    expect(detail).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      detailB.resolve(
+        makeListing({
+          ...listingB,
+          totalAssetsM: 888
+        })
+      );
+    });
+
+    expect(within(detail).getByText("888M")).toBeInTheDocument();
+    expect(detail).toHaveAttribute("aria-busy", "false");
+  });
+
+  it("does not restore a stale detail after switching views", async () => {
+    const listingA = makeListing({
+      key: "jiaoyimao:leaving-view",
+      source: "jiaoyimao",
+      sourceListingId: "LEAVING-VIEW"
+    });
+    const eligibleListing = makeListing({
+      key: "panzhi:eligible-view",
+      source: "panzhi",
+      sourceListingId: "ELIGIBLE-VIEW"
+    });
+    const detailA = deferred<Listing>();
+    const api = makeApi({
+      getListings: async (requestedView) =>
+        requestedView === "pool" ? [listingA] : [eligibleListing],
+      getListing: async () => detailA.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: /LEAVING-VIEW.*¥1,888/
+      })
+    );
+    await user.click(
+      screen.getByRole("tab", { name: "全部合格" })
+    );
+    expect(
+      await screen.findByRole("button", {
+        name: /ELIGIBLE-VIEW.*¥1,888/
+      })
+    ).toBeInTheDocument();
+    expect(screen.getByText("选择左侧候选")).toBeInTheDocument();
+
+    await act(async () => {
+      detailA.reject(new Error("旧详情失败"));
+    });
+
+    expect(screen.getByText("选择左侧候选")).toBeInTheDocument();
+    expect(screen.queryByText("LEAVING-VIEW")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("reconciles the selected detail to a fresh same-key snapshot", async () => {
+    const oldListing = makeListing({
+      key: "pxb7:same-key",
+      source: "pxb7",
+      sourceListingId: "SAME-KEY",
+      priceCny: 1888,
+      totalAssetsM: 100,
+      score: {
+        total: 50,
+        parts: { safety: 20, price: 10, assets: 10, confidence: 10 },
+        reasons: ["旧快照"]
+      }
+    });
+    const freshListing = makeListing({
+      ...oldListing,
+      priceCny: 2999,
+      totalAssetsM: 999,
+      score: {
+        total: 95,
+        parts: { safety: 38, price: 23, assets: 19, confidence: 15 },
+        reasons: ["新快照"]
+      }
+    });
+    const staleDetail = deferred<Listing>();
+    let listingRequestCount = 0;
+    const api = makeApi({
+      getListings: async () => {
+        listingRequestCount += 1;
+        return listingRequestCount === 1
+          ? [oldListing]
+          : [freshListing];
+      },
+      getListing: async () => staleDetail.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: /SAME-KEY.*¥1,888/
+      })
+    );
+    await user.click(
+      screen.getByRole("button", { name: "刷新公开数据" })
+    );
+
+    expect(
+      await screen.findByRole("button", {
+        name: /SAME-KEY.*¥2,999/
+      })
+    ).toBeInTheDocument();
+    const detail = screen.getByRole("complementary", {
+      name: "候选详情"
+    });
+    expect(within(detail).getByText("999M")).toBeInTheDocument();
+    expect(within(detail).getByText("95")).toBeInTheDocument();
+
+    await act(async () => {
+      staleDetail.resolve(
+        makeListing({
+          ...oldListing,
+          totalAssetsM: 111
+        })
+      );
+    });
+
+    expect(within(detail).getByText("999M")).toBeInTheDocument();
+    expect(within(detail).queryByText("111M")).not.toBeInTheDocument();
   });
 
   it("shows the real pool size, source contributions, and account evidence", async () => {
@@ -647,5 +886,73 @@ describe("App shell", () => {
     expect(api.refresh).toHaveBeenCalledTimes(1);
     expect(api.getListings).toHaveBeenLastCalledWith("pool");
     expect(api.getSources).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares one busy lock across both refresh buttons", async () => {
+    const refreshRequest = deferred<void>();
+    const api = makeApi({
+      refresh: async () => refreshRequest.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    const emptyState = await screen.findByLabelText("空候选");
+    const primaryButton = screen.getByRole("button", {
+      name: "刷新公开数据"
+    });
+    const emptyButton = within(emptyState).getByRole("button", {
+      name: "立即刷新"
+    });
+
+    await user.click(primaryButton);
+
+    expect(api.refresh).toHaveBeenCalledTimes(1);
+    expect(primaryButton).toBeDisabled();
+    expect(primaryButton).toHaveAttribute("aria-busy", "true");
+    expect(emptyButton).toBeDisabled();
+    expect(emptyButton).toHaveAttribute("aria-busy", "true");
+    expect(emptyButton).toHaveTextContent("正在刷新…");
+
+    fireEvent.click(emptyButton);
+    fireEvent.click(primaryButton);
+    expect(api.refresh).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      refreshRequest.resolve();
+    });
+
+    await waitFor(() => expect(primaryButton).toBeEnabled());
+    expect(primaryButton).toHaveAttribute("aria-busy", "false");
+    const restoredEmptyButton = within(
+      await screen.findByLabelText("空候选")
+    ).getByRole("button", { name: "立即刷新" });
+    expect(restoredEmptyButton).toBeEnabled();
+    expect(restoredEmptyButton).toHaveAttribute("aria-busy", "false");
+    expect(restoredEmptyButton).toHaveTextContent("立即刷新");
+  });
+
+  it("restores refresh controls after a refresh error", async () => {
+    const refreshRequest = deferred<void>();
+    const api = makeApi({
+      refresh: async () => refreshRequest.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    const primaryButton = await screen.findByRole("button", {
+      name: "刷新公开数据"
+    });
+    await user.click(primaryButton);
+
+    await act(async () => {
+      refreshRequest.reject(new Error("刷新服务异常"));
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "刷新服务异常"
+    );
+    expect(primaryButton).toBeEnabled();
+    expect(primaryButton).toHaveAttribute("aria-busy", "false");
+    expect(primaryButton).toHaveTextContent("刷新公开数据");
   });
 });

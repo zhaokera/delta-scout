@@ -344,13 +344,13 @@ button {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--muted);
-  font: 600 9px/1.3 var(--mono);
+  color: #aab1ab;
+  font: 600 11px/1.4 var(--mono);
 }
 
 .source-card__reason small {
-  color: #626a63;
-  font: 700 8px/1 var(--mono);
+  color: #949c95;
+  font: 700 11px/1 var(--mono);
   letter-spacing: 0.12em;
 }
 
@@ -360,8 +360,8 @@ button {
 
 .source-card__time {
   flex: none;
-  color: #6f7770;
-  font: 500 9px/1.3 var(--mono);
+  color: #aab1ab;
+  font: 500 11px/1.4 var(--mono);
   text-align: right;
 }
 
@@ -1001,6 +1001,11 @@ input[type="search"] {
   background: transparent;
   color: var(--acid);
   cursor: pointer;
+}
+
+.empty-state button:disabled {
+  cursor: progress;
+  opacity: 0.62;
 }
 
 .loading-state {

@@ -85,10 +85,16 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loadSequence = useRef(0);
+  const detailSequence = useRef(0);
+  const refreshInFlight = useRef(false);
+  const mounted = useRef(false);
   const activeView = useRef<ListingView>(view);
 
   const load = useCallback(async (requestedView: ListingView) => {
+    if (!mounted.current) return;
     const requestSequence = ++loadSequence.current;
+    detailSequence.current += 1;
+    setDetailLoading(false);
     setLoading(true);
     setError(null);
     try {
@@ -96,31 +102,46 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         api.getSources(),
         api.getListings(requestedView)
       ]);
-      if (requestSequence !== loadSequence.current) return;
+      if (
+        !mounted.current ||
+        requestSequence !== loadSequence.current
+      ) return;
       setSources(nextSources);
       setListings(nextListings);
-      setSelected((current) =>
-        current &&
-        nextListings.some(({ key }) => key === current.key)
-          ? current
-          : null
-      );
+      setSelected((current) => {
+        if (!current) return null;
+        return (
+          nextListings.find(({ key }) => key === current.key) ?? null
+        );
+      });
     } catch (cause) {
-      if (requestSequence !== loadSequence.current) return;
+      if (
+        !mounted.current ||
+        requestSequence !== loadSequence.current
+      ) return;
       setListings([]);
       setSelected(null);
       setError(
         cause instanceof Error ? cause.message : "无法读取本地候选数据"
       );
     } finally {
-      if (requestSequence === loadSequence.current) {
+      if (
+        mounted.current &&
+        requestSequence === loadSequence.current
+      ) {
         setLoading(false);
       }
     }
   }, [api]);
 
   useEffect(() => {
+    mounted.current = true;
     void load(view);
+    return () => {
+      mounted.current = false;
+      loadSequence.current += 1;
+      detailSequence.current += 1;
+    };
   }, [load, view]);
 
   const visibleListings = useMemo(
@@ -148,31 +169,57 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   }
 
   async function selectListing(listing: Listing) {
+    const requestSequence = ++detailSequence.current;
     setSelected(listing);
     setDetailLoading(true);
     try {
-      setSelected(await api.getListing(listing.key));
+      const detail = await api.getListing(listing.key);
+      if (
+        !mounted.current ||
+        requestSequence !== detailSequence.current
+      ) return;
+      setSelected(detail);
     } catch {
-      setSelected(listing);
+      if (
+        !mounted.current ||
+        requestSequence !== detailSequence.current
+      ) return;
+      setSelected((current) =>
+        current?.key === listing.key ? listing : current
+      );
     } finally {
-      setDetailLoading(false);
+      if (
+        mounted.current &&
+        requestSequence === detailSequence.current
+      ) {
+        setDetailLoading(false);
+      }
     }
   }
 
   async function refresh() {
+    if (!mounted.current || refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    detailSequence.current += 1;
     setRefreshing(true);
+    setDetailLoading(false);
     setError(null);
     try {
       await api.refresh();
+      if (!mounted.current) return;
       await load(activeView.current);
     } catch (cause) {
+      if (!mounted.current) return;
       setListings([]);
       setSelected(null);
       setError(
         cause instanceof Error ? cause.message : "刷新失败，请稍后重试"
       );
     } finally {
-      setRefreshing(false);
+      refreshInFlight.current = false;
+      if (mounted.current) {
+        setRefreshing(false);
+      }
     }
   }
 
@@ -194,6 +241,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             className="refresh-button"
             type="button"
             disabled={refreshing}
+            aria-busy={refreshing}
             onClick={() => void refresh()}
           >
             <span aria-hidden="true">{refreshing ? "◌" : "↻"}</span>
@@ -235,10 +283,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         onViewChange={(nextView) => {
           if (nextView === view) return;
           loadSequence.current += 1;
+          detailSequence.current += 1;
           activeView.current = nextView;
           setView(nextView);
           setListings([]);
           setSelected(null);
+          setDetailLoading(false);
           setError(null);
           setLoading(true);
         }}
@@ -280,8 +330,13 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
                 <h2>{emptyState.title}</h2>
                 <p>{emptyState.description}</p>
               </div>
-              <button type="button" onClick={() => void refresh()}>
-                立即刷新
+              <button
+                type="button"
+                disabled={refreshing}
+                aria-busy={refreshing}
+                onClick={() => void refresh()}
+              >
+                {refreshing ? "正在刷新…" : "立即刷新"}
               </button>
             </section>
           ) : visibleListings.length > 0 ? (
