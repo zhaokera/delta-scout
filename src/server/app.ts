@@ -3,10 +3,14 @@ import { z } from "zod";
 import { selectBalancedCandidatePool } from "../domain/candidatePool.js";
 import {
   EligibilitySchema,
+  type Listing,
   type SourceId
 } from "../domain/listing.js";
 import { compareRecommendations } from "../domain/score.js";
-import type { ListingRepository } from "./repository.js";
+import type {
+  ListingRepository,
+  SourceStatus
+} from "./repository.js";
 
 interface RefreshCoordinator {
   refreshAll(): Promise<void>;
@@ -19,28 +23,59 @@ interface AppDependencies {
 
 const ListingViewSchema = z.enum(["pool", "all"]);
 
-function derivedSourceStatuses(repository: ListingRepository) {
+interface CurrentListingSnapshot {
+  statuses: SourceStatus[];
+  listings: Listing[];
+  activeEligibleListings: Listing[];
+  pool: Listing[];
+}
+
+function readCurrentListingSnapshot(
+  repository: ListingRepository
+): CurrentListingSnapshot {
+  const statuses = repository.getSourceStatuses();
   const listings = repository.getListings();
-  const pool = selectBalancedCandidatePool(listings);
+  const activeSources = new Set(
+    statuses
+      .filter(
+        ({ state }) => state === "success" || state === "partial"
+      )
+      .map(({ source }) => source)
+  );
+  const activeEligibleListings = listings.filter(
+    (listing) =>
+      activeSources.has(listing.source) &&
+      listing.eligibility === "eligible"
+  );
+
+  return {
+    statuses,
+    listings,
+    activeEligibleListings,
+    pool: selectBalancedCandidatePool(activeEligibleListings)
+  };
+}
+
+function derivedSourceStatuses(snapshot: CurrentListingSnapshot) {
   const eligibleCounts = new Map<SourceId, number>();
   const candidateCounts = new Map<SourceId, number>();
 
-  for (const listing of listings) {
-    if (listing.eligibility === "eligible" && listing.score !== null) {
+  for (const listing of snapshot.activeEligibleListings) {
+    if (listing.score !== null) {
       eligibleCounts.set(
         listing.source,
         (eligibleCounts.get(listing.source) ?? 0) + 1
       );
     }
   }
-  for (const listing of pool) {
+  for (const listing of snapshot.pool) {
     candidateCounts.set(
       listing.source,
       (candidateCounts.get(listing.source) ?? 0) + 1
     );
   }
 
-  return repository.getSourceStatuses().map((status) => ({
+  return snapshot.statuses.map((status) => ({
     ...status,
     eligibleCount: eligibleCounts.get(status.source) ?? 0,
     candidateCount: candidateCounts.get(status.source) ?? 0,
@@ -65,7 +100,9 @@ export function createApp(dependencies?: AppDependencies): Express {
   let refreshing = false;
 
   app.get("/api/sources", (_request, response) => {
-    response.json(derivedSourceStatuses(repository));
+    response.json(
+      derivedSourceStatuses(readCurrentListingSnapshot(repository))
+    );
   });
 
   app.get("/api/listings", (request, response) => {
@@ -96,12 +133,16 @@ export function createApp(dependencies?: AppDependencies): Express {
       return;
     }
 
-    const listings = repository.getListings(
-      view === "all" ? status : undefined
-    );
+    const snapshot = readCurrentListingSnapshot(repository);
+    const listings =
+      status === "eligible"
+        ? snapshot.activeEligibleListings
+        : snapshot.listings.filter(
+            (listing) => listing.eligibility === status
+          );
     response.json(
       view === "pool"
-        ? selectBalancedCandidatePool(listings)
+        ? snapshot.pool
         : listings.sort(compareRecommendations)
     );
   });
@@ -129,9 +170,10 @@ export function createApp(dependencies?: AppDependencies): Express {
     refreshing = true;
     try {
       await coordinator.refreshAll();
+      const snapshot = readCurrentListingSnapshot(repository);
       response.json({
         ok: true,
-        sources: derivedSourceStatuses(repository)
+        sources: derivedSourceStatuses(snapshot)
       });
     } catch {
       response.status(500).json({

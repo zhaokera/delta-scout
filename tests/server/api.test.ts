@@ -172,7 +172,9 @@ describe("listing API", () => {
     "view=pool&status=needs_verification",
     "view=pool&status=rejected",
     "view=all&view=pool",
-    "status=eligible&status=rejected"
+    "status=eligible&status=rejected",
+    "view=pool&view=pool",
+    "status=eligible&status=eligible"
   ])("rejects invalid listing view parameters for %s", async (query) => {
     const { app } = setup();
 
@@ -184,6 +186,44 @@ describe("listing API", () => {
       message: "候选视图参数无效"
     });
     expect(JSON.stringify(response.body)).not.toContain("stack");
+  });
+
+  it("returns stable JSON for malformed percent encoding", async () => {
+    const { app } = setup();
+
+    const response = await request(app).get(
+      "/api/listings?status=%E0%A4%A"
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.type).toMatch(/json/);
+    expect(response.body).toEqual({
+      error: "invalid_listing_view",
+      message: "候选视图参数无效"
+    });
+    expect(JSON.stringify(response.body)).not.toContain("stack");
+  });
+
+  it("ignores non-exact bracketed query keys without prototype pollution", async () => {
+    const { app, repository } = setup();
+    seedCandidateUniverse(repository);
+    const queries = [
+      "view%5B%5D=pool",
+      "view%5B%5D=all",
+      "__proto__%5Bview%5D=all",
+      "constructor%5Bprototype%5D%5Bstatus%5D=rejected"
+    ];
+
+    const responses = await Promise.all(
+      queries.map((query) => request(app).get(`/api/listings?${query}`))
+    );
+
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveLength(30);
+    }
+    expect(Object.prototype).not.toHaveProperty("view");
+    expect(Object.prototype).not.toHaveProperty("status");
   });
 
   it("returns deterministic complete views without applying the source cap", async () => {
@@ -450,6 +490,113 @@ describe("listing API", () => {
       m7Evidence: listing.m7Evidence,
       score: null
     });
+  });
+
+  it("excludes a newly blocked source while refresh score cleanup is pending", async () => {
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let markBlocked!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      markBlocked = resolve;
+    });
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      [
+        listingFor("jiaoyimao", 1, { score: makeScore(95) }),
+        listingFor("jiaoyimao", 2, {
+          eligibility: "needs_verification",
+          score: null
+        }),
+        listingFor("jiaoyimao", 3, {
+          eligibility: "rejected",
+          score: null
+        })
+      ],
+      "success"
+    );
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [listingFor("panzhi", 1, { score: makeScore(90) })],
+      "success"
+    );
+    repository.replaceSourceSnapshot(
+      "pxb7",
+      [listingFor("pxb7", 1, { score: makeScore(85) })],
+      "success"
+    );
+    const coordinator = {
+      refreshAll: vi.fn(async () => {
+        repository.markSourceFailure(
+          "jiaoyimao",
+          "captcha_required",
+          new Date("2026-07-28T12:00:00.000Z"),
+          "blocked"
+        );
+        repository.markSourceFailure(
+          "pxb7",
+          "catalog_unavailable",
+          new Date("2026-07-28T12:00:00.000Z"),
+          "failed"
+        );
+        markBlocked();
+        await waiting;
+      })
+    };
+    const app = createApp({ repository, coordinator });
+
+    const refresh = request(app).post("/api/refresh");
+    const pendingRefresh = refresh.then((response) => response);
+    await blocked;
+    const [
+      sources,
+      pool,
+      allEligible,
+      allNeedsVerification,
+      allRejected
+    ] = await Promise.all([
+      request(app).get("/api/sources"),
+      request(app).get("/api/listings"),
+      request(app).get("/api/listings?view=all&status=eligible"),
+      request(app).get("/api/listings?view=all&status=needs_verification"),
+      request(app).get("/api/listings?view=all&status=rejected")
+    ]);
+    release();
+    const refreshResponse = await pendingRefresh;
+
+    expect(sources.body).toEqual([
+      expect.objectContaining({
+        source: "jiaoyimao",
+        state: "blocked",
+        eligibleCount: 0,
+        candidateCount: 0
+      }),
+      expect.objectContaining({
+        source: "panzhi",
+        state: "success",
+        eligibleCount: 1,
+        candidateCount: 1
+      }),
+      expect.objectContaining({
+        source: "pxb7",
+        state: "failed",
+        eligibleCount: 0,
+        candidateCount: 0
+      })
+    ]);
+    expect(pool.body.map(({ key }: Listing) => key)).toEqual(["panzhi:1"]);
+    expect(allEligible.body.map(({ key }: Listing) => key)).toEqual([
+      "panzhi:1"
+    ]);
+    expect(
+      allNeedsVerification.body.map(({ key }: Listing) => key)
+    ).toEqual(["jiaoyimao:2"]);
+    expect(allRejected.body.map(({ key }: Listing) => key)).toEqual([
+      "jiaoyimao:3"
+    ]);
+    expect(refreshResponse.status).toBe(200);
   });
 
   it("returns 409 while a refresh is already running", async () => {
