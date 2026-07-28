@@ -707,6 +707,22 @@ describe("CollectionCoordinator", () => {
     }
   );
 
+  it("accepts bounded truncated MTop peak evidence with its local quality", async () => {
+    const { listing } = await collectJiaoyimaoMtopItem(
+      "典藏传说枪械极品|Bx1M7战...势S2优品|Ax2其它枪械"
+    );
+
+    expect(listing).toMatchObject({
+      loginPlatform: "qq",
+      service: "official",
+      m7PrismStatus: "peak",
+      m7PrismQuality: "B",
+      eligibility: "eligible"
+    });
+    expect(listing.priceCny).not.toBeNull();
+    expect(listing.priceCny).toBeLessThanOrEqual(6_000);
+  });
+
   it("keeps MTop premium detail evidence out of conflict", async () => {
     const { listing } = await collectJiaoyimaoMtopItem(
       "M7战斗步枪-棱镜攻势S2(优品B)"

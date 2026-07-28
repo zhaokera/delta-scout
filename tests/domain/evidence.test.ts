@@ -47,6 +47,67 @@ describe("M7 棱镜攻势 evidence", () => {
   });
 
   it.each([
+    [
+      "典藏传说枪械极品|Bx1M7战...势S2优品|Ax2其它枪械",
+      "B"
+    ],
+    [
+      "极品|Cx2AS Val突击步枪-悬赏令M7战…势S2优品|Bx3其它枪械",
+      "C"
+    ],
+    [
+      "极品|Ax1腾龙...极品|Cx1M7战...势S2",
+      "C"
+    ]
+  ] as const)(
+    "extracts local truncated Jiaoyimao peak quality from %s",
+    (text, quality) => {
+      expect(parseM7(toEvidenceRecords([text]))).toMatchObject({
+        status: "peak",
+        quality
+      });
+    }
+  );
+
+  it.each([
+    "优品|Bx1M7战...势S2",
+    "M7战...势S2",
+    "极品|M7战...势S2",
+    "极品|Bx0M7战...势S2",
+    "极品|Bx1M7战...其它S2",
+    "极品|Ax1腾龙优品|Bx1M7战...势S2",
+    `极品|Bx1${"其它枪械".repeat(50)}M7战...势S2`
+  ])("does not infer a truncated peak outside one bounded peak group: %s", (text) => {
+    expect(parseM7(toEvidenceRecords([text])).status).toBe("absent");
+  });
+
+  it("keeps one quality when repeated truncated peak groups agree", () => {
+    expect(
+      parseM7(
+        toEvidenceRecords([
+          "极品|Bx1M7战...势S2极品|Bx2AS Val M7战…势S2"
+        ])
+      )
+    ).toMatchObject({
+      status: "peak",
+      quality: "B"
+    });
+  });
+
+  it("keeps peak but clears quality when truncated peak groups conflict", () => {
+    expect(
+      parseM7(
+        toEvidenceRecords([
+          "极品|Ax1M7战...势S2极品|Cx1M7战…势S2"
+        ])
+      )
+    ).toMatchObject({
+      status: "peak",
+      quality: undefined
+    });
+  });
+
+  it.each([
     "M7棱镜幻影(极品S)",
     "M7棱镜(极品C)",
     "M7战斗步枪-棱镜攻势S2 / 其它武器极品",

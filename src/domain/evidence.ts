@@ -24,6 +24,9 @@ const M7_PRISM_NEGATED_TARGET =
   /(?<![A-Za-z0-9非])M7\s*(?:战斗步枪\s*)?[-—–·•・_：:]?\s*(?:无|未拥有)\s*棱镜攻势(?:\s*S2)?/i;
 const ADJACENT_M7_QUALITY =
   /^\s*(?:[：:]\s*)?(?:[（(【]\s*)?(非极品|极品|优品)\s*([SABC])?/i;
+const JYM_TRUNCATED_M7_TARGET =
+  /(?<![A-Za-z0-9非])M7战\s*(?:\.{3}|…)\s*势S2(?![A-Za-z0-9])/i;
+const MAX_JYM_TRUNCATED_GROUP_LENGTH = 160;
 
 const DEFAULT_CHARACTER_ALIASES = [
   "威龙",
@@ -81,14 +84,15 @@ export function parseM7(
   const relevant = records.filter(
     ({ text }) =>
       M7_PRISM_TARGET.test(text) ||
-      M7_PRISM_NEGATED_TARGET.test(text)
+      M7_PRISM_NEGATED_TARGET.test(text) ||
+      findJymTruncatedPeakQualities(text).length > 0
   );
 
   if (relevant.length === 0) {
     return { status: "absent", evidence: [], quality: undefined };
   }
 
-  const matches = relevant
+  const standardMatches = relevant
     .flatMap(({ text }) => splitEvidenceClauses(text))
     .map((text) => {
       const negatedTarget = text.match(M7_PRISM_NEGATED_TARGET);
@@ -135,6 +139,13 @@ export function parseM7(
         quality: M7PrismQuality | undefined;
       } => match !== null
     );
+  const truncatedMatches = relevant.flatMap(({ text }) =>
+    findJymTruncatedPeakQualities(text).map((quality) => ({
+      status: "peak" as const,
+      quality
+    }))
+  );
+  const matches = [...standardMatches, ...truncatedMatches];
 
   const explicitMatches = matches.filter(
     ({ status: candidate }) => candidate !== "unknown"
@@ -160,6 +171,34 @@ export function parseM7(
       : undefined;
 
   return { status, evidence: relevant, quality };
+}
+
+function findJymTruncatedPeakQualities(
+  text: string
+): M7PrismQuality[] {
+  const groups = [
+    ...text.matchAll(/(非极品|极品|优品)\|/g)
+  ];
+  return groups.flatMap((group, index) => {
+    if (group[1] !== "极品" || group.index === undefined) return [];
+    const groupHeaderEnd = group.index + group[0].length;
+    const count = text
+      .slice(groupHeaderEnd)
+      .match(/^([SABC])x([1-9]\d*)/i);
+    if (!count) return [];
+    const contentStart = groupHeaderEnd + count[0].length;
+    const nextGroupStart =
+      groups[index + 1]?.index ?? text.length;
+    const contentEnd = Math.min(
+      nextGroupStart,
+      contentStart + MAX_JYM_TRUNCATED_GROUP_LENGTH
+    );
+    return JYM_TRUNCATED_M7_TARGET.test(
+      text.slice(contentStart, contentEnd)
+    )
+      ? [count[1].toUpperCase() as M7PrismQuality]
+      : [];
+  });
 }
 
 function splitEvidenceClauses(text: string): string[] {
