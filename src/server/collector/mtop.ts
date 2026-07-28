@@ -111,12 +111,14 @@ export function extractAnonymousMtopSession(
 
   const tokenCookie = cookies.get("_m_h5_tk");
   const encodedCookie = cookies.get("_m_h5_tk_enc");
-  const tokenSeparator = tokenCookie?.indexOf("_") ?? -1;
+  const tokenSeparator = tokenCookie?.lastIndexOf("_") ?? -1;
+  const expiry = tokenCookie?.slice(tokenSeparator + 1);
   if (
     !tokenCookie ||
     !encodedCookie ||
     tokenSeparator <= 0 ||
-    tokenSeparator === tokenCookie.length - 1
+    expiry === undefined ||
+    !/^\d+$/.test(expiry)
   ) {
     return null;
   }

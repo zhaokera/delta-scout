@@ -124,21 +124,15 @@ export class PublicPageFetcher implements PageFetcher {
           redirect: "follow"
         });
 
-        const declaredLength = Number(
-          response.headers.get("content-length") ?? "0"
+        const body = await readBoundedResponse(
+          response,
+          this.maximumBytes,
+          controller
         );
-        if (
-          Number.isFinite(declaredLength) &&
-          declaredLength > this.maximumBytes
-        ) {
+        if (body.kind === "too_large") {
           return { kind: "failed", url, error: "response_too_large" };
         }
-
-        const bytes = await response.arrayBuffer();
-        if (bytes.byteLength > this.maximumBytes) {
-          return { kind: "failed", url, error: "response_too_large" };
-        }
-        const html = new TextDecoder().decode(bytes);
+        const html = body.text;
 
         if (BLOCKED_PATTERN.test(html)) {
           return { kind: "blocked", url, reason: "captcha_required" };
@@ -330,31 +324,32 @@ export class PublicPageFetcher implements PageFetcher {
           signal: controller.signal,
           headers: requestHeaders,
           body,
-          redirect: "follow"
+          redirect: "manual"
         });
-        const declaredLength = Number(
-          response.headers.get("content-length") ?? "0"
-        );
         if (
-          Number.isFinite(declaredLength) &&
-          declaredLength > this.maximumBytes
+          (response.status >= 300 && response.status < 400) ||
+          response.headers.has("location")
         ) {
+          await cancelResponseBody(response, controller);
+          return {
+            kind: "failed",
+            url: resultUrl,
+            error: "redirect_not_allowed"
+          };
+        }
+        const responseBody = await readBoundedResponse(
+          response,
+          this.maximumBytes,
+          controller
+        );
+        if (responseBody.kind === "too_large") {
           return {
             kind: "failed",
             url: resultUrl,
             error: "response_too_large"
           };
         }
-
-        const bytes = await response.arrayBuffer();
-        if (bytes.byteLength > this.maximumBytes) {
-          return {
-            kind: "failed",
-            url: resultUrl,
-            error: "response_too_large"
-          };
-        }
-        const html = new TextDecoder().decode(bytes);
+        const html = responseBody.text;
         if (BLOCKED_PATTERN.test(html)) {
           return {
             kind: "blocked",
@@ -376,9 +371,7 @@ export class PublicPageFetcher implements PageFetcher {
         lastError =
           error instanceof DOMException && error.name === "AbortError"
             ? "request_timeout"
-            : error instanceof Error
-              ? error.message
-              : "request_failed";
+            : "network_error";
       } finally {
         clearTimeout(timer);
       }
@@ -442,5 +435,95 @@ function targetsJiaoyimaoMtopHost(url: string): boolean {
     return new URL(url).hostname === "mtop.jiaoyimao.com";
   } catch {
     return false;
+  }
+}
+
+type BoundedResponseRead =
+  | { readonly kind: "ok"; readonly text: string }
+  | { readonly kind: "too_large" };
+
+async function readBoundedResponse(
+  response: Response,
+  maximumBytes: number,
+  controller: AbortController
+): Promise<BoundedResponseRead> {
+  const declaredLengthHeader = response.headers.get("content-length");
+  const declaredLength =
+    declaredLengthHeader === null
+      ? null
+      : Number(declaredLengthHeader);
+  if (
+    declaredLength !== null &&
+    Number.isFinite(declaredLength) &&
+    declaredLength > maximumBytes
+  ) {
+    await cancelResponseBody(response, controller);
+    return { kind: "too_large" };
+  }
+
+  if (response.body === null) {
+    return { kind: "ok", text: "" };
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      byteLength += next.value.byteLength;
+      if (byteLength > maximumBytes) {
+        await cancelResponseReader(reader, controller);
+        return { kind: "too_large" };
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { kind: "ok", text: new TextDecoder().decode(bytes) };
+}
+
+async function cancelResponseBody(
+  response: Response,
+  controller: AbortController
+): Promise<void> {
+  let cancellation: Promise<void> | undefined;
+  try {
+    cancellation = response.body?.cancel();
+  } catch {
+    // Abort still proceeds if initiating cancellation throws synchronously.
+  }
+  controller.abort();
+  try {
+    await cancellation;
+  } catch {
+    // The transport is already being aborted; cancellation errors are ignored.
+  }
+}
+
+async function cancelResponseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  controller: AbortController
+): Promise<void> {
+  let cancellation: Promise<void> | undefined;
+  try {
+    cancellation = reader.cancel();
+  } catch {
+    // Abort still proceeds if initiating cancellation throws synchronously.
+  }
+  controller.abort();
+  try {
+    await cancellation;
+  } catch {
+    // The transport is already being aborted; cancellation errors are ignored.
   }
 }

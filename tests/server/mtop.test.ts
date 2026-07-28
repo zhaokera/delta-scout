@@ -165,6 +165,24 @@ describe("anonymous MTop helpers", () => {
     });
   });
 
+  it("uses the final underscore to separate a numeric token expiry", () => {
+    const headers = new Headers();
+    headers.append(
+      "set-cookie",
+      "_m_h5_tk=token_with_parts_1700000000000; Path=/"
+    );
+    headers.append(
+      "set-cookie",
+      "_m_h5_tk_enc=encoded; Path=/"
+    );
+
+    expect(extractAnonymousMtopSession(headers)).toEqual({
+      token: "token_with_parts",
+      cookieHeader:
+        "_m_h5_tk=token_with_parts_1700000000000; _m_h5_tk_enc=encoded"
+    });
+  });
+
   it.each([
     ["missing token cookie", ["_m_h5_tk_enc=encoded; Path=/"]],
     ["missing encoded cookie", ["_m_h5_tk=token_123; Path=/"]],
@@ -186,6 +204,20 @@ describe("anonymous MTop helpers", () => {
     [
       "an empty encoded cookie",
       ["_m_h5_tk=token_123; Path=/", "_m_h5_tk_enc=; Path=/"]
+    ],
+    [
+      "a nonnumeric token expiry",
+      [
+        "_m_h5_tk=token_not-a-timestamp; Path=/",
+        "_m_h5_tk_enc=encoded; Path=/"
+      ]
+    ],
+    [
+      "an empty token expiry",
+      [
+        "_m_h5_tk=token_; Path=/",
+        "_m_h5_tk_enc=encoded; Path=/"
+      ]
     ]
   ])("rejects %s", (_name, cookies) => {
     const headers = new Headers();
@@ -561,7 +593,7 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
     ).resolves.toEqual({
       kind: "failed",
       url: ENDPOINT,
-      error: "socket reset"
+      error: "network_error"
     });
     expect(fetchFn).toHaveBeenCalledTimes(3);
   });
@@ -589,6 +621,143 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
       fetcher.fetchPage(approvedRequest(), "jiaoyimao")
     ).resolves.toMatchObject({ kind: "ok" });
     expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses manual redirects and rejects a 302 without another call", async () => {
+    const fetchFn = vi.fn(
+      async (_url: string, init?: RequestInit) => {
+        expect(init?.redirect).toBe("manual");
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location:
+              "https://mtop.jiaoyimao.com/h5/adjacent.api/1.0/"
+          }
+        });
+      }
+    );
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "redirect_not_allowed"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("sanitizes thrown errors that contain signed request secrets", async () => {
+    const fetchFn = vi.fn(
+      async (url: string, init?: RequestInit) => {
+        if (fetchFn.mock.calls.length === 1) {
+          return responseWithCookies(
+            '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+            [
+              "_m_h5_tk=secret-token_1700000000000; Path=/",
+              "_m_h5_tk_enc=secret-enc; Path=/"
+            ]
+          );
+        }
+        const cookie = new Headers(init?.headers).get("cookie");
+        throw new Error(
+          `request failed url=${url} Cookie=${cookie}`
+        );
+      }
+    );
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+
+    const result = await fetcher.fetchPage(
+      approvedRequest(),
+      "jiaoyimao"
+    );
+    expect(result).toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "network_error"
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("secret-enc");
+    expect(serialized).not.toContain("sign=");
+    expect(serialized).not.toContain("Cookie=");
+  });
+
+  it("cancels a declared oversized MTop response body", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      }
+    });
+    const fetchFn = vi.fn(async () =>
+      new Response(body, {
+        headers: { "content-length": "6" }
+      })
+    );
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      maximumBytes: 5,
+      minimumIntervalMs: 0
+    });
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({
+      kind: "failed",
+      error: "response_too_large"
+    });
+    expect(cancelled).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a chunked MTop response as soon as it crosses the cap", async () => {
+    const chunks = [
+      new TextEncoder().encode("abc"),
+      new TextEncoder().encode("def")
+    ];
+    let index = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          const chunk = chunks[index];
+          index += 1;
+          if (chunk === undefined) {
+            controller.close();
+          } else {
+            controller.enqueue(chunk);
+          }
+        },
+        cancel() {
+          cancelled = true;
+        }
+      },
+      { highWaterMark: 0 }
+    );
+    const fetchFn = vi.fn(async () => new Response(body));
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      maximumBytes: 5,
+      minimumIntervalMs: 0
+    });
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({
+      kind: "failed",
+      error: "response_too_large"
+    });
+    expect(cancelled).toBe(true);
+    expect(index).toBe(2);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it.each([

@@ -301,9 +301,15 @@ describe("PublicPageFetcher", () => {
   });
 
   it("rejects responses larger than two megabytes", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      }
+    });
     const fetcher = new PublicPageFetcher({
       fetchFn: async () =>
-        new Response("x", {
+        new Response(body, {
           headers: { "content-length": String(2 * 1024 * 1024 + 1) }
         }),
       minimumIntervalMs: 0
@@ -314,5 +320,6 @@ describe("PublicPageFetcher", () => {
       kind: "failed",
       error: "response_too_large"
     });
+    expect(cancelled).toBe(true);
   });
 });
