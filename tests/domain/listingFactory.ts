@@ -1,4 +1,4 @@
-import type { Listing } from "../../src/domain/listing";
+import type { Listing } from "../../src/domain/listing.js";
 
 export function makeListing(overrides: Partial<Listing> = {}): Listing {
   return {
