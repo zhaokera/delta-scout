@@ -229,22 +229,186 @@ describe("jiaoyimao adapter", () => {
   });
 });
 
-describe("blocked source adapters", () => {
-  it("discovers Pangxie catalog but blocks an unverified client shell", async () => {
-    expect(
-      pxb7Adapter.discoverCatalog(
-        await fixture("pxb7-home.html"),
-        "三角洲行动"
-      )
-    ).toEqual({
-      kind: "ok",
-      request: { url: "https://www.pxb7.com/buy/10371/1" }
+describe("pxb7 adapter", () => {
+  it("discovers Delta Force and builds the exact approved search request", async () => {
+    const result = pxb7Adapter.discoverCatalog(
+      await fixture("pxb7-home.html"),
+      "三角洲行动"
+    );
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected PXB discovery");
+    expect(result.request).toMatchObject({
+      url:
+        "https://api-pc.pxb7.com/api/search/product/v2/selectSearchPageList",
+      options: {
+        method: "POST",
+        accept: "application/json, text/plain, */*",
+        contentType: "application/json",
+        origin: "https://www.pxb7.com",
+        referer: "https://www.pxb7.com/"
+      }
+    });
+    expect(JSON.parse(result.request.options?.body ?? "")).toEqual({
+      query: "M7战斗步枪-棱镜攻势S2 极品",
+      gameId: "10371",
+      pageIndex: 1,
+      pageSize: 16,
+      bizProd: 1,
+      type: "4",
+      posType: 1
+    });
+  });
+
+  it("maps public JSON products to summaries with embedded detail", async () => {
+    const result = pxb7Adapter.parseList(
+      await fixture("pxb7-list-page-1.json")
+    );
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected PXB list");
+    expect(result.items).toHaveLength(16);
+    expect(result.items[0]).toMatchObject({
+      source: "pxb7",
+      sourceListingId: "2307751656489872901",
+      url:
+        "https://www.pxb7.com/product/2307751656489872901/1",
+      priceCny: 5288,
+      embeddedDetail: {
+        loginPlatform: "qq",
+        service: "official",
+        totalAssetsM: 268,
+        hafCoins: 28_880_000,
+        secondRealNameAvailable: true,
+        recoveryCoverage: null
+      }
+    });
+    const evidence =
+      result.items[0].embeddedDetail?.evidence.map(({ text }) => text) ?? [];
+    expect(evidence).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("M7战斗步枪-棱镜攻势S2(极品A)"),
+        expect.stringContaining("威龙-凌霄戍卫"),
+        expect.stringContaining("巨浪(极品)")
+      ])
+    );
+  });
+
+  it("uses only the response cursor to build an immutable next request", async () => {
+    const discovery = pxb7Adapter.discoverCatalog(
+      await fixture("pxb7-home.html"),
+      "三角洲行动"
+    );
+    if (discovery.kind !== "ok") throw new Error("expected PXB discovery");
+
+    const next = pxb7Adapter.nextPage(
+      await fixture("pxb7-list-page-1.json"),
+      discovery.request
+    );
+    expect(next).not.toBeNull();
+    expect(JSON.parse(next?.options?.body ?? "")).toEqual({
+      query: "M7战斗步枪-棱镜攻势S2 极品",
+      gameId: "10371",
+      pageIndex: 2,
+      pageSize: 16,
+      bizProd: 1,
+      type: "4",
+      posType: 1,
+      pageToken: "fixture-page-2"
     });
     expect(
-      pxb7Adapter.parseList(await fixture("pxb7-list.html"))
-    ).toEqual({
+      pxb7Adapter.nextPage(
+        await fixture("pxb7-list-page-3.json"),
+        next!
+      )
+    ).toBeNull();
+
+    const repeatedBody = {
+      ...JSON.parse(next?.options?.body ?? ""),
+      pageToken: "fixture-page-2"
+    };
+    expect(
+      pxb7Adapter.nextPage(
+        await fixture("pxb7-list-page-1.json"),
+        {
+          ...next!,
+          options: {
+            ...next!.options,
+            body: JSON.stringify(repeatedBody)
+          }
+        }
+      )
+    ).toBeNull();
+  });
+
+  it("keeps微信, dual-login, and unknown-login products out of QQ mapping", async () => {
+    const result = pxb7Adapter.parseList(
+      await fixture("pxb7-list-page-1.json")
+    );
+    if (result.kind !== "ok") throw new Error("expected PXB list");
+
+    expect(result.items[8].embeddedDetail).toMatchObject({
+      loginPlatform: "wechat",
+      service: "unknown"
+    });
+    expect(result.items[12].embeddedDetail).toMatchObject({
+      loginPlatform: "unknown",
+      service: "unknown"
+    });
+    expect(result.items[13].embeddedDetail).toMatchObject({
+      loginPlatform: "unknown",
+      service: "unknown"
+    });
+  });
+
+  it.each([
+    ["invalid JSON", "{"],
+    [
+      "failed response",
+      JSON.stringify({ success: false, data: { list: [], properties: {} } })
+    ],
+    [
+      "missing list",
+      JSON.stringify({ success: true, data: { properties: {} } })
+    ]
+  ])("blocks %s as a structure change", (_label, content) => {
+    expect(pxb7Adapter.parseList(content)).toEqual({
       kind: "blocked",
-      reason: "unverified_structure"
+      reason: "structure_changed"
+    });
+  });
+
+  it.each([
+    ["productId", "unsafe-id"],
+    ["bizProd", 2],
+    ["gameName", 10371],
+    ["productUniqueNo", 99],
+    ["guarantee", "平台验号"]
+  ])("blocks an invalid %s field for the whole page", async (field, value) => {
+    const response = JSON.parse(
+      await fixture("pxb7-list-page-1.json")
+    ) as {
+      data: { list: Array<Record<string, unknown>> };
+    };
+    response.data.list[0][field] = value;
+
+    expect(pxb7Adapter.parseList(JSON.stringify(response))).toEqual({
+      kind: "blocked",
+      reason: "structure_changed"
+    });
+  });
+
+  it("blocks a present non-string page token", async () => {
+    const response = JSON.parse(
+      await fixture("pxb7-list-page-1.json")
+    ) as {
+      data: { properties: { pageToken: unknown } };
+    };
+    response.data.properties.pageToken = 2;
+
+    expect(pxb7Adapter.parseList(JSON.stringify(response))).toEqual({
+      kind: "blocked",
+      reason: "structure_changed"
     });
   });
 });

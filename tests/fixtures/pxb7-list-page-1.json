@@ -1,0 +1,170 @@
+{
+  "success": true,
+  "data": {
+    "list": [
+      {
+        "productId": "2307751656489872901",
+        "bizProd": "1",
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 528800,
+        "showTitle": "QQ登录【总资产】268M【哈夫币】2888w【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品A)【角色皮肤】威龙-凌霄戍卫【近战武器】巨浪(极品)【实名】可二次实名",
+        "productUniqueNo": "PXB-F01",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872902",
+        "bizProd": 1,
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 399900,
+        "showTitle": "QQ登录【总资产】190M【哈夫币】1800w【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品S)【角色皮肤】露娜-黑·天际线【近战武器】巨浪(优品)【实名】可二次实名",
+        "productUniqueNo": "PXB-F02",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872903",
+        "bizProd": "1",
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 218800,
+        "showTitle": "QQ登录【总资产】120M【哈夫币】980w【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品B)【角色皮肤】骇爪-维什戴尔【近战武器】无巨浪【实名】不可二次实名",
+        "productUniqueNo": "PXB-F03",
+        "guarantee": 0
+      },
+      {
+        "productId": "2307751656489872904",
+        "bizProd": 1,
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 599900,
+        "showTitle": "QQ登录【总资产】401M【哈夫币】3200w【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品C)【角色皮肤】蛊-能天使·午夜邮差【近战武器】巨浪(极品)【实名】可二次实名",
+        "productUniqueNo": "PXB-F04",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872905",
+        "bizProd": "1",
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 488800,
+        "showTitle": "QQ登录【总资产】288M【哈夫币】2500w【枪械皮肤】M7战斗步枪-棱镜攻势S2：极品A【角色皮肤】红狼-蚀金玫瑰【实名】可二次实名",
+        "productUniqueNo": "PXB-F05",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872906",
+        "bizProd": 1,
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 168800,
+        "showTitle": "QQ登录【总资产】88M【哈夫币】600w【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品B)【角色皮肤】乌鲁鲁-狂怒【实名】不可二次实名",
+        "productUniqueNo": "PXB-F06",
+        "guarantee": 0
+      },
+      {
+        "productId": "2307751656489872907",
+        "bizProd": "1",
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 320000,
+        "showTitle": "QQ登录【总资产】156M【哈夫币】1400w【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品S)【近战武器】巨浪(稀有)【实名】可二次实名",
+        "productUniqueNo": "PXB-F07",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872908",
+        "bizProd": 1,
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 260000,
+        "showTitle": "QQ登录【总资产】142M【哈夫币】1100w【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品C)【实名】可二次实名",
+        "productUniqueNo": "PXB-F08",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872909",
+        "bizProd": "1",
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 188800,
+        "showTitle": "微信登录【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品A)【实名】可二次实名",
+        "productUniqueNo": "PXB-F09",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872910",
+        "bizProd": 1,
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 650000,
+        "showTitle": "QQ登录【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品S)【实名】可二次实名",
+        "productUniqueNo": "PXB-F10",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872911",
+        "bizProd": "1",
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 120000,
+        "showTitle": "QQ登录【枪械皮肤】M7战斗步枪-棱镜攻势S2(优品A)【实名】可二次实名",
+        "productUniqueNo": "PXB-F11",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872912",
+        "bizProd": 1,
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 128800,
+        "showTitle": "QQ登录【枪械皮肤】M7棱镜幻影(极品S)【实名】可二次实名",
+        "productUniqueNo": "PXB-F12",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872913",
+        "bizProd": "1",
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 288800,
+        "showTitle": "QQ登录 微信登录【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品A)",
+        "productUniqueNo": "PXB-F13",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872914",
+        "bizProd": 1,
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 199900,
+        "showTitle": "三角洲账号【枪械皮肤】M7战斗步枪-棱镜攻势S2(极品B)",
+        "productUniqueNo": "PXB-F14",
+        "guarantee": 0
+      },
+      {
+        "productId": "2307751656489872915",
+        "bizProd": "1",
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 188800,
+        "showTitle": "QQ登录【枪械皮肤】M7战斗步枪-棱镜攻势S2【实名】可二次实名",
+        "productUniqueNo": "PXB-F15",
+        "guarantee": 1
+      },
+      {
+        "productId": "2307751656489872916",
+        "bizProd": 1,
+        "gameId": "10371",
+        "gameName": "三角洲行动",
+        "price": 98000,
+        "showTitle": "QQ登录【枪械皮肤】K416-墨染(极品S)【实名】可二次实名",
+        "productUniqueNo": "PXB-F16",
+        "guarantee": 1
+      }
+    ],
+    "properties": {
+      "pageToken": "fixture-page-2"
+    }
+  }
+}
