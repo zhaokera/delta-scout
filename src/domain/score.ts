@@ -79,7 +79,8 @@ function scoreOne(
 }
 
 export function compareRecommendations(left: Listing, right: Listing): number {
-  const totalDifference = (right.score?.total ?? 0) - (left.score?.total ?? 0);
+  const totalDifference =
+    (right.score?.total ?? -1) - (left.score?.total ?? -1);
   if (totalDifference !== 0) return totalDifference;
   if (right.confidence !== left.confidence) {
     return right.confidence - left.confidence;

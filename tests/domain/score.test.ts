@@ -104,4 +104,24 @@ describe("scoreEligibleListings", () => {
       )
     ).toEqual([earlierUrl, newerCapture, lowerPrice, lowerConfidence]);
   });
+
+  it("ranks a zero score above a missing score", () => {
+    const zeroScore = makeListing({
+      key: "panzhi:zero-score",
+      score: { ...tiedScore, total: 0 },
+      confidence: 0,
+      priceCny: 9_999
+    });
+    const missingScore = makeListing({
+      key: "panzhi:missing-score",
+      score: null,
+      confidence: 100,
+      priceCny: 0
+    });
+
+    expect([missingScore, zeroScore].sort(compareRecommendations)).toEqual([
+      zeroScore,
+      missingScore
+    ]);
+  });
 });
