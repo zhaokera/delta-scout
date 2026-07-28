@@ -29,6 +29,12 @@ export interface ListingDetail {
   banNotes: string[];
 }
 
+export interface AnonymousMtopRequestOptions {
+  readonly api: string;
+  readonly version: string;
+  readonly appKey: string;
+}
+
 export interface PublicRequestOptions {
   readonly method?: "GET" | "POST";
   readonly accept?: string;
@@ -36,6 +42,7 @@ export interface PublicRequestOptions {
   readonly origin?: string;
   readonly referer?: string;
   readonly body?: string;
+  readonly anonymousMtop?: AnonymousMtopRequestOptions;
 }
 
 export interface SourceRequest {

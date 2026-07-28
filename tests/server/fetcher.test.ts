@@ -1,12 +1,108 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PublicPageFetcher } from "../../src/server/collector/fetcher.js";
+import {
+  APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
+  APPROVED_JIAOYIMAO_REFERER
+} from "../../src/server/collector/mtop.js";
+import type { SourceRequest } from "../../src/server/collector/types.js";
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe("PublicPageFetcher", () => {
+  it.each([
+    [
+      "host",
+      {
+        url: APPROVED_JIAOYIMAO_MTOP_ENDPOINT.replace(
+          "mtop.jiaoyimao.com",
+          "evil.example"
+        )
+      }
+    ],
+    [
+      "path",
+      { url: `${APPROVED_JIAOYIMAO_MTOP_ENDPOINT}adjacent` }
+    ],
+    [
+      "API",
+      {
+        anonymousMtop: {
+          api: "mtop.com.jym.layout.pc.goods.detail",
+          version: "1.0",
+          appKey: "12574478"
+        }
+      }
+    ],
+    [
+      "version",
+      {
+        anonymousMtop: {
+          api: "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist",
+          version: "2.0",
+          appKey: "12574478"
+        }
+      }
+    ],
+    [
+      "app key",
+      {
+        anonymousMtop: {
+          api: "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist",
+          version: "1.0",
+          appKey: "wrong"
+        }
+      }
+    ],
+    ["origin", { origin: "https://evil.example" }],
+    ["referer", { referer: `${APPROVED_JIAOYIMAO_REFERER}&extra=1` }],
+    ["missing metadata", { anonymousMtop: undefined }]
+  ])(
+    "refuses an unapproved anonymous MTop %s before the network",
+    async (_name, mutation) => {
+      const fetchFn = vi.fn();
+      const base: SourceRequest = {
+        url: APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
+        options: {
+          method: "POST",
+          contentType: "application/x-www-form-urlencoded",
+          origin: "https://www.jiaoyimao.com",
+          referer: APPROVED_JIAOYIMAO_REFERER,
+          body: '{"page":"2"}',
+          anonymousMtop: {
+            api: "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist",
+            version: "1.0",
+            appKey: "12574478"
+          }
+        }
+      };
+      const { url, ...optionMutation } = mutation as {
+        url?: string;
+      } & NonNullable<SourceRequest["options"]>;
+      const fetcher = new PublicPageFetcher({
+        fetchFn,
+        minimumIntervalMs: 0
+      });
+
+      await expect(
+        fetcher.fetchPage(
+          {
+            url: url ?? base.url,
+            options: { ...base.options, ...optionMutation }
+          },
+          "jiaoyimao"
+        )
+      ).resolves.toEqual({
+        kind: "failed",
+        url: url ?? base.url,
+        error: "unapproved_mtop_request"
+      });
+      expect(fetchFn).not.toHaveBeenCalled();
+    }
+  );
+
   it("sends an approved JSON POST request without cookies or auth", async () => {
     const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
