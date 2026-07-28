@@ -110,6 +110,7 @@ function buildListing(
   const parsedM7 = parseM7(evidence);
   const m7 =
     summary.detailFetchHint === "m7_prism_query" &&
+    detail === null &&
     parsedM7.status === "absent" &&
     parsedM7.evidence.length === 0
       ? { ...parsedM7, status: "unknown" as const }

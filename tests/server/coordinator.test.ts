@@ -365,6 +365,19 @@ describe("CollectionCoordinator", () => {
     });
   });
 
+  it("trusts a successful hinted detail without M7 as absent", async () => {
+    const { listing } = await collectJiaoyimaoMtopItem(
+      "QQ官服 普通账号"
+    );
+
+    expect(listing).toMatchObject({
+      m7PrismStatus: "absent",
+      m7PrismQuality: null,
+      eligibility: "rejected",
+      parseWarnings: []
+    });
+  });
+
   it.each([
     [
       "a failed detail fetch",
