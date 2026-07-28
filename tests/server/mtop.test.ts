@@ -84,6 +84,12 @@ function mutateData(
   return JSON.stringify(outer);
 }
 
+function dataForPage(page: number): string {
+  return mutateData((outer) => {
+    outer.page = String(page);
+  });
+}
+
 function responseWithCookies(
   body: string,
   cookies: readonly string[]
@@ -408,7 +414,25 @@ describe("anonymous MTop whitelist", () => {
 });
 
 describe("PublicPageFetcher anonymous MTop transport", () => {
-  it("performs an empty-token handshake and one signed retry", async () => {
+  it("refuses an approved MTop descriptor outside a Jiaoyimao lifecycle source", async () => {
+    const fetchFn = vi.fn();
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+    fetcher.beginSource("jiaoyimao");
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "panzhi")
+    ).resolves.toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "unapproved_mtop_request"
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("bootstraps page 2 with a page-1 handshake and signed prime", async () => {
     let now = 1_700_000_000_000;
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
@@ -419,7 +443,8 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
           '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
           [
             "_m_h5_tk=anonymous-token_1700000000000; Path=/; HttpOnly",
-            "_m_h5_tk_enc=anonymous-enc; Path=/; Secure"
+            "_m_h5_tk_enc=anonymous-enc; Path=/; Secure",
+            "login_session=must-not-leak; Path=/; HttpOnly"
           ]
         );
       }
@@ -431,6 +456,7 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
       random: () => 0.5,
       minimumIntervalMs: 0
     });
+    fetcher.beginSource("jiaoyimao");
 
     await expect(
       fetcher.fetchPage(approvedRequest(), "jiaoyimao")
@@ -440,17 +466,27 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
       status: 200,
       html: SUCCESS_BODY
     });
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
 
     const firstUrl = new URL(calls[0]!.url);
     const secondUrl = new URL(calls[1]!.url);
+    const thirdUrl = new URL(calls[2]!.url);
+    const pageOneData = dataForPage(1);
     expect(`${firstUrl.origin}${firstUrl.pathname}`).toBe(ENDPOINT);
     expect(firstUrl.searchParams.get("t")).toBe("1700000000000");
     expect(firstUrl.searchParams.get("sign")).toBe(
-      signMtop("", 1_700_000_000_000, APP_KEY, DATA)
+      signMtop("", 1_700_000_000_000, APP_KEY, pageOneData)
     );
     expect(secondUrl.searchParams.get("t")).toBe("1700000000001");
     expect(secondUrl.searchParams.get("sign")).toBe(
+      signMtop(
+        "anonymous-token",
+        1_700_000_000_001,
+        APP_KEY,
+        pageOneData
+      )
+    );
+    expect(thirdUrl.searchParams.get("sign")).toBe(
       signMtop(
         "anonymous-token",
         1_700_000_000_001,
@@ -459,15 +495,17 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
       )
     );
 
-    const encodedBody = new URLSearchParams({ data: DATA }).toString();
-    expect(calls[0]!.init?.body).toBe(encodedBody);
-    expect(calls[1]!.init?.body).toBe(encodedBody);
-    expect(new URLSearchParams(String(calls[1]!.init?.body)).get("data")).toBe(
-      DATA
-    );
+    const encodedPageOne = new URLSearchParams({
+      data: pageOneData
+    }).toString();
+    const encodedPageTwo = new URLSearchParams({ data: DATA }).toString();
+    expect(calls[0]!.init?.body).toBe(encodedPageOne);
+    expect(calls[1]!.init?.body).toBe(encodedPageOne);
+    expect(calls[2]!.init?.body).toBe(encodedPageTwo);
 
     const firstHeaders = new Headers(calls[0]!.init?.headers);
     const secondHeaders = new Headers(calls[1]!.init?.headers);
+    const thirdHeaders = new Headers(calls[2]!.init?.headers);
     expect(firstHeaders.get("accept")).toBe("application/json");
     expect(firstHeaders.get("content-type")).toBe(
       "application/x-www-form-urlencoded"
@@ -487,6 +525,136 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
     expect(secondHeaders.get("cookie")).toBe(
       "_m_h5_tk=anonymous-token_1700000000000; _m_h5_tk_enc=anonymous-enc"
     );
+    expect(thirdHeaders.get("cookie")).toBe(
+      "_m_h5_tk=anonymous-token_1700000000000; _m_h5_tk_enc=anonymous-enc"
+    );
+    expect(secondHeaders.get("cookie")).not.toContain("must-not-leak");
+    expect(thirdHeaders.get("cookie")).not.toContain("must-not-leak");
+    expect([
+      firstHeaders.get("jym-meta-h5"),
+      secondHeaders.get("jym-meta-h5"),
+      thirdHeaders.get("jym-meta-h5")
+    ]).toEqual([
+      firstHeaders.get("jym-meta-h5"),
+      firstHeaders.get("jym-meta-h5"),
+      firstHeaders.get("jym-meta-h5")
+    ]);
+  });
+
+  it("reuses the primed session and metadata for page 3", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      const headers = new Headers(init?.headers);
+      if (!headers.has("cookie")) {
+        return responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+          [
+            "_m_h5_tk=reused-token_1; Path=/",
+            "_m_h5_tk_enc=reused-enc; Path=/"
+          ]
+        );
+      }
+      return new Response(SUCCESS_BODY);
+    });
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      now: () => 1_700_000_000_000,
+      random: () => 0.25,
+      minimumIntervalMs: 0
+    });
+    fetcher.beginSource("jiaoyimao");
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({ kind: "ok" });
+    await expect(
+      fetcher.fetchPage(
+        approvedRequest(dataForPage(3)),
+        "jiaoyimao"
+      )
+    ).resolves.toMatchObject({ kind: "ok" });
+
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(
+      new URLSearchParams(String(calls[3]!.init?.body)).get("data")
+    ).toBe(dataForPage(3));
+    const firstMeta = new Headers(calls[0]!.init?.headers).get(
+      "jym-meta-h5"
+    );
+    expect(
+      calls.map(({ init }) =>
+        new Headers(init?.headers).get("jym-meta-h5")
+      )
+    ).toEqual([firstMeta, firstMeta, firstMeta, firstMeta]);
+    expect(new Headers(calls[3]!.init?.headers).get("cookie")).toBe(
+      "_m_h5_tk=reused-token_1; _m_h5_tk_enc=reused-enc"
+    );
+  });
+
+  it("clears the session at source end and bootstraps the next lifecycle", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      const headers = new Headers(init?.headers);
+      if (!headers.has("cookie")) {
+        const lifecycle = calls.filter(
+          ({ init: callInit }) =>
+            !new Headers(callInit?.headers).has("cookie")
+        ).length;
+        return responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+          [
+            `_m_h5_tk=token-${lifecycle}_1; Path=/`,
+            `_m_h5_tk_enc=enc-${lifecycle}; Path=/`
+          ]
+        );
+      }
+      return new Response(SUCCESS_BODY);
+    });
+    const random = vi
+      .fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0.5);
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      now: () => 1_700_000_000_000,
+      random,
+      minimumIntervalMs: 0
+    });
+
+    fetcher.beginSource("jiaoyimao");
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({ kind: "ok" });
+    fetcher.endSource("jiaoyimao");
+    fetcher.beginSource("jiaoyimao");
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({ kind: "ok" });
+
+    expect(fetchFn).toHaveBeenCalledTimes(6);
+    expect(new Headers(calls[0]!.init?.headers).has("cookie")).toBe(false);
+    expect(new Headers(calls[3]!.init?.headers).has("cookie")).toBe(false);
+    const firstMeta = new Headers(calls[0]!.init?.headers).get(
+      "jym-meta-h5"
+    );
+    const secondMeta = new Headers(calls[3]!.init?.headers).get(
+      "jym-meta-h5"
+    );
+    expect(firstMeta).not.toBe(secondMeta);
+    expect(
+      calls.slice(0, 3).every(
+        ({ init }) =>
+          new Headers(init?.headers).get("jym-meta-h5") === firstMeta
+      )
+    ).toBe(true);
+    expect(
+      calls.slice(3).every(
+        ({ init }) =>
+          new Headers(init?.headers).get("jym-meta-h5") === secondMeta
+      )
+    ).toBe(true);
   });
 
   it("uses one replacement session after a signed token expires", async () => {
@@ -504,12 +672,13 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
           ]
         );
       }
-      if (calls.length === 2) {
+      if (calls.length === 4) {
         return responseWithCookies(
           '{"ret":["FAIL_SYS_TOKEN_EXPIRED::令牌过期"]}',
           [
             "_m_h5_tk=replacement-token_2; Path=/",
-            "_m_h5_tk_enc=replacement-enc; Path=/"
+            "_m_h5_tk_enc=replacement-enc; Path=/",
+            "login_session=must-not-rotate; Path=/"
           ]
         );
       }
@@ -521,17 +690,26 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
       random: () => 0,
       minimumIntervalMs: 0
     });
+    fetcher.beginSource("jiaoyimao");
 
     await expect(
       fetcher.fetchPage(approvedRequest(), "jiaoyimao")
     ).resolves.toMatchObject({ kind: "ok" });
-    expect(fetchFn).toHaveBeenCalledTimes(3);
-    expect(new Headers(calls[1]!.init?.headers).get("cookie")).toBe(
+    await expect(
+      fetcher.fetchPage(
+        approvedRequest(dataForPage(3)),
+        "jiaoyimao"
+      )
+    ).resolves.toMatchObject({ kind: "ok" });
+    expect(fetchFn).toHaveBeenCalledTimes(5);
+    expect(new Headers(calls[3]!.init?.headers).get("cookie")).toBe(
       "_m_h5_tk=first-token_1; _m_h5_tk_enc=first-enc"
     );
-    expect(new Headers(calls[2]!.init?.headers).get("cookie")).toBe(
+    expect(new Headers(calls[4]!.init?.headers).get("cookie")).toBe(
       "_m_h5_tk=replacement-token_2; _m_h5_tk_enc=replacement-enc"
     );
+    expect(new Headers(calls[4]!.init?.headers).get("cookie"))
+      .not.toContain("must-not-rotate");
   });
 
   it("fails without looping when expiry has no replacement session", async () => {
@@ -547,21 +725,34 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
         )
       )
       .mockResolvedValueOnce(
+        new Response(SUCCESS_BODY)
+      )
+      .mockResolvedValueOnce(
+        new Response(SUCCESS_BODY)
+      )
+      .mockResolvedValueOnce(
         new Response('{"ret":["FAIL_SYS_TOKEN_EXPIRED::令牌过期"]}')
       );
     const fetcher = new PublicPageFetcher({
       fetchFn,
       minimumIntervalMs: 0
     });
+    fetcher.beginSource("jiaoyimao");
 
     await expect(
       fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({ kind: "ok" });
+    await expect(
+      fetcher.fetchPage(
+        approvedRequest(dataForPage(3)),
+        "jiaoyimao"
+      )
     ).resolves.toEqual({
       kind: "failed",
       url: ENDPOINT,
       error: "mtop_token_expired_without_replacement"
     });
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(4);
   });
 
   it.each([
@@ -610,7 +801,141 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
-  it("never makes a fourth call when the final signed request fails", async () => {
+  it.each([
+    [
+      "an invalid prime response",
+      () => new Response('{"ret":["SUCCESS::调用成功"],"data":{}}'),
+      "invalid_mtop_response"
+    ],
+    [
+      "a prime redirect",
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://example.test/not-allowed" }
+        }),
+      "redirect_not_allowed"
+    ],
+    [
+      "a prime token error",
+      () =>
+        responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EXPIRED::令牌过期"]}',
+          [
+            "_m_h5_tk=secret-replacement_2; Path=/",
+            "_m_h5_tk_enc=secret-replacement-enc; Path=/"
+          ]
+        ),
+      "mtop_request_failed"
+    ]
+  ])(
+    "fails closed after %s without sending page 2",
+    async (_name, primeResponse, expectedError) => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      const fetchFn = vi.fn(
+        async (url: string, init?: RequestInit) => {
+          calls.push({ url, init });
+          if (calls.length === 1) {
+            return responseWithCookies(
+              '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+              [
+                "_m_h5_tk=secret-token_1; Path=/",
+                "_m_h5_tk_enc=secret-enc; Path=/"
+              ]
+            );
+          }
+          return primeResponse();
+        }
+      );
+      const fetcher = new PublicPageFetcher({
+        fetchFn,
+        minimumIntervalMs: 0
+      });
+      fetcher.beginSource("jiaoyimao");
+
+      const result = await fetcher.fetchPage(
+        approvedRequest(),
+        "jiaoyimao"
+      );
+
+      expect(result).toEqual({
+        kind: "failed",
+        url: ENDPOINT,
+        error: expectedError
+      });
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+      expect(
+        calls.map(({ init }) =>
+          new URLSearchParams(String(init?.body)).get("data")
+        )
+      ).toEqual([dataForPage(1), dataForPage(1)]);
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("secret-token");
+      expect(serialized).not.toContain("secret-enc");
+      expect(serialized).not.toContain("secret-replacement");
+    }
+  );
+
+  it("does not retry a failed bootstrap request", async () => {
+    const fetchFn = vi.fn(async () => {
+      throw new Error("socket reset with secret-token");
+    });
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+    fetcher.beginSource("jiaoyimao");
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "network_error"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not exceed three bootstrap calls when requested page token expires", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+          [
+            "_m_h5_tk=first-token_1; Path=/",
+            "_m_h5_tk_enc=first-enc; Path=/"
+          ]
+        )
+      )
+      .mockResolvedValueOnce(new Response(SUCCESS_BODY))
+      .mockResolvedValueOnce(
+        responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EXPIRED::令牌过期"]}',
+          [
+            "_m_h5_tk=replacement-token_2; Path=/",
+            "_m_h5_tk_enc=replacement-enc; Path=/"
+          ]
+        )
+      )
+      .mockResolvedValueOnce(new Response(SUCCESS_BODY));
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+    fetcher.beginSource("jiaoyimao");
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "mtop_request_failed"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("never exceeds the later-page budget when replacement fails", async () => {
     let calls = 0;
     const fetchFn = vi.fn(async () => {
       calls += 1;
@@ -623,7 +948,7 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
           ]
         );
       }
-      if (calls === 2) {
+      if (calls === 4) {
         return responseWithCookies(
           '{"ret":["FAIL_SYS_TOKEN_EXPIRED::令牌过期"]}',
           [
@@ -632,28 +957,34 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
           ]
         );
       }
-      if (calls === 3) throw new Error("socket reset");
+      if (calls === 5) throw new Error("socket reset");
       return new Response(SUCCESS_BODY);
     });
     const fetcher = new PublicPageFetcher({
       fetchFn,
       minimumIntervalMs: 0
     });
+    fetcher.beginSource("jiaoyimao");
 
     await expect(
       fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({ kind: "ok" });
+    await expect(
+      fetcher.fetchPage(
+        approvedRequest(dataForPage(3)),
+        "jiaoyimao"
+      )
     ).resolves.toEqual({
       kind: "failed",
       url: ENDPOINT,
       error: "network_error"
     });
-    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(fetchFn).toHaveBeenCalledTimes(5);
   });
 
   it("uses one transient retry when the three-call budget allows it", async () => {
     const fetchFn = vi
       .fn()
-      .mockRejectedValueOnce(new Error("socket reset"))
       .mockResolvedValueOnce(
         responseWithCookies(
           '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
@@ -663,16 +994,26 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
           ]
         )
       )
+      .mockResolvedValueOnce(new Response(SUCCESS_BODY))
+      .mockResolvedValueOnce(new Response(SUCCESS_BODY))
+      .mockRejectedValueOnce(new Error("socket reset"))
       .mockResolvedValueOnce(new Response(SUCCESS_BODY));
     const fetcher = new PublicPageFetcher({
       fetchFn,
       minimumIntervalMs: 0
     });
+    fetcher.beginSource("jiaoyimao");
 
     await expect(
       fetcher.fetchPage(approvedRequest(), "jiaoyimao")
     ).resolves.toMatchObject({ kind: "ok" });
-    expect(fetchFn).toHaveBeenCalledTimes(3);
+    await expect(
+      fetcher.fetchPage(
+        approvedRequest(dataForPage(3)),
+        "jiaoyimao"
+      )
+    ).resolves.toMatchObject({ kind: "ok" });
+    expect(fetchFn).toHaveBeenCalledTimes(5);
   });
 
   it("uses manual redirects and rejects a 302 without another call", async () => {

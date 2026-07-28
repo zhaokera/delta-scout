@@ -550,14 +550,13 @@ export class CollectionCoordinator {
     const refreshStartedAt = this.now();
     const freshSources = new Set<SourceId>();
     for (const adapter of this.adapters) {
+      let result: RefreshSourceResult | null = null;
       try {
-        const result = await this.refreshSource(
+        await this.fetcher.beginSource?.(adapter.source);
+        result = await this.refreshSource(
           adapter,
           refreshStartedAt
         );
-        if (result.fresh) {
-          freshSources.add(result.source);
-        }
       } catch (error) {
         this.repository.markSourceFailure(
           adapter.source,
@@ -565,6 +564,21 @@ export class CollectionCoordinator {
           this.now(),
           "failed"
         );
+      } finally {
+        try {
+          await this.fetcher.endSource?.(adapter.source);
+        } catch (error) {
+          result = null;
+          this.repository.markSourceFailure(
+            adapter.source,
+            errorMessage(error, "来源会话清理失败"),
+            this.now(),
+            "failed"
+          );
+        }
+      }
+      if (result?.fresh) {
+        freshSources.add(result.source);
       }
     }
 

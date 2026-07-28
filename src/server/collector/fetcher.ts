@@ -9,10 +9,12 @@ import {
   APPROVED_JIAOYIMAO_REFERER,
   buildJymMeta,
   buildMtopUrl,
+  deriveApprovedJiaoyimaoMtopPageOneData,
   extractAnonymousMtopSession,
   isApprovedJiaoyimaoMtopRequest,
   signMtop
 } from "./mtop.js";
+import type { AnonymousMtopSession } from "./mtop.js";
 
 type FetchFunction = (
   url: string,
@@ -49,6 +51,11 @@ interface MtopNetworkBudget {
   remaining: number;
 }
 
+interface JiaoyimaoSourceState {
+  session: AnonymousMtopSession | null;
+  readonly jymMeta: string;
+}
+
 export class PublicPageFetcher implements PageFetcher {
   private readonly fetchFn: FetchFunction;
   private readonly now: () => number;
@@ -58,6 +65,7 @@ export class PublicPageFetcher implements PageFetcher {
   private readonly minimumIntervalMs: number;
   private readonly maximumBytes: number;
   private readonly lastAttemptBySource = new Map<SourceId, number>();
+  private jiaoyimaoSourceState: JiaoyimaoSourceState | null = null;
 
   constructor(options: PublicPageFetcherOptions = {}) {
     this.fetchFn = options.fetchFn ?? ((url, init) => fetch(url, init));
@@ -70,6 +78,32 @@ export class PublicPageFetcher implements PageFetcher {
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.minimumIntervalMs = options.minimumIntervalMs ?? 2_000;
     this.maximumBytes = options.maximumBytes ?? 2 * 1024 * 1024;
+  }
+
+  beginSource(source: SourceId): void {
+    if (source !== "jiaoyimao") return;
+    this.clearJiaoyimaoSourceState();
+    this.jiaoyimaoSourceState = this.createJiaoyimaoSourceState();
+  }
+
+  endSource(source: SourceId): void {
+    if (source === "jiaoyimao") {
+      this.clearJiaoyimaoSourceState();
+    }
+  }
+
+  private createJiaoyimaoSourceState(): JiaoyimaoSourceState {
+    return {
+      session: null,
+      jymMeta: buildJymMeta(this.now(), this.random())
+    };
+  }
+
+  private clearJiaoyimaoSourceState(): void {
+    if (this.jiaoyimaoSourceState !== null) {
+      this.jiaoyimaoSourceState.session = null;
+      this.jiaoyimaoSourceState = null;
+    }
   }
 
   private async throttle(source: SourceId): Promise<void> {
@@ -91,10 +125,21 @@ export class PublicPageFetcher implements PageFetcher {
       options?.anonymousMtop !== undefined ||
       targetsJiaoyimaoMtopHost(url)
     ) {
-      if (!isApprovedJiaoyimaoMtopRequest(request)) {
+      if (
+        source !== "jiaoyimao" ||
+        !isApprovedJiaoyimaoMtopRequest(request)
+      ) {
         return { kind: "failed", url, error: "unapproved_mtop_request" };
       }
-      return this.fetchAnonymousMtop(request, source);
+      const lifecycleState = this.jiaoyimaoSourceState;
+      const state = lifecycleState ?? this.createJiaoyimaoSourceState();
+      try {
+        return await this.fetchAnonymousMtop(request, source, state);
+      } finally {
+        if (lifecycleState === null) {
+          state.session = null;
+        }
+      }
     }
 
     let lastError = "request_failed";
@@ -159,7 +204,8 @@ export class PublicPageFetcher implements PageFetcher {
 
   private async fetchAnonymousMtop(
     request: SourceRequest,
-    source: SourceId
+    source: SourceId,
+    state: JiaoyimaoSourceState
   ): Promise<FetchResult> {
     const { url, options } = request;
     const anonymousMtop = options?.anonymousMtop;
@@ -167,21 +213,56 @@ export class PublicPageFetcher implements PageFetcher {
     if (anonymousMtop === undefined || data === undefined) {
       return { kind: "failed", url, error: "unapproved_mtop_request" };
     }
+    if (state.session === null) {
+      return this.bootstrapAnonymousMtop(
+        url,
+        anonymousMtop,
+        data,
+        source,
+        state
+      );
+    }
+    return this.fetchWithAnonymousMtopSession(
+      url,
+      anonymousMtop,
+      data,
+      source,
+      state
+    );
+  }
+
+  private async bootstrapAnonymousMtop(
+    url: string,
+    anonymousMtop: AnonymousMtopRequestOptions,
+    requestedData: string,
+    source: SourceId,
+    state: JiaoyimaoSourceState
+  ): Promise<FetchResult> {
+    const pageOneData =
+      deriveApprovedJiaoyimaoMtopPageOneData(requestedData);
+    if (pageOneData === null) {
+      return { kind: "failed", url, error: "unapproved_mtop_request" };
+    }
     const budget: MtopNetworkBudget = { remaining: 3 };
 
     const handshake = await this.sendMtopRequest(
       url,
       anonymousMtop,
-      data,
+      pageOneData,
       "",
       undefined,
       source,
       budget,
-      true
+      false,
+      state.jymMeta
     );
-    if (handshake.kind !== "ok") return handshake;
+    if (handshake.kind !== "ok") {
+      state.session = null;
+      return handshake;
+    }
     const handshakePayload = parseMtopPayload(handshake.html);
     if (handshakePayload === null) {
+      state.session = null;
       return { kind: "failed", url, error: "invalid_mtop_response" };
     }
     if (
@@ -190,14 +271,98 @@ export class PublicPageFetcher implements PageFetcher {
         "FAIL_SYS_TOKEN_EMPTY"
       )
     ) {
+      state.session = null;
       return { kind: "failed", url, error: "mtop_handshake_failed" };
     }
 
     const session = extractAnonymousMtopSession(handshake.headers);
     if (session === null) {
+      state.session = null;
       return { kind: "failed", url, error: "mtop_session_missing" };
     }
 
+    const prime = await this.sendMtopRequest(
+      url,
+      anonymousMtop,
+      pageOneData,
+      session.token,
+      session.cookieHeader,
+      source,
+      budget,
+      false,
+      state.jymMeta
+    );
+    if (prime.kind !== "ok") {
+      state.session = null;
+      return prime;
+    }
+    const primePayload = parseMtopPayload(prime.html);
+    if (
+      primePayload === null ||
+      !primePayload.ret.includes("SUCCESS::调用成功") ||
+      !isApprovedMtopSuccess(primePayload)
+    ) {
+      state.session = null;
+      return {
+        kind: "failed",
+        url,
+        error:
+          primePayload === null ||
+          primePayload.ret.includes("SUCCESS::调用成功")
+            ? "invalid_mtop_response"
+            : "mtop_request_failed"
+      };
+    }
+
+    const requested = await this.sendMtopRequest(
+      url,
+      anonymousMtop,
+      requestedData,
+      session.token,
+      session.cookieHeader,
+      source,
+      budget,
+      false,
+      state.jymMeta
+    );
+    if (requested.kind !== "ok") {
+      state.session = null;
+      return requested;
+    }
+    const requestedPayload = parseMtopPayload(requested.html);
+    if (requestedPayload === null) {
+      state.session = null;
+      return { kind: "failed", url, error: "invalid_mtop_response" };
+    }
+    if (!requestedPayload.ret.includes("SUCCESS::调用成功")) {
+      state.session = null;
+      return { kind: "failed", url, error: "mtop_request_failed" };
+    }
+    if (!isApprovedMtopSuccess(requestedPayload)) {
+      state.session = null;
+      return { kind: "failed", url, error: "invalid_mtop_response" };
+    }
+    state.session = session;
+    return {
+      kind: "ok",
+      url,
+      status: requested.status,
+      html: requested.html
+    };
+  }
+
+  private async fetchWithAnonymousMtopSession(
+    url: string,
+    anonymousMtop: AnonymousMtopRequestOptions,
+    data: string,
+    source: SourceId,
+    state: JiaoyimaoSourceState
+  ): Promise<FetchResult> {
+    const session = state.session;
+    if (session === null) {
+      return { kind: "failed", url, error: "mtop_session_missing" };
+    }
+    const budget: MtopNetworkBudget = { remaining: 3 };
     const signed = await this.sendMtopRequest(
       url,
       anonymousMtop,
@@ -206,15 +371,21 @@ export class PublicPageFetcher implements PageFetcher {
       session.cookieHeader,
       source,
       budget,
-      true
+      true,
+      state.jymMeta
     );
-    if (signed.kind !== "ok") return signed;
+    if (signed.kind !== "ok") {
+      state.session = null;
+      return signed;
+    }
     const signedPayload = parseMtopPayload(signed.html);
     if (signedPayload === null) {
+      state.session = null;
       return { kind: "failed", url, error: "invalid_mtop_response" };
     }
     if (signedPayload.ret.includes("SUCCESS::调用成功")) {
       if (!isApprovedMtopSuccess(signedPayload)) {
+        state.session = null;
         return { kind: "failed", url, error: "invalid_mtop_response" };
       }
       return {
@@ -230,11 +401,12 @@ export class PublicPageFetcher implements PageFetcher {
         "FAIL_SYS_TOKEN_EXPIRED"
       )
     ) {
+      state.session = null;
       return { kind: "failed", url, error: "mtop_request_failed" };
     }
-
     const replacement = extractAnonymousMtopSession(signed.headers);
     if (replacement === null) {
+      state.session = null;
       return {
         kind: "failed",
         url,
@@ -249,19 +421,27 @@ export class PublicPageFetcher implements PageFetcher {
       replacement.cookieHeader,
       source,
       budget,
-      false
+      false,
+      state.jymMeta
     );
-    if (finalAttempt.kind !== "ok") return finalAttempt;
+    if (finalAttempt.kind !== "ok") {
+      state.session = null;
+      return finalAttempt;
+    }
     const finalPayload = parseMtopPayload(finalAttempt.html);
     if (finalPayload === null) {
+      state.session = null;
       return { kind: "failed", url, error: "invalid_mtop_response" };
     }
     if (!finalPayload.ret.includes("SUCCESS::调用成功")) {
+      state.session = null;
       return { kind: "failed", url, error: "mtop_request_failed" };
     }
     if (!isApprovedMtopSuccess(finalPayload)) {
+      state.session = null;
       return { kind: "failed", url, error: "invalid_mtop_response" };
     }
+    state.session = replacement;
     return {
       kind: "ok",
       url,
@@ -278,7 +458,8 @@ export class PublicPageFetcher implements PageFetcher {
     cookieHeader: string | undefined,
     source: SourceId,
     budget: MtopNetworkBudget,
-    allowTransientRetry: boolean
+    allowTransientRetry: boolean,
+    jymMeta: string
   ): Promise<MtopHttpResult> {
     if (budget.remaining === 0) {
       return {
@@ -302,7 +483,7 @@ export class PublicPageFetcher implements PageFetcher {
       Origin: "https://www.jiaoyimao.com",
       Referer: APPROVED_JIAOYIMAO_REFERER,
       "User-Agent": USER_AGENT,
-      "jym-meta-h5": buildJymMeta(timestamp, this.random()),
+      "jym-meta-h5": jymMeta,
       "x-ua": USER_AGENT,
       ...(cookieHeader === undefined ? {} : { Cookie: cookieHeader })
     };

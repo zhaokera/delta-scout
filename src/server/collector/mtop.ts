@@ -195,6 +195,15 @@ export function isApprovedJiaoyimaoMtopData(data: string): boolean {
   }
 }
 
+export function deriveApprovedJiaoyimaoMtopPageOneData(
+  data: string
+): string | null {
+  if (!isApprovedJiaoyimaoMtopData(data)) return null;
+  const outer = JSON.parse(data) as Record<string, unknown>;
+  outer.page = "1";
+  return JSON.stringify(outer);
+}
+
 function isApprovedSearchCondition(value: string): boolean {
   const search: unknown = JSON.parse(value);
   if (

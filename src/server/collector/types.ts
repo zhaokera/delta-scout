@@ -82,8 +82,10 @@ export type FetchResult =
   | { kind: "failed"; url: string; error: string };
 
 export interface PageFetcher {
+  beginSource?(source: SourceId): void | Promise<void>;
   fetchPage(
     request: SourceRequest,
     source: SourceId
   ): Promise<FetchResult>;
+  endSource?(source: SourceId): void | Promise<void>;
 }

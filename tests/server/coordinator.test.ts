@@ -54,6 +54,32 @@ class RoutingFetcher implements PageFetcher {
   }
 }
 
+class LifecycleFetcher implements PageFetcher {
+  readonly events: string[] = [];
+
+  constructor(
+    private readonly route: (
+      request: SourceRequest
+    ) => FetchResult | Promise<FetchResult>
+  ) {}
+
+  beginSource(source: ListingSummary["source"]): void {
+    this.events.push(`begin:${source}`);
+  }
+
+  endSource(source: ListingSummary["source"]): void {
+    this.events.push(`end:${source}`);
+  }
+
+  async fetchPage(
+    request: SourceRequest,
+    source: ListingSummary["source"]
+  ): Promise<FetchResult> {
+    this.events.push(`fetch:${source}:${request.url}`);
+    return this.route(request);
+  }
+}
+
 function ok(url: string, html: string): FetchResult {
   return { kind: "ok", url, status: 200, html };
 }
@@ -232,6 +258,73 @@ async function collectJiaoyimaoMtopItem(
 }
 
 describe("CollectionCoordinator", () => {
+  it.each([
+    [
+      "an early blocked return",
+      (url: string): FetchResult => ({
+        kind: "blocked",
+        url,
+        reason: "captcha_required"
+      })
+    ],
+    [
+      "a thrown fetch",
+      async (): Promise<FetchResult> => {
+        throw new Error("socket closed");
+      }
+    ]
+  ])(
+    "ends the source lifecycle after %s",
+    async (_name, route) => {
+      const repository = new ListingRepository(createDatabase(":memory:"));
+      const adapter = fakeAdapter();
+      const fetcher = new LifecycleFetcher((request) =>
+        route(request.url)
+      );
+
+      await new CollectionCoordinator({
+        adapters: [adapter],
+        fetcher,
+        repository
+      }).refreshAll();
+
+      expect(fetcher.events).toEqual([
+        "begin:panzhi",
+        `fetch:panzhi:${adapter.entryUrl}`,
+        "end:panzhi"
+      ]);
+    }
+  );
+
+  it("begins before fetching and ends after a successful source refresh", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapter = fakeAdapter({
+      parseList: () => ({
+        kind: "ok",
+        items: [{ ...summary(), embeddedDetail: listingDetail() }]
+      })
+    });
+    const fetcher = new LifecycleFetcher((request) => {
+      if (request.url === adapter.entryUrl) {
+        return ok(request.url, "home");
+      }
+      return ok(request.url, "list");
+    });
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(fetcher.events).toEqual([
+      "begin:panzhi",
+      `fetch:panzhi:${adapter.entryUrl}`,
+      "fetch:panzhi:https://source.test/list/1",
+      "end:panzhi"
+    ]);
+  });
+
   it("keeps explicit unknown embedded login authoritative", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const item = {
