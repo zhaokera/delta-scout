@@ -8,7 +8,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "build": "vite build && tsc -p tsconfig.server.json"
+    "build": "vite build && node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && tsc -p tsconfig.build.json"
   },
   "dependencies": {
     "cheerio": "^1.2.0",

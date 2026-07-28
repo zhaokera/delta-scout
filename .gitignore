@@ -2,5 +2,6 @@
 .worktrees/
 node_modules/
 dist/
+dist-server/
 coverage/
 .env
