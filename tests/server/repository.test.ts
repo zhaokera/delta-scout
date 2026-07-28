@@ -5,6 +5,26 @@ import { ListingRepository } from "../../src/server/repository.js";
 import { makeListing } from "../domain/listingFactory.js";
 
 describe("ListingRepository", () => {
+  it("loads legacy payloads without an M7 grade as null", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const legacy = { ...makeListing() } as Record<string, unknown>;
+    delete legacy.m7PrismQuality;
+    database
+      .prepare(`
+        INSERT INTO listings (listing_key, source, eligibility, payload)
+        VALUES (?, ?, ?, ?)
+      `)
+      .run(
+        "panzhi:legacy",
+        "panzhi",
+        "eligible",
+        JSON.stringify({ ...legacy, key: "panzhi:legacy" })
+      );
+
+    expect(repository.getListings()[0].m7PrismQuality).toBeNull();
+  });
+
   it("upserts a source snapshot and filters by eligibility", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);

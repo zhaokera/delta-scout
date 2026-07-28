@@ -25,6 +25,7 @@ describe("App shell", () => {
       key: "panzhi:SA2PEAK",
       sourceListingId: "SA2PEAK",
       priceCny: 5560,
+      m7PrismQuality: "A",
       redSkins: ["威龙", "骇爪", "红狼"],
       redSkinCount: 3,
       totalAssetsM: 482,
@@ -81,7 +82,7 @@ describe("App shell", () => {
       name: /SA2PEAK.*¥5,560/
     });
     expect(within(row).getByText("3 角色红皮")).toBeInTheDocument();
-    expect(within(row).getByText("M7 · 极品")).toBeInTheDocument();
+    expect(within(row).getByText("M7 · 极品A")).toBeInTheDocument();
     expect(within(row).getByText("巨浪 · 极品")).toBeInTheDocument();
     expect(within(row).getByText("482M")).toBeInTheDocument();
     expect(within(row).getByText("87")).toBeInTheDocument();
@@ -90,6 +91,9 @@ describe("App shell", () => {
     const detail = await screen.findByRole("complementary", {
       name: "候选详情"
     });
+    expect(
+      within(detail).getByText("M7 棱镜攻势 · 极品A")
+    ).toBeInTheDocument();
     expect(within(detail).getByText("威龙 · 骇爪 · 红狼")).toBeInTheDocument();
     expect(within(detail).getByText("31,880,000")).toBeInTheDocument();
     expect(within(detail).getByText("M7 棱镜攻势 极品")).toBeInTheDocument();

@@ -22,11 +22,11 @@ describe("M7 棱镜攻势 evidence", () => {
       [
         "M7棱镜(极品C)/ASVal悬赏令(优品C)，M250电玩(优品A)"
       ],
-      "peak"
+      "absent"
     ],
     [
       ["M7棱镜(极品C)/M7棱镜(优品A)"],
-      "conflicting"
+      "absent"
     ],
     [["M7 无棱镜攻势"], "absent"],
     [["其它收藏"], "absent"]
@@ -34,6 +34,53 @@ describe("M7 棱镜攻势 evidence", () => {
     const result = parseM7(toEvidenceRecords([...lines]));
 
     expect(result.status).toBe(expected);
+  });
+
+  it.each([
+    ["M7棱镜攻势：极品A", "A"],
+    ["M7-棱镜攻势(极品S)", "S"],
+    ["M7战斗步枪-棱镜攻势S2(极品C/其他)", "C"]
+  ] as const)("extracts the exact peak grade from %s", (text, quality) => {
+    const result = parseM7(toEvidenceRecords([text]));
+
+    expect(result).toMatchObject({ status: "peak", quality });
+  });
+
+  it.each([
+    "M7棱镜幻影(极品S)",
+    "M7棱镜(极品C)",
+    "M7战斗步枪-棱镜攻势S2 / 其它武器极品",
+    "M7战斗步枪-棱镜攻势S2 当前有皮肤，AS Val突击步枪-悬赏令(极品S)"
+  ])("does not infer peak from non-target or later quality: %s", (text) => {
+    expect(parseM7(toEvidenceRecords([text])).status).not.toBe("peak");
+  });
+
+  it("does not combine another evidence record's quality", () => {
+    const result = parseM7(
+      toEvidenceRecords([
+        "M7战斗步枪-棱镜攻势S2",
+        "其它字段 极品S"
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: "unknown",
+      quality: undefined
+    });
+  });
+
+  it("clears the grade when M7 evidence conflicts", () => {
+    const result = parseM7(
+      toEvidenceRecords([
+        "M7棱镜攻势(极品A)",
+        "M7棱镜攻势(优品B)"
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: "conflicting",
+      quality: undefined
+    });
   });
 });
 

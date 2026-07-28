@@ -5,6 +5,20 @@ import { ListingTable } from "../../src/client/components/ListingTable";
 import { makeListing } from "../domain/listingFactory";
 
 describe("ListingTable", () => {
+  it("shows the exact M7 peak grade", () => {
+    render(
+      <ListingTable
+        listings={[makeListing({ m7PrismQuality: "S" })]}
+        selectedKey={null}
+        sort="score"
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("M7 · 极品S")).toBeInTheDocument();
+  });
+
   it("sorts candidates by price without changing the records", async () => {
     const onSelect = vi.fn();
     const listings = [

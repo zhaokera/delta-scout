@@ -132,6 +132,7 @@ function buildListing(
     hafCoins: detail?.hafCoins ?? parseHafCoins(combinedText),
     evidence,
     m7PrismStatus: m7.status,
+    m7PrismQuality: m7.quality ?? null,
     m7Evidence: m7.evidence,
     redSkins: redSkins.names,
     redSkinCount:

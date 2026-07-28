@@ -37,7 +37,9 @@ function julangLabel(listing: Listing): string {
 }
 
 function m7Label(listing: Listing): string {
-  if (listing.m7PrismStatus === "peak") return "M7 · 极品";
+  if (listing.m7PrismStatus === "peak") {
+    return `M7 · 极品${listing.m7PrismQuality ?? ""}`;
+  }
   if (listing.m7PrismStatus === "premium") return "M7 · 优品";
   if (listing.m7PrismStatus === "conflicting") return "M7 · 证据冲突";
   if (listing.m7PrismStatus === "absent") return "M7 · 未发现";

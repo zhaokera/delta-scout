@@ -20,6 +20,7 @@ export function makeListing(overrides: Partial<Listing> = {}): Listing {
       { text: "巨浪 极品", truncated: false }
     ],
     m7PrismStatus: "peak",
+    m7PrismQuality: "A",
     m7Evidence: [{ text: "M7 棱镜攻势 极品", truncated: false }],
     redSkins: ["威龙"],
     redSkinCount: 1,

@@ -22,7 +22,9 @@ function booleanLabel(
 }
 
 function m7StatusLabel(listing: Listing): string {
-  if (listing.m7PrismStatus === "peak") return "极品";
+  if (listing.m7PrismStatus === "peak") {
+    return `极品${listing.m7PrismQuality ?? ""}`;
+  }
   if (listing.m7PrismStatus === "premium") return "优品（不符合硬条件）";
   if (listing.m7PrismStatus === "absent") return "未发现";
   if (listing.m7PrismStatus === "conflicting") return "证据冲突";

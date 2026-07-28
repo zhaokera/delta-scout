@@ -61,6 +61,10 @@ export const ListingSchema = z.object({
   hafCoins: z.number().nonnegative().nullable(),
   evidence: z.array(EvidenceRecordSchema),
   m7PrismStatus: M7PrismStatusSchema,
+  m7PrismQuality: z
+    .enum(["S", "A", "B", "C"])
+    .nullable()
+    .default(null),
   m7Evidence: z.array(EvidenceRecordSchema),
   redSkins: z.array(z.string().min(1)),
   redSkinCount: z.number().int().nonnegative().nullable(),

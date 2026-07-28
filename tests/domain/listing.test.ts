@@ -15,6 +15,7 @@ const validListing = {
   hafCoins: 28_880_000,
   evidence: [],
   m7PrismStatus: "peak",
+  m7PrismQuality: "A",
   m7Evidence: [],
   redSkins: ["威龙"],
   redSkinCount: 1,
@@ -48,5 +49,12 @@ describe("ListingSchema", () => {
     expect(() =>
       ListingSchema.parse({ ...validListing, confidence: 101 })
     ).toThrow();
+  });
+
+  it("defaults legacy snapshots without an M7 grade to null", () => {
+    const legacy = { ...validListing };
+    delete (legacy as Partial<typeof validListing>).m7PrismQuality;
+
+    expect(ListingSchema.parse(legacy).m7PrismQuality).toBeNull();
   });
 });

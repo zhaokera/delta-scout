@@ -10,12 +10,20 @@ export type M7PrismStatus =
   | "peak"
   | "conflicting";
 
+export type M7PrismQuality = "S" | "A" | "B" | "C";
+
 export interface EvidenceMatch<TStatus extends string> {
   status: TStatus;
   evidence: EvidenceRecord[];
 }
 
 const MAX_EVIDENCE_LENGTH = 2_000;
+const M7_PRISM_TARGET =
+  /M7\s*(?:战斗步枪\s*)?[-—–·•・_：:]?\s*棱镜攻势(?:\s*S2)?/i;
+const M7_PRISM_NEGATED_TARGET =
+  /M7\s*(?:战斗步枪\s*)?[-—–·•・_：:]?\s*(?:无|未拥有)\s*棱镜攻势(?:\s*S2)?/i;
+const ADJACENT_M7_QUALITY =
+  /^\s*(?:[：:]\s*)?(?:[（(【]\s*)?(非极品|极品|优品)\s*([SABC])?/i;
 
 const DEFAULT_CHARACTER_ALIASES = [
   "威龙",
@@ -67,50 +75,84 @@ export function toEvidenceRecords(lines: string[]): EvidenceRecord[] {
 
 export function parseM7(
   records: EvidenceRecord[]
-): EvidenceMatch<M7PrismStatus> {
+): EvidenceMatch<M7PrismStatus> & {
+  quality?: M7PrismQuality;
+} {
   const relevant = records.filter(
-    ({ text }) => /M7/i.test(text) && text.includes("棱镜")
+    ({ text }) =>
+      M7_PRISM_TARGET.test(text) ||
+      M7_PRISM_NEGATED_TARGET.test(text)
   );
 
   if (relevant.length === 0) {
-    return { status: "absent", evidence: [] };
+    return { status: "absent", evidence: [], quality: undefined };
   }
 
-  const clauses = relevant.flatMap(({ text }) =>
-    splitEvidenceClauses(text).filter(
-      (clause) => /M7/i.test(clause) && clause.includes("棱镜")
-    )
-  );
-  const statuses = clauses.map((text): M7PrismStatus => {
-    const denied =
-      text.includes("无棱镜") ||
-      text.includes("未拥有棱镜") ||
-      text.includes("非极品");
-    const peak = text.includes("极品");
-    const premium = text.includes("优品");
+  const matches = relevant
+    .flatMap(({ text }) => splitEvidenceClauses(text))
+    .map((text) => {
+      const negatedTarget = text.match(M7_PRISM_NEGATED_TARGET);
+      const target = negatedTarget ?? text.match(M7_PRISM_TARGET);
+      if (!target || target.index === undefined) return null;
 
-    if ((peak && denied) || (peak && premium)) {
-      return "conflicting";
-    }
-    if (denied) {
-      return "absent";
-    }
-    if (premium) {
-      return "premium";
-    }
-    if (peak) {
-      return "peak";
-    }
-    return "unknown";
-  });
+      const suffix = text.slice(target.index + target[0].length);
+      const qualityMatch = suffix.match(ADJACENT_M7_QUALITY);
+      const qualityWord = qualityMatch?.[1] ?? null;
+      const quality = qualityMatch?.[2]?.toUpperCase() as
+        | M7PrismQuality
+        | undefined;
+      const denied =
+        negatedTarget !== null ||
+        /(?:无|未拥有)\s*$/.test(text.slice(0, target.index)) ||
+        qualityWord === "非极品";
+      const immediateRegion = suffix.slice(0, 24);
+      const peak = qualityWord === "极品";
+      const premium =
+        qualityWord === "优品" ||
+        (peak && immediateRegion.includes("优品"));
 
-  const unique = new Set(statuses);
+      let status: M7PrismStatus = "unknown";
+      if ((peak && denied) || (peak && premium)) {
+        status = "conflicting";
+      } else if (denied) {
+        status = "absent";
+      } else if (premium) {
+        status = "premium";
+      } else if (peak) {
+        status = "peak";
+      }
+
+      return {
+        status,
+        quality: status === "peak" ? quality : undefined
+      };
+    })
+    .filter(
+      (
+        match
+      ): match is {
+        status: M7PrismStatus;
+        quality: M7PrismQuality | undefined;
+      } => match !== null
+    );
+
+  const unique = new Set(matches.map(({ status }) => status));
   const status =
     unique.has("conflicting") || unique.size > 1
       ? "conflicting"
-      : (statuses[0] ?? "unknown");
+      : (matches[0]?.status ?? "unknown");
+  const peakQualities = matches.map(({ quality }) => quality);
+  const quality =
+    status === "peak" &&
+    peakQualities.length > 0 &&
+    peakQualities.every(
+      (candidate) =>
+        candidate !== undefined && candidate === peakQualities[0]
+    )
+      ? peakQualities[0]
+      : undefined;
 
-  return { status, evidence: relevant };
+  return { status, evidence: relevant, quality };
 }
 
 function splitEvidenceClauses(text: string): string[] {
