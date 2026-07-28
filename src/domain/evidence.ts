@@ -193,9 +193,21 @@ function findJymTruncatedPeakQualities(
       nextGroupStart,
       contentStart + MAX_JYM_TRUNCATED_GROUP_LENGTH
     );
-    return JYM_TRUNCATED_M7_TARGET.test(
-      text.slice(contentStart, contentEnd)
-    )
+    const content = text.slice(contentStart, contentEnd);
+    const targets = content.matchAll(
+      new RegExp(
+        JYM_TRUNCATED_M7_TARGET.source,
+        `${JYM_TRUNCATED_M7_TARGET.flags}g`
+      )
+    );
+    const hasPositiveTarget = [...targets].some(
+      (target) =>
+        target.index !== undefined &&
+        !/(?:非|无|未拥有)\s*$/.test(
+          content.slice(0, target.index)
+        )
+    );
+    return hasPositiveTarget
       ? [count[1].toUpperCase() as M7PrismQuality]
       : [];
   });

@@ -74,11 +74,25 @@ describe("M7 棱镜攻势 evidence", () => {
     "M7战...势S2",
     "极品|M7战...势S2",
     "极品|Bx0M7战...势S2",
+    "极品|Bx1非 M7战...势S2",
+    "极品|Bx1未拥有 M7战...势S2",
+    "极品|Bx1未拥有M7战...势S2",
+    "极品|Bx1无M7可选",
     "极品|Bx1M7战...其它S2",
     "极品|Ax1腾龙优品|Bx1M7战...势S2",
     `极品|Bx1${"其它枪械".repeat(50)}M7战...势S2`
   ])("does not infer a truncated peak outside one bounded peak group: %s", (text) => {
     expect(parseM7(toEvidenceRecords([text])).status).toBe("absent");
+  });
+
+  it.each([
+    "极品|Bx1未拥有腾龙 M7战...势S2",
+    "极品|Bx2未拥有M7战...势S2 M7战…势S2"
+  ])("keeps a non-negated truncated target positive: %s", (text) => {
+    expect(parseM7(toEvidenceRecords([text]))).toMatchObject({
+      status: "peak",
+      quality: "B"
+    });
   });
 
   it("keeps one quality when repeated truncated peak groups agree", () => {
