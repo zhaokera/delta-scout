@@ -74,9 +74,9 @@ flowchart LR
 - `type`: `4`
 - `posType`: `1`
 
-第一页不传 `pageToken`；后续页只使用前一页响应中 `data.properties.pageToken` 返回的非空字符串。最多读取 3 页，沿用协调器的页数上限。若 Token 缺失、与当前请求 body 中的 Token 相同或会生成已访问过的请求指纹，则成功停止分页，不能猜测下一页。
+第一页不传 `pageToken`；后续页只使用前一页响应中 `data.properties.pageToken` 返回的非空字符串。最多读取 3 页，沿用协调器的页数上限。若分页 Token 缺失、与当前请求 body 中的分页 Token 相同或会生成已访问过的请求指纹，则成功停止分页，不能猜测下一页。
 
-公开接口是对总设计中“不得猜测或调用未公开内部 API”的窄化例外：只有同时满足“由一方公开页面代码直接调用、无需登录、无需 Cookie 或 Token、只读商品查询、请求形状已经现场验证”的接口才能预注册；不得据此尝试相邻路径或其它操作。
+公开接口是对总设计中“不得猜测或调用未公开内部 API”的窄化例外：只有同时满足“由一方公开页面代码直接调用、无需登录、无需 Cookie 或认证/会话 Token、只读商品查询、请求形状已经现场验证”的接口才能预注册；不得据此尝试相邻路径或其它操作。
 
 ### 类型契约
 
@@ -132,7 +132,7 @@ interface SourceAdapter {
 
 `FetchResult.kind === "ok"` 继续用现有 `html` 字段承载响应文本，避免扩大无关重构；螃蟹 `parseList` 把它作为 JSON 解析。协调器用 `{ url: adapter.entryUrl }` 构造入口 GET，随后逐页传递 `DiscoveryResult.request` 或 `nextPage` 返回的完整 `SourceRequest`。`options.method` 缺省为 GET。
 
-螃蟹 `nextPage` 同时读取当前响应的 `data.properties.pageToken` 和 `currentRequest.options.body` 中的 `pageIndex`，返回一个新的 `SourceRequest`，其 POST body 使用 `pageIndex + 1` 和新的 Token。适配器不得保存页码或 Token。协调器在单次来源刷新内部维护 `Set<method + url + body>` 请求指纹，拒绝重复请求；该 Set 是方法局部状态，因此并发刷新不会串页。
+螃蟹 `nextPage` 同时读取当前响应的 `data.properties.pageToken` 和 `currentRequest.options.body` 中的 `pageIndex`，返回一个新的 `SourceRequest`，其 POST body 使用 `pageIndex + 1` 和新的分页 Token。适配器不得把页码或 `pageToken` 保存为自身状态。协调器只允许把 `pageToken` 放在单次来源刷新的不可变 `SourceRequest` 中作为内存分页游标；不得把它写入 SQLite、日志、证据或配置，刷新结束后立即丢弃。协调器在单次来源刷新内部维护 `Set<method + url + body>` 请求指纹，拒绝重复请求；该 Set 是方法局部状态，因此并发刷新不会串页。
 
 螃蟹列表请求使用以下精确参数：
 
@@ -189,7 +189,8 @@ M7 目标名称必须是同一条证据中的精确 `M7战斗步枪-棱镜攻势
 ## 数据与安全边界
 
 - 只读取公开商品数据；
-- 不读取或保存 Cookie、Token、localStorage、密码或验证码；
+- 不读取或保存 Cookie、认证/会话 Token、localStorage、密码或验证码；
+- 公开响应中的 `pageToken` 只作为单次刷新期间的内存分页游标，不写入 SQLite、日志、证据或配置，刷新结束即丢弃；
 - 不复用用户登录态；
 - 不调用下单、收藏、议价、聊天或支付接口；
 - 不绕过验证码、访问控制或安全拦截；
