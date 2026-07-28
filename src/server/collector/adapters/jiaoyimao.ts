@@ -22,7 +22,6 @@ import {
 
 const BASE_URL = "https://www.jiaoyimao.com/";
 const BROAD_CATALOG_URL = APPROVED_JIAOYIMAO_REFERER;
-const M7_QUERY_EVIDENCE = "M7战斗步枪-棱镜攻势S2(极品)";
 const BROAD_SEARCH_CONDITION = {
   attr_7393855783477590029: {
     selectType: 2,
@@ -178,8 +177,7 @@ function mtopComponentText(data: Record<string, unknown>): string[] {
     stringField(data.publishName),
     stringField(data.serverName),
     ...sellPoints,
-    ...tags,
-    M7_QUERY_EVIDENCE
+    ...tags
   ].filter((value): value is string => value !== null);
 }
 
@@ -208,7 +206,8 @@ function parseMtopComponent(component: unknown): ListingSummary | null {
     url,
     title,
     rawText: [...new Set(mtopComponentText(data))].join("\n"),
-    priceCny
+    priceCny,
+    detailFetchHint: "m7_prism_query"
   };
 }
 

@@ -86,8 +86,8 @@ function parseHafCoins(text: string): number | null {
 function shouldFetchDetail(summary: ListingSummary): boolean {
   return (
     (summary.priceCny === null || summary.priceCny <= 6_000) &&
-    /M7/i.test(summary.rawText) &&
-    /棱镜/.test(summary.rawText)
+    (summary.detailFetchHint === "m7_prism_query" ||
+      (/M7/i.test(summary.rawText) && /棱镜/.test(summary.rawText)))
   );
 }
 

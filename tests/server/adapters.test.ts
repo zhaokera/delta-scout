@@ -260,7 +260,10 @@ describe("jiaoyimao adapter", () => {
     expect(parsed.items[0].rawText).toContain("威龙-凌霄戍卫");
     expect(parsed.items[0].rawText).toContain("不可二次实名");
     expect(parsed.items[0].rawText).toContain("赠永久包赔");
-    expect(parsed.items[0].rawText).toContain(
+    expect(parsed.items[0]).toMatchObject({
+      detailFetchHint: "m7_prism_query"
+    });
+    expect(parsed.items[0].rawText).not.toContain(
       "M7战斗步枪-棱镜攻势S2(极品)"
     );
     expect(jiaoyimaoAdapter.detailRequest(parsed.items[0])).toEqual({

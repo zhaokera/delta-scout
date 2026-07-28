@@ -1,7 +1,14 @@
 // @vitest-environment node
+import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../../src/server/db.js";
+import {
+  jiaoyimaoAdapter
+} from "../../src/server/collector/adapters/jiaoyimao.js";
 import { CollectionCoordinator } from "../../src/server/collector/coordinator.js";
+import {
+  APPROVED_JIAOYIMAO_MTOP_ENDPOINT
+} from "../../src/server/collector/mtop.js";
 import type {
   FetchResult,
   ListingDetail,
@@ -12,6 +19,10 @@ import type {
 } from "../../src/server/collector/types.js";
 import { ListingRepository } from "../../src/server/repository.js";
 import { makeListing } from "../domain/listingFactory.js";
+
+async function fixture(name: string): Promise<string> {
+  return readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
+}
 
 class MapFetcher implements PageFetcher {
   readonly calls: string[] = [];
@@ -27,6 +38,19 @@ class MapFetcher implements PageFetcher {
         error: "missing_fixture"
       }
     );
+  }
+}
+
+class RoutingFetcher implements PageFetcher {
+  readonly calls: SourceRequest[] = [];
+
+  constructor(
+    private readonly route: (request: SourceRequest) => FetchResult
+  ) {}
+
+  async fetchPage(request: SourceRequest): Promise<FetchResult> {
+    this.calls.push(request);
+    return this.route(request);
   }
 }
 
@@ -83,6 +107,92 @@ function fakeAdapter(
     }),
     ...overrides
   };
+}
+
+function jiaoyimaoSsrCard(
+  id: string,
+  visibleText = "普通账号"
+): string {
+  return `
+    <a
+      class="pcGoodsListItem"
+      href="https://www.jiaoyimao.com/jg2007840/${id}.html"
+      data-goodsid="${id}"
+      data-price="2000"
+    >
+      <span data-goods-name="${visibleText}"></span>
+      ${visibleText}
+    </a>
+  `;
+}
+
+function jiaoyimaoDetail(evidence: string): string {
+  return `
+    <div class="item-head-info-card">QQ双端帐号 安卓QQ</div>
+    <div class="cmp-elevator-container">${evidence}</div>
+  `;
+}
+
+async function collectJiaoyimaoMtopItem(detailEvidence: string) {
+  const page = JSON.parse(
+    await fixture("jiaoyimao-list-page-2.json")
+  ) as {
+    data: {
+      result: {
+        hasNextPage: string;
+        deliverComps: Array<{
+          type: string;
+          data?: {
+            goodsId?: string;
+            detailUrlSeo?: string;
+            sellPoints?: Array<{ desc: string }>;
+          };
+        }>;
+      };
+    };
+  };
+  page.data.result.hasNextPage = "false";
+  const product = page.data.result.deliverComps.find(
+    ({ type }) => type === "8"
+  )?.data;
+  if (!product?.goodsId || !product.detailUrlSeo) {
+    throw new Error("expected fixture product");
+  }
+  product.sellPoints = [
+    { desc: "威龙-凌霄戍卫" },
+    { desc: "巨浪(极品)" }
+  ];
+  const pageContent = JSON.stringify(page);
+  const entryHtml = jiaoyimaoSsrCard("1784550994519000");
+  const repository = new ListingRepository(createDatabase(":memory:"));
+  const fetcher = new RoutingFetcher((request) => {
+    if (request.url === jiaoyimaoAdapter.entryUrl) {
+      return ok(request.url, entryHtml);
+    }
+    if (request.url === APPROVED_JIAOYIMAO_MTOP_ENDPOINT) {
+      return ok(request.url, pageContent);
+    }
+    if (request.url === product.detailUrlSeo) {
+      return ok(request.url, jiaoyimaoDetail(detailEvidence));
+    }
+    return {
+      kind: "failed",
+      url: request.url,
+      error: "missing_fixture"
+    };
+  });
+
+  await new CollectionCoordinator({
+    adapters: [jiaoyimaoAdapter],
+    fetcher,
+    repository
+  }).refreshAll();
+
+  const listing = repository
+    .getListings()
+    .find(({ sourceListingId }) => sourceListingId === product.goodsId);
+  if (!listing) throw new Error("expected collected MTop listing");
+  return { fetcher, listing, detailUrl: product.detailUrlSeo };
 }
 
 describe("CollectionCoordinator", () => {
@@ -194,6 +304,111 @@ describe("CollectionCoordinator", () => {
     expect(detailRequest).not.toHaveBeenCalled();
     expect(repository.getListings("eligible")).toHaveLength(1);
   });
+
+  it("uses the MTop query hint for detail fetching without treating it as quality evidence", async () => {
+    const { fetcher, listing, detailUrl } =
+      await collectJiaoyimaoMtopItem(
+        "M7战斗步枪-棱镜攻势S2"
+      );
+
+    expect(fetcher.calls.map(({ url }) => url)).toContain(detailUrl);
+    expect(listing).toMatchObject({
+      m7PrismStatus: "unknown",
+      m7PrismQuality: null,
+      redSkins: ["威龙"],
+      julangStatus: "owned",
+      julangQuality: "极品"
+    });
+    expect(listing.originalDescription).not.toContain(
+      "M7战斗步枪-棱镜攻势S2(极品)"
+    );
+  });
+
+  it.each(["S", "A", "B", "C"] as const)(
+    "keeps exact MTop detail peak quality %s",
+    async (quality) => {
+      const { listing } = await collectJiaoyimaoMtopItem(
+        `M7战斗步枪-棱镜攻势S2(极品${quality})`
+      );
+
+      expect(listing).toMatchObject({
+        m7PrismStatus: "peak",
+        m7PrismQuality: quality,
+        redSkins: ["威龙"],
+        julangStatus: "owned",
+        julangQuality: "极品"
+      });
+    }
+  );
+
+  it("keeps MTop premium detail evidence out of conflict", async () => {
+    const { listing } = await collectJiaoyimaoMtopItem(
+      "M7战斗步枪-棱镜攻势S2(优品B)"
+    );
+
+    expect(listing).toMatchObject({
+      m7PrismStatus: "premium",
+      m7PrismQuality: null
+    });
+  });
+
+  it.each(["B", "C"] as const)(
+    "sends SSR peak quality %s through the real detail prefilter",
+    async (quality) => {
+      const id = quality === "B"
+        ? "1784550994519444"
+        : "1784550994519555";
+      const detailUrl =
+        `https://www.jiaoyimao.com/jg2007840/${id}.html`;
+      const entryHtml = jiaoyimaoSsrCard(
+        id,
+        `M7-极品${quality} 安卓QQ`
+      );
+      const terminalMtopPage = JSON.stringify({
+        ret: ["SUCCESS::调用成功"],
+        data: {
+          result: {
+            hasNextPage: "false",
+            deliverComps: []
+          }
+        }
+      });
+      const repository = new ListingRepository(createDatabase(":memory:"));
+      const fetcher = new RoutingFetcher((request) => {
+        if (request.url === jiaoyimaoAdapter.entryUrl) {
+          return ok(request.url, entryHtml);
+        }
+        if (request.url === APPROVED_JIAOYIMAO_MTOP_ENDPOINT) {
+          return ok(request.url, terminalMtopPage);
+        }
+        if (request.url === detailUrl) {
+          return ok(
+            request.url,
+            jiaoyimaoDetail(
+              `M7战斗步枪-棱镜攻势S2(极品${quality})`
+            )
+          );
+        }
+        return {
+          kind: "failed",
+          url: request.url,
+          error: "missing_fixture"
+        };
+      });
+
+      await new CollectionCoordinator({
+        adapters: [jiaoyimaoAdapter],
+        fetcher,
+        repository
+      }).refreshAll();
+
+      expect(fetcher.calls.map(({ url }) => url)).toContain(detailUrl);
+      expect(repository.getListings()[0]).toMatchObject({
+        m7PrismStatus: "peak",
+        m7PrismQuality: quality
+      });
+    }
+  );
 
   it("stops before fetching the same request fingerprint twice", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
