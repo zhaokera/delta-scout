@@ -19,10 +19,46 @@ const ENTRY_URL =
   "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?searchCondition=%7B%22attr_7393855783477590029%22%3A%7B%22selectType%22%3A2%2C%22multiSearchCondition%22%3Atrue%2C%22conditionList%22%3A%5B%5D%2C%22childCondition%22%3A%7B%22mp_7393855783922186253%22%3A%7B%22%E6%9E%81%E5%93%81%7CS%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CA%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CB%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CC%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%7D%7D%2C%22statConditionList%22%3A%5B%5D%2C%22conditionType%22%3A3%7D%7D&enforcePlat=2&newPage=true";
 const USER_AGENT =
   "DeltaAccountScout/0.1 (+local personal comparison tool)";
-const DATA =
-  '{"searchCondition":"{\\"conditionType\\":3}","page":"2"}';
+const SEARCH_CONDITION = JSON.stringify({
+  attr_7393855783477590029: {
+    selectType: 2,
+    multiSearchCondition: true,
+    conditionList: [],
+    childCondition: {
+      mp_7393855783922186253: {
+        "极品|S": ["M7战斗步枪-棱镜攻势S2"],
+        "极品|A": ["M7战斗步枪-棱镜攻势S2"],
+        "极品|B": ["M7战斗步枪-棱镜攻势S2"],
+        "极品|C": ["M7战斗步枪-棱镜攻势S2"]
+      }
+    },
+    statConditionList: [],
+    conditionType: 3
+  }
+});
+const GAME_CONDITION = JSON.stringify({
+  gameId: 2_007_840,
+  platformId: 2,
+  clientId: 110
+});
+const DATA = JSON.stringify({
+  searchCondition: SEARCH_CONDITION,
+  relateId: "10101",
+  pageSize: 16,
+  modelType: "h5",
+  queryType: 1,
+  goodsScene: "goods_search_new",
+  gameCondition: GAME_CONDITION,
+  categoryId: 8_845_004,
+  parentId: 8_845_003,
+  class:
+    "com.jym.delivery.hsf.dto.unifiedgoodslist.GoodsListQueryParams",
+  page: "2"
+});
+const SUCCESS_BODY =
+  '{"ret":["SUCCESS::调用成功"],"data":{"result":{"deliverComps":[],"hasNextPage":"false"}}}';
 
-function approvedRequest(): SourceRequest {
+function approvedRequest(body = DATA): SourceRequest {
   return {
     url: ENDPOINT,
     options: {
@@ -30,7 +66,7 @@ function approvedRequest(): SourceRequest {
       contentType: "application/x-www-form-urlencoded",
       origin: "https://www.jiaoyimao.com",
       referer: ENTRY_URL,
-      body: DATA,
+      body,
       anonymousMtop: {
         api: API,
         version: "1.0",
@@ -38,6 +74,14 @@ function approvedRequest(): SourceRequest {
       }
     }
   };
+}
+
+function mutateData(
+  mutate: (outer: Record<string, unknown>) => void
+): string {
+  const outer = JSON.parse(DATA) as Record<string, unknown>;
+  mutate(outer);
+  return JSON.stringify(outer);
 }
 
 function responseWithCookies(
@@ -193,14 +237,96 @@ describe("anonymous MTop whitelist", () => {
       })
     ).toBe(false);
   });
+
+  it.each([
+    [
+      "filter value",
+      mutateData((outer) => {
+        const search = JSON.parse(String(outer.searchCondition)) as {
+          attr_7393855783477590029: {
+            childCondition: {
+              mp_7393855783922186253: Record<string, string[]>;
+            };
+          };
+        };
+        search.attr_7393855783477590029.childCondition
+          .mp_7393855783922186253["极品|S"] = ["changed"];
+        outer.searchCondition = JSON.stringify(search);
+      })
+    ],
+    [
+      "extra second-real-name filter",
+      mutateData((outer) => {
+        const search = JSON.parse(
+          String(outer.searchCondition)
+        ) as Record<string, unknown>;
+        search.is_second_real_name = true;
+        outer.searchCondition = JSON.stringify(search);
+      })
+    ],
+    [
+      "game condition",
+      mutateData((outer) => {
+        const game = JSON.parse(String(outer.gameCondition)) as {
+          clientId: number;
+        };
+        game.clientId = 111;
+        outer.gameCondition = JSON.stringify(game);
+      })
+    ],
+    [
+      "category",
+      mutateData((outer) => {
+        outer.categoryId = 1;
+      })
+    ],
+    [
+      "class",
+      mutateData((outer) => {
+        outer.class = "com.jym.delivery.Other";
+      })
+    ],
+    [
+      "zero page",
+      mutateData((outer) => {
+        outer.page = "0";
+      })
+    ],
+    [
+      "non-integer page",
+      mutateData((outer) => {
+        outer.page = "2.5";
+      })
+    ],
+    [
+      "numeric page",
+      mutateData((outer) => {
+        outer.page = 2;
+      })
+    ],
+    [
+      "extra outer field",
+      mutateData((outer) => {
+        outer.extra = true;
+      })
+    ],
+    [
+      "missing fixed field",
+      mutateData((outer) => {
+        delete outer.goodsScene;
+      })
+    ]
+  ])("rejects a body with a changed %s", (_name, body) => {
+    expect(
+      isApprovedJiaoyimaoMtopRequest(approvedRequest(body))
+    ).toBe(false);
+  });
 });
 
 describe("PublicPageFetcher anonymous MTop transport", () => {
   it("performs an empty-token handshake and one signed retry", async () => {
     let now = 1_700_000_000_000;
     const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const successBody =
-      '{"ret":["SUCCESS::调用成功"],"data":{"result":{"deliverComps":[],"hasNextPage":"false"}}}';
     const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
       if (calls.length === 1) {
@@ -213,7 +339,7 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
           ]
         );
       }
-      return new Response(successBody, { status: 200 });
+      return new Response(SUCCESS_BODY, { status: 200 });
     });
     const fetcher = new PublicPageFetcher({
       fetchFn,
@@ -228,7 +354,7 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
       kind: "ok",
       url: ENDPOINT,
       status: 200,
-      html: successBody
+      html: SUCCESS_BODY
     });
     expect(fetchFn).toHaveBeenCalledTimes(2);
 
@@ -303,7 +429,7 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
           ]
         );
       }
-      return new Response('{"ret":["SUCCESS::调用成功"]}');
+      return new Response(SUCCESS_BODY);
     });
     const fetcher = new PublicPageFetcher({
       fetchFn,
@@ -352,6 +478,117 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
       error: "mtop_token_expired_without_replacement"
     });
     expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["ret-only success", '{"ret":["SUCCESS::调用成功"]}'],
+    [
+      "missing result",
+      '{"ret":["SUCCESS::调用成功"],"data":{}}'
+    ],
+    [
+      "missing deliverComps",
+      '{"ret":["SUCCESS::调用成功"],"data":{"result":{"hasNextPage":false}}}'
+    ],
+    [
+      "missing hasNextPage",
+      '{"ret":["SUCCESS::调用成功"],"data":{"result":{"deliverComps":[]}}}'
+    ],
+    [
+      "invalid hasNextPage",
+      '{"ret":["SUCCESS::调用成功"],"data":{"result":{"deliverComps":[],"hasNextPage":"yes"}}}'
+    ]
+  ])("rejects %s as an invalid success payload", async (_name, body) => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+          [
+            "_m_h5_tk=token_1; Path=/",
+            "_m_h5_tk_enc=enc; Path=/"
+          ]
+        )
+      )
+      .mockResolvedValueOnce(new Response(body));
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "invalid_mtop_response"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("never makes a fourth call when the final signed request fails", async () => {
+    let calls = 0;
+    const fetchFn = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+          [
+            "_m_h5_tk=first-token_1; Path=/",
+            "_m_h5_tk_enc=first-enc; Path=/"
+          ]
+        );
+      }
+      if (calls === 2) {
+        return responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EXPIRED::令牌过期"]}',
+          [
+            "_m_h5_tk=replacement-token_2; Path=/",
+            "_m_h5_tk_enc=replacement-enc; Path=/"
+          ]
+        );
+      }
+      if (calls === 3) throw new Error("socket reset");
+      return new Response(SUCCESS_BODY);
+    });
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "socket reset"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses one transient retry when the three-call budget allows it", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("socket reset"))
+      .mockResolvedValueOnce(
+        responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+          [
+            "_m_h5_tk=token_1; Path=/",
+            "_m_h5_tk_enc=enc; Path=/"
+          ]
+        )
+      )
+      .mockResolvedValueOnce(new Response(SUCCESS_BODY));
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({ kind: "ok" });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 
   it.each([

@@ -7,6 +7,41 @@ import {
 } from "../../src/server/collector/mtop.js";
 import type { SourceRequest } from "../../src/server/collector/types.js";
 
+const APPROVED_MTOP_BODY = JSON.stringify({
+  searchCondition: JSON.stringify({
+    attr_7393855783477590029: {
+      selectType: 2,
+      multiSearchCondition: true,
+      conditionList: [],
+      childCondition: {
+        mp_7393855783922186253: {
+          "极品|S": ["M7战斗步枪-棱镜攻势S2"],
+          "极品|A": ["M7战斗步枪-棱镜攻势S2"],
+          "极品|B": ["M7战斗步枪-棱镜攻势S2"],
+          "极品|C": ["M7战斗步枪-棱镜攻势S2"]
+        }
+      },
+      statConditionList: [],
+      conditionType: 3
+    }
+  }),
+  relateId: "10101",
+  pageSize: 16,
+  modelType: "h5",
+  queryType: 1,
+  goodsScene: "goods_search_new",
+  gameCondition: JSON.stringify({
+    gameId: 2_007_840,
+    platformId: 2,
+    clientId: 110
+  }),
+  categoryId: 8_845_004,
+  parentId: 8_845_003,
+  class:
+    "com.jym.delivery.hsf.dto.unifiedgoodslist.GoodsListQueryParams",
+  page: "2"
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -70,7 +105,7 @@ describe("PublicPageFetcher", () => {
           contentType: "application/x-www-form-urlencoded",
           origin: "https://www.jiaoyimao.com",
           referer: APPROVED_JIAOYIMAO_REFERER,
-          body: '{"page":"2"}',
+          body: APPROVED_MTOP_BODY,
           anonymousMtop: {
             api: "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist",
             version: "1.0",

@@ -15,6 +15,15 @@ const APPROVED_VERSION = "1.0";
 const APPROVED_APP_KEY = "12574478";
 const APPROVED_ORIGIN = "https://www.jiaoyimao.com";
 const APPROVED_CONTENT_TYPE = "application/x-www-form-urlencoded";
+const APPROVED_CLASS =
+  "com.jym.delivery.hsf.dto.unifiedgoodslist.GoodsListQueryParams";
+const APPROVED_PRISM_VALUE = "M7战斗步枪-棱镜攻势S2";
+const APPROVED_QUALITY_KEYS = [
+  "极品|S",
+  "极品|A",
+  "极品|B",
+  "极品|C"
+] as const;
 
 export function signMtop(
   token: string,
@@ -133,8 +142,141 @@ export function isApprovedJiaoyimaoMtopRequest(
     options.origin === APPROVED_ORIGIN &&
     options.referer === APPROVED_JIAOYIMAO_REFERER &&
     options.contentType === APPROVED_CONTENT_TYPE &&
-    options.body !== undefined
+    options.body !== undefined &&
+    isApprovedJiaoyimaoMtopData(options.body)
   );
+}
+
+export function isApprovedJiaoyimaoMtopData(data: string): boolean {
+  try {
+    const outer: unknown = JSON.parse(data);
+    if (
+      !isRecordWithExactKeys(outer, [
+        "searchCondition",
+        "relateId",
+        "pageSize",
+        "modelType",
+        "queryType",
+        "goodsScene",
+        "gameCondition",
+        "categoryId",
+        "parentId",
+        "class",
+        "page"
+      ]) ||
+      typeof outer.searchCondition !== "string" ||
+      typeof outer.gameCondition !== "string"
+    ) {
+      return false;
+    }
+
+    return (
+      isApprovedSearchCondition(outer.searchCondition) &&
+      outer.relateId === "10101" &&
+      outer.pageSize === 16 &&
+      outer.modelType === "h5" &&
+      outer.queryType === 1 &&
+      outer.goodsScene === "goods_search_new" &&
+      isApprovedGameCondition(outer.gameCondition) &&
+      outer.categoryId === 8_845_004 &&
+      outer.parentId === 8_845_003 &&
+      outer.class === APPROVED_CLASS &&
+      typeof outer.page === "string" &&
+      /^[1-9]\d*$/.test(outer.page)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isApprovedSearchCondition(value: string): boolean {
+  const search: unknown = JSON.parse(value);
+  if (
+    !isRecordWithExactKeys(search, [
+      "attr_7393855783477590029"
+    ])
+  ) {
+    return false;
+  }
+  const attribute = search.attr_7393855783477590029;
+  if (
+    !isRecordWithExactKeys(attribute, [
+      "selectType",
+      "multiSearchCondition",
+      "conditionList",
+      "childCondition",
+      "statConditionList",
+      "conditionType"
+    ]) ||
+    attribute.selectType !== 2 ||
+    attribute.multiSearchCondition !== true ||
+    !isEmptyArray(attribute.conditionList) ||
+    !isEmptyArray(attribute.statConditionList) ||
+    attribute.conditionType !== 3
+  ) {
+    return false;
+  }
+  const child = attribute.childCondition;
+  if (
+    !isRecordWithExactKeys(child, [
+      "mp_7393855783922186253"
+    ])
+  ) {
+    return false;
+  }
+  const qualities = child.mp_7393855783922186253;
+  if (
+    !isRecordWithExactKeys(
+      qualities,
+      [...APPROVED_QUALITY_KEYS]
+    )
+  ) {
+    return false;
+  }
+  return APPROVED_QUALITY_KEYS.every((key) => {
+    const selection = qualities[key];
+    return (
+      Array.isArray(selection) &&
+      selection.length === 1 &&
+      selection[0] === APPROVED_PRISM_VALUE
+    );
+  });
+}
+
+function isApprovedGameCondition(value: string): boolean {
+  const game: unknown = JSON.parse(value);
+  return (
+    isRecordWithExactKeys(game, [
+      "gameId",
+      "platformId",
+      "clientId"
+    ]) &&
+    game.gameId === 2_007_840 &&
+    game.platformId === 2 &&
+    game.clientId === 110
+  );
+}
+
+function isRecordWithExactKeys(
+  value: unknown,
+  keys: readonly string[]
+): value is Record<string, unknown> {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value)
+  ) {
+    return false;
+  }
+  const actualKeys = Object.keys(value);
+  return (
+    actualKeys.length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function isEmptyArray(value: unknown): value is [] {
+  return Array.isArray(value) && value.length === 0;
 }
 
 function splitCombinedSetCookie(header: string | null): string[] {

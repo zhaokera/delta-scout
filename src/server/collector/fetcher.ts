@@ -45,6 +45,10 @@ type MtopHttpResult =
   | MtopHttpResponse
   | Exclude<FetchResult, { kind: "ok" }>;
 
+interface MtopNetworkBudget {
+  remaining: number;
+}
+
 export class PublicPageFetcher implements PageFetcher {
   private readonly fetchFn: FetchFunction;
   private readonly now: () => number;
@@ -169,6 +173,7 @@ export class PublicPageFetcher implements PageFetcher {
     if (anonymousMtop === undefined || data === undefined) {
       return { kind: "failed", url, error: "unapproved_mtop_request" };
     }
+    const budget: MtopNetworkBudget = { remaining: 3 };
 
     const handshake = await this.sendMtopRequest(
       url,
@@ -176,14 +181,21 @@ export class PublicPageFetcher implements PageFetcher {
       data,
       "",
       undefined,
-      source
+      source,
+      budget,
+      true
     );
     if (handshake.kind !== "ok") return handshake;
-    const handshakeRet = parseMtopRet(handshake.html);
-    if (handshakeRet === null) {
+    const handshakePayload = parseMtopPayload(handshake.html);
+    if (handshakePayload === null) {
       return { kind: "failed", url, error: "invalid_mtop_response" };
     }
-    if (!hasMtopCode(handshakeRet, "FAIL_SYS_TOKEN_EMPTY")) {
+    if (
+      !hasMtopCode(
+        handshakePayload.ret,
+        "FAIL_SYS_TOKEN_EMPTY"
+      )
+    ) {
       return { kind: "failed", url, error: "mtop_handshake_failed" };
     }
 
@@ -198,14 +210,19 @@ export class PublicPageFetcher implements PageFetcher {
       data,
       session.token,
       session.cookieHeader,
-      source
+      source,
+      budget,
+      true
     );
     if (signed.kind !== "ok") return signed;
-    const signedRet = parseMtopRet(signed.html);
-    if (signedRet === null) {
+    const signedPayload = parseMtopPayload(signed.html);
+    if (signedPayload === null) {
       return { kind: "failed", url, error: "invalid_mtop_response" };
     }
-    if (signedRet.includes("SUCCESS::调用成功")) {
+    if (signedPayload.ret.includes("SUCCESS::调用成功")) {
+      if (!isApprovedMtopSuccess(signedPayload)) {
+        return { kind: "failed", url, error: "invalid_mtop_response" };
+      }
       return {
         kind: "ok",
         url,
@@ -213,7 +230,12 @@ export class PublicPageFetcher implements PageFetcher {
         html: signed.html
       };
     }
-    if (!hasMtopCode(signedRet, "FAIL_SYS_TOKEN_EXPIRED")) {
+    if (
+      !hasMtopCode(
+        signedPayload.ret,
+        "FAIL_SYS_TOKEN_EXPIRED"
+      )
+    ) {
       return { kind: "failed", url, error: "mtop_request_failed" };
     }
 
@@ -231,15 +253,20 @@ export class PublicPageFetcher implements PageFetcher {
       data,
       replacement.token,
       replacement.cookieHeader,
-      source
+      source,
+      budget,
+      false
     );
     if (finalAttempt.kind !== "ok") return finalAttempt;
-    const finalRet = parseMtopRet(finalAttempt.html);
-    if (finalRet === null) {
+    const finalPayload = parseMtopPayload(finalAttempt.html);
+    if (finalPayload === null) {
       return { kind: "failed", url, error: "invalid_mtop_response" };
     }
-    if (!finalRet.includes("SUCCESS::调用成功")) {
+    if (!finalPayload.ret.includes("SUCCESS::调用成功")) {
       return { kind: "failed", url, error: "mtop_request_failed" };
+    }
+    if (!isApprovedMtopSuccess(finalPayload)) {
+      return { kind: "failed", url, error: "invalid_mtop_response" };
     }
     return {
       kind: "ok",
@@ -255,8 +282,17 @@ export class PublicPageFetcher implements PageFetcher {
     data: string,
     token: string,
     cookieHeader: string | undefined,
-    source: SourceId
+    source: SourceId,
+    budget: MtopNetworkBudget,
+    allowTransientRetry: boolean
   ): Promise<MtopHttpResult> {
+    if (budget.remaining === 0) {
+      return {
+        kind: "failed",
+        url: resultUrl,
+        error: "mtop_request_budget_exhausted"
+      };
+    }
     await this.throttle(source);
     const timestamp = this.now();
     const signedUrl = buildMtopUrl(
@@ -277,13 +313,18 @@ export class PublicPageFetcher implements PageFetcher {
       ...(cookieHeader === undefined ? {} : { Cookie: cookieHeader })
     };
     let lastError = "request_failed";
+    const maximumAttempts = Math.min(
+      allowTransientRetry ? 2 : 1,
+      budget.remaining
+    );
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
       if (attempt > 0) await this.throttle(source);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
       try {
+        budget.remaining -= 1;
         const response = await this.fetchFn(signedUrl, {
           method: "POST",
           signal: controller.signal,
@@ -347,7 +388,12 @@ export class PublicPageFetcher implements PageFetcher {
   }
 }
 
-function parseMtopRet(html: string): string[] | null {
+interface ParsedMtopPayload {
+  readonly ret: string[];
+  readonly raw: Record<string, unknown>;
+}
+
+function parseMtopPayload(html: string): ParsedMtopPayload | null {
   try {
     const parsed: unknown = JSON.parse(html);
     if (
@@ -359,14 +405,36 @@ function parseMtopRet(html: string): string[] | null {
     ) {
       return null;
     }
-    return parsed.ret;
+    return { ret: parsed.ret, raw: parsed };
   } catch {
     return null;
   }
 }
 
+function isApprovedMtopSuccess(payload: ParsedMtopPayload): boolean {
+  const data = payload.raw.data;
+  if (!isRecord(data)) return false;
+  const result = data.result;
+  if (!isRecord(result) || !Array.isArray(result.deliverComps)) {
+    return false;
+  }
+  return (
+    typeof result.hasNextPage === "boolean" ||
+    result.hasNextPage === "true" ||
+    result.hasNextPage === "false"
+  );
+}
+
 function hasMtopCode(ret: readonly string[], code: string): boolean {
   return ret.some((entry) => entry.split("::", 1)[0] === code);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
 }
 
 function targetsJiaoyimaoMtopHost(url: string): boolean {
