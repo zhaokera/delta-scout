@@ -1,8 +1,11 @@
 import express, { type Express } from "express";
+import { z } from "zod";
+import { selectBalancedCandidatePool } from "../domain/candidatePool.js";
 import {
   EligibilitySchema,
-  type Listing
+  type SourceId
 } from "../domain/listing.js";
+import { compareRecommendations } from "../domain/score.js";
 import type { ListingRepository } from "./repository.js";
 
 interface RefreshCoordinator {
@@ -14,14 +17,35 @@ interface AppDependencies {
   coordinator: RefreshCoordinator;
 }
 
-function byRecommendation(left: Listing, right: Listing): number {
-  const scoreDifference =
-    (right.score?.total ?? -1) - (left.score?.total ?? -1);
-  if (scoreDifference !== 0) return scoreDifference;
-  if (right.confidence !== left.confidence) {
-    return right.confidence - left.confidence;
+const ListingViewSchema = z.enum(["pool", "all"]);
+
+function derivedSourceStatuses(repository: ListingRepository) {
+  const listings = repository.getListings();
+  const pool = selectBalancedCandidatePool(listings);
+  const eligibleCounts = new Map<SourceId, number>();
+  const candidateCounts = new Map<SourceId, number>();
+
+  for (const listing of listings) {
+    if (listing.eligibility === "eligible" && listing.score !== null) {
+      eligibleCounts.set(
+        listing.source,
+        (eligibleCounts.get(listing.source) ?? 0) + 1
+      );
+    }
   }
-  return (left.priceCny ?? Infinity) - (right.priceCny ?? Infinity);
+  for (const listing of pool) {
+    candidateCounts.set(
+      listing.source,
+      (candidateCounts.get(listing.source) ?? 0) + 1
+    );
+  }
+
+  return repository.getSourceStatuses().map((status) => ({
+    ...status,
+    eligibleCount: eligibleCounts.get(status.source) ?? 0,
+    candidateCount: candidateCounts.get(status.source) ?? 0,
+    completion: status.state === "success" ? "complete" : status.state
+  }));
 }
 
 export function createApp(dependencies?: AppDependencies): Express {
@@ -41,27 +65,45 @@ export function createApp(dependencies?: AppDependencies): Express {
   let refreshing = false;
 
   app.get("/api/sources", (_request, response) => {
-    response.json(repository.getSourceStatuses());
+    response.json(derivedSourceStatuses(repository));
   });
 
   app.get("/api/listings", (request, response) => {
+    const rawView = request.query.view;
     const rawStatus = request.query.status;
+    const parsedView =
+      rawView === undefined ? null : ListingViewSchema.safeParse(rawView);
+    const parsedStatus =
+      rawStatus === undefined ? null : EligibilitySchema.safeParse(rawStatus);
     if (
-      rawStatus !== undefined &&
-      (typeof rawStatus !== "string" ||
-        !EligibilitySchema.safeParse(rawStatus).success)
+      (parsedView !== null && !parsedView.success) ||
+      (parsedStatus !== null && !parsedStatus.success)
     ) {
       response.status(400).json({
-        error: "invalid_status",
-        message: "status 参数无效"
+        error: "invalid_listing_view",
+        message: "候选视图参数无效"
       });
       return;
     }
-    const status =
-      typeof rawStatus === "string"
-        ? EligibilitySchema.parse(rawStatus)
-        : undefined;
-    response.json(repository.getListings(status).sort(byRecommendation));
+    const status = parsedStatus?.data ?? "eligible";
+    const view =
+      parsedView?.data ?? (status === "eligible" ? "pool" : "all");
+    if (view === "pool" && status !== "eligible") {
+      response.status(400).json({
+        error: "invalid_listing_view",
+        message: "候选视图参数无效"
+      });
+      return;
+    }
+
+    const listings = repository.getListings(
+      view === "all" ? status : undefined
+    );
+    response.json(
+      view === "pool"
+        ? selectBalancedCandidatePool(listings)
+        : listings.sort(compareRecommendations)
+    );
   });
 
   app.get("/api/listings/:key", (request, response) => {
@@ -89,7 +131,7 @@ export function createApp(dependencies?: AppDependencies): Express {
       await coordinator.refreshAll();
       response.json({
         ok: true,
-        sources: repository.getSourceStatuses()
+        sources: derivedSourceStatuses(repository)
       });
     } catch {
       response.status(500).json({
