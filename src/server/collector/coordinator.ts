@@ -20,7 +20,8 @@ import type {
   ListingDetail,
   ListingSummary,
   PageFetcher,
-  SourceAdapter
+  SourceAdapter,
+  SourceRequest
 } from "./types.js";
 
 const MAX_PAGES = 3;
@@ -211,7 +212,7 @@ export class CollectionCoordinator {
 
   private async refreshSource(adapter: SourceAdapter): Promise<void> {
     const entry = await this.fetcher.fetchPage(
-      adapter.entryUrl,
+      { url: adapter.entryUrl },
       adapter.source
     );
     if (entry.kind !== "ok") {
@@ -232,13 +233,21 @@ export class CollectionCoordinator {
 
     const collected: CollectedSummary[] = [];
     const seen = new Set<string>();
-    let listUrl: string | null = discovery.url;
+    let listRequest: SourceRequest | null = discovery.request;
     let pages = 0;
     let detailCount = 0;
     let partial = false;
 
-    while (listUrl && pages < MAX_PAGES && collected.length < MAX_SUMMARIES) {
-      const page = await this.fetcher.fetchPage(listUrl, adapter.source);
+    while (
+      listRequest &&
+      pages < MAX_PAGES &&
+      collected.length < MAX_SUMMARIES
+    ) {
+      const currentRequest = listRequest;
+      const page = await this.fetcher.fetchPage(
+        currentRequest,
+        adapter.source
+      );
       if (page.kind !== "ok") {
         if (collected.length === 0) {
           this.failSource(adapter.source, page);
@@ -291,7 +300,7 @@ export class CollectionCoordinator {
           detailCount += 1;
           record.detailAttempted = true;
           const detailPage = await this.fetcher.fetchPage(
-            adapter.detailUrl(item),
+            adapter.detailRequest(item),
             adapter.source
           );
           if (detailPage.kind !== "ok") {
@@ -311,7 +320,7 @@ export class CollectionCoordinator {
         }
       }
 
-      const next = adapter.nextPage(page.html);
+      const next = adapter.nextPage(page.html, currentRequest);
       if (
         collected.length >= MAX_SUMMARIES ||
         (pages >= MAX_PAGES && next !== null)
@@ -319,7 +328,7 @@ export class CollectionCoordinator {
         if (next !== null) partial = true;
         break;
       }
-      listUrl = next;
+      listRequest = next;
     }
 
     const capturedAt = this.now();

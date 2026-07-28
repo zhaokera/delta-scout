@@ -134,7 +134,7 @@ export const panzhiAdapter: SourceAdapter = {
     }
     const url = findVisibleCatalogLink(html, BASE_URL, query);
     return url
-      ? { kind: "ok", url }
+      ? { kind: "ok", request: { url } }
       : { kind: "blocked", reason: "catalog_not_found" };
   },
 
@@ -170,11 +170,13 @@ export const panzhiAdapter: SourceAdapter = {
     const $ = load(html);
     const link = $("a[rel='next'][href]").first();
     const href = link.attr("href");
-    return href && isVisibleLink(link) ? absoluteUrl(BASE_URL, href) : null;
+    return href && isVisibleLink(link)
+      ? { url: absoluteUrl(BASE_URL, href) }
+      : null;
   },
 
-  detailUrl(summary) {
-    return summary.url;
+  detailRequest(summary) {
+    return { url: summary.url };
   },
 
   parseDetail

@@ -7,6 +7,64 @@ afterEach(() => {
 });
 
 describe("PublicPageFetcher", () => {
+  it("sends an approved JSON POST request without cookies or auth", async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBe('{"pageIndex":1}');
+      expect(headers.get("accept")).toBe(
+        "application/json, text/plain, */*"
+      );
+      expect(headers.get("content-type")).toBe("application/json");
+      expect(headers.get("origin")).toBe("https://www.pxb7.com");
+      expect(headers.get("referer")).toBe("https://www.pxb7.com/");
+      expect(headers.has("cookie")).toBe(false);
+      expect(headers.has("authorization")).toBe(false);
+      return new Response('{"success":true}', { status: 200 });
+    });
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+
+    await expect(
+      fetcher.fetchPage(
+        {
+          url: "https://api-pc.pxb7.com/list",
+          options: {
+            method: "POST",
+            accept: "application/json, text/plain, */*",
+            contentType: "application/json",
+            origin: "https://www.pxb7.com",
+            referer: "https://www.pxb7.com/",
+            body: '{"pageIndex":1}'
+          }
+        },
+        "pxb7"
+      )
+    ).resolves.toMatchObject({ kind: "ok" });
+  });
+
+  it("keeps URL-only requests as HTML GETs without a body", async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(init?.method ?? "GET").toBe("GET");
+      expect(init?.body).toBeUndefined();
+      expect(headers.get("accept")).toBe(
+        "text/html,application/xhtml+xml"
+      );
+      return new Response("<p>ok</p>");
+    });
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+
+    await expect(
+      fetcher.fetchPage({ url: "https://example.com" }, "panzhi")
+    ).resolves.toMatchObject({ kind: "ok" });
+  });
+
   it("sets an explicit user agent and recognizes captcha pages", async () => {
     const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("user-agent")).toContain(
@@ -17,7 +75,7 @@ describe("PublicPageFetcher", () => {
     const fetcher = new PublicPageFetcher({ fetchFn });
 
     await expect(
-      fetcher.fetchPage("https://example.com", "jiaoyimao")
+      fetcher.fetchPage({ url: "https://example.com" }, "jiaoyimao")
     ).resolves.toEqual({
       kind: "blocked",
       url: "https://example.com",
@@ -36,7 +94,7 @@ describe("PublicPageFetcher", () => {
     });
 
     await expect(
-      fetcher.fetchPage("https://example.com", "pxb7")
+      fetcher.fetchPage({ url: "https://example.com" }, "pxb7")
     ).resolves.toMatchObject({ kind: "ok" });
   });
 
@@ -51,7 +109,7 @@ describe("PublicPageFetcher", () => {
     });
 
     const result = await fetcher.fetchPage(
-      "https://example.com/list",
+      { url: "https://example.com/list" },
       "panzhi"
     );
     expect(result.kind).toBe("ok");
@@ -74,7 +132,7 @@ describe("PublicPageFetcher", () => {
     });
 
     const resultPromise = fetcher.fetchPage(
-      "https://example.com/slow",
+      { url: "https://example.com/slow" },
       "panzhi"
     );
     await vi.advanceTimersByTimeAsync(30_000);
@@ -96,9 +154,9 @@ describe("PublicPageFetcher", () => {
       }
     });
 
-    await fetcher.fetchPage("https://example.com/one", "panzhi");
+    await fetcher.fetchPage({ url: "https://example.com/one" }, "panzhi");
     now += 500;
-    await fetcher.fetchPage("https://example.com/two", "panzhi");
+    await fetcher.fetchPage({ url: "https://example.com/two" }, "panzhi");
     expect(sleeps).toEqual([1_500]);
   });
 
@@ -111,7 +169,7 @@ describe("PublicPageFetcher", () => {
       minimumIntervalMs: 0
     });
     await expect(
-      fetcher.fetchPage("https://example.com/huge", "pxb7")
+      fetcher.fetchPage({ url: "https://example.com/huge" }, "pxb7")
     ).resolves.toMatchObject({
       kind: "failed",
       error: "response_too_large"

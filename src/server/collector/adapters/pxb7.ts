@@ -16,7 +16,7 @@ export const pxb7Adapter: SourceAdapter = {
     }
     const url = findVisibleCatalogLink(html, BASE_URL, query);
     return url
-      ? { kind: "ok", url }
+      ? { kind: "ok", request: { url } }
       : { kind: "blocked", reason: "catalog_not_found" };
   },
 
@@ -33,8 +33,8 @@ export const pxb7Adapter: SourceAdapter = {
     return null;
   },
 
-  detailUrl(summary) {
-    return summary.url;
+  detailRequest(summary) {
+    return { url: summary.url };
   },
 
   parseDetail(html) {

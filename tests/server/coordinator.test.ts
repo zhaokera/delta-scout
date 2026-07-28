@@ -6,7 +6,8 @@ import type {
   FetchResult,
   ListingSummary,
   PageFetcher,
-  SourceAdapter
+  SourceAdapter,
+  SourceRequest
 } from "../../src/server/collector/types.js";
 import { ListingRepository } from "../../src/server/repository.js";
 import { makeListing } from "../domain/listingFactory.js";
@@ -16,12 +17,12 @@ class MapFetcher implements PageFetcher {
 
   constructor(private readonly responses: Map<string, FetchResult>) {}
 
-  async fetchPage(url: string): Promise<FetchResult> {
-    this.calls.push(url);
+  async fetchPage(request: SourceRequest): Promise<FetchResult> {
+    this.calls.push(request.url);
     return (
-      this.responses.get(url) ?? {
+      this.responses.get(request.url) ?? {
         kind: "failed",
-        url,
+        url: request.url,
         error: "missing_fixture"
       }
     );
@@ -51,11 +52,11 @@ function fakeAdapter(
     entryUrl: "https://source.test/",
     discoverCatalog: () => ({
       kind: "ok",
-      url: "https://source.test/list/1"
+      request: { url: "https://source.test/list/1" }
     }),
     parseList: () => ({ kind: "ok", items: [summary()] }),
     nextPage: () => null,
-    detailUrl: (item) => item.url,
+    detailRequest: (item) => ({ url: item.url }),
     parseDetail: () => ({
       kind: "ok",
       detail: {
@@ -88,7 +89,9 @@ describe("CollectionCoordinator", () => {
         items: [summary(html === "page-one" ? 1 : 2)]
       }),
       nextPage: (html) =>
-        html === "page-one" ? "https://source.test/list/2" : null
+        html === "page-one"
+          ? { url: "https://source.test/list/2" }
+          : null
     });
     const fetcher = new MapFetcher(
       new Map([
@@ -185,7 +188,7 @@ describe("CollectionCoordinator", () => {
     const detailParser = vi.fn(fakeAdapter().parseDetail);
     const adapter = fakeAdapter({
       parseList: () => ({ kind: "ok", items }),
-      nextPage: () => "https://source.test/list/2",
+      nextPage: () => ({ url: "https://source.test/list/2" }),
       parseDetail: detailParser
     });
     const responses = new Map<string, FetchResult>([

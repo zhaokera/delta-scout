@@ -121,7 +121,7 @@ export const jiaoyimaoAdapter: SourceAdapter = {
       ".pcGoodsListItem[data-goodsid][data-price][href]"
     ).first();
     return verifiedCard.length > 0 && isVisibleLink(verifiedCard)
-      ? { kind: "ok", url: FILTERED_CATALOG_URL }
+      ? { kind: "ok", request: { url: FILTERED_CATALOG_URL } }
       : { kind: "blocked", reason: "unverified_structure" };
   },
 
@@ -167,11 +167,13 @@ export const jiaoyimaoAdapter: SourceAdapter = {
     const $ = load(html);
     const link = $("a[rel='next'][href]").first();
     const href = link.attr("href");
-    return href && isVisibleLink(link) ? absoluteUrl(BASE_URL, href) : null;
+    return href && isVisibleLink(link)
+      ? { url: absoluteUrl(BASE_URL, href) }
+      : null;
   },
 
-  detailUrl(summary) {
-    return summary.url;
+  detailRequest(summary) {
+    return { url: summary.url };
   },
 
   parseDetail: extractDetail

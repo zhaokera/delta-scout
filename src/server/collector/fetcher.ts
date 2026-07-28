@@ -1,4 +1,8 @@
-import type { FetchResult, PageFetcher } from "./types.js";
+import type {
+  FetchResult,
+  PageFetcher,
+  SourceRequest
+} from "./types.js";
 import type { SourceId } from "../../domain/listing.js";
 
 type FetchFunction = (
@@ -49,7 +53,11 @@ export class PublicPageFetcher implements PageFetcher {
     this.lastAttemptBySource.set(source, this.now());
   }
 
-  async fetchPage(url: string, source: SourceId): Promise<FetchResult> {
+  async fetchPage(
+    request: SourceRequest,
+    source: SourceId
+  ): Promise<FetchResult> {
+    const { url, options } = request;
     let lastError = "request_failed";
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -59,12 +67,22 @@ export class PublicPageFetcher implements PageFetcher {
 
       try {
         const response = await this.fetchFn(url, {
+          method: options?.method ?? "GET",
           signal: controller.signal,
           headers: {
-            Accept: "text/html,application/xhtml+xml",
+            Accept:
+              options?.accept ?? "text/html,application/xhtml+xml",
+            ...(options?.contentType
+              ? { "Content-Type": options.contentType }
+              : {}),
+            ...(options?.origin ? { Origin: options.origin } : {}),
+            ...(options?.referer ? { Referer: options.referer } : {}),
             "User-Agent":
               "DeltaAccountScout/0.1 (+local personal comparison tool)"
           },
+          ...(options?.method === "POST" && options.body !== undefined
+            ? { body: options.body }
+            : {}),
           redirect: "follow"
         });
 

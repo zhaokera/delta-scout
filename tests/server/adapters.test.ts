@@ -17,7 +17,7 @@ describe("panzhi adapter", () => {
     );
     expect(result).toEqual({
       kind: "ok",
-      url: "https://www.pzds.com/goodsList/391/6"
+      request: { url: "https://www.pzds.com/goodsList/391/6" }
     });
   });
 
@@ -33,11 +33,17 @@ describe("panzhi adapter", () => {
       url: "https://www.pzds.com/goodsDetails/SA2PEAK/6",
       priceCny: 5288
     });
-    expect(panzhiAdapter.nextPage(html)).toBe(
-      "https://www.pzds.com/goodsList/391/6?page=2"
-    );
     expect(
-      panzhiAdapter.nextPage(await fixture("panzhi-list-page-2.html"))
+      panzhiAdapter.nextPage(html, {
+        url: "https://www.pzds.com/goodsList/391/6"
+      })
+    ).toEqual({
+      url: "https://www.pzds.com/goodsList/391/6?page=2"
+    });
+    expect(
+      panzhiAdapter.nextPage(await fixture("panzhi-list-page-2.html"), {
+        url: "https://www.pzds.com/goodsList/391/6?page=2"
+      })
     ).toBeNull();
   });
 
@@ -153,7 +159,7 @@ describe("jiaoyimao adapter", () => {
     );
     expect(discovery).toEqual({
       kind: "ok",
-      url: jiaoyimaoAdapter.entryUrl
+      request: { url: jiaoyimaoAdapter.entryUrl }
     });
 
     const result = jiaoyimaoAdapter.parseList(html);
@@ -176,7 +182,11 @@ describe("jiaoyimao adapter", () => {
     expect(result.items[2].rawText).toContain(
       "M7棱镜攻势(极品A)"
     );
-    expect(jiaoyimaoAdapter.nextPage(html)).toBeNull();
+    expect(
+      jiaoyimaoAdapter.nextPage(html, {
+        url: jiaoyimaoAdapter.entryUrl
+      })
+    ).toBeNull();
   });
 
   it("parses only the current product detail and safety report", async () => {
@@ -228,7 +238,7 @@ describe("blocked source adapters", () => {
       )
     ).toEqual({
       kind: "ok",
-      url: "https://www.pxb7.com/buy/10371/1"
+      request: { url: "https://www.pxb7.com/buy/10371/1" }
     });
     expect(
       pxb7Adapter.parseList(await fixture("pxb7-list.html"))

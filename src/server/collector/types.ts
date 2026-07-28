@@ -13,6 +13,7 @@ export interface ListingSummary {
   title: string;
   rawText: string;
   priceCny: number | null;
+  embeddedDetail?: ListingDetail;
 }
 
 export interface ListingDetail {
@@ -28,8 +29,22 @@ export interface ListingDetail {
   banNotes: string[];
 }
 
+export interface PublicRequestOptions {
+  method?: "GET" | "POST";
+  accept?: string;
+  contentType?: string;
+  origin?: string;
+  referer?: string;
+  body?: string;
+}
+
+export interface SourceRequest {
+  url: string;
+  options?: PublicRequestOptions;
+}
+
 export type DiscoveryResult =
-  | { kind: "ok"; url: string }
+  | { kind: "ok"; request: SourceRequest }
   | { kind: "blocked"; reason: string };
 
 export type ListParseResult =
@@ -45,8 +60,11 @@ export interface SourceAdapter {
   entryUrl: string;
   discoverCatalog(html: string, query: string): DiscoveryResult;
   parseList(html: string): ListParseResult;
-  nextPage(html: string): string | null;
-  detailUrl(summary: ListingSummary): string;
+  nextPage(
+    html: string,
+    currentRequest: SourceRequest
+  ): SourceRequest | null;
+  detailRequest(summary: ListingSummary): SourceRequest;
   parseDetail(html: string, summary: ListingSummary): DetailParseResult;
 }
 
@@ -56,5 +74,8 @@ export type FetchResult =
   | { kind: "failed"; url: string; error: string };
 
 export interface PageFetcher {
-  fetchPage(url: string, source: SourceId): Promise<FetchResult>;
+  fetchPage(
+    request: SourceRequest,
+    source: SourceId
+  ): Promise<FetchResult>;
 }
