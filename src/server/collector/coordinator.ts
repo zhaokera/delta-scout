@@ -55,7 +55,9 @@ function inferService(text: string): Service {
 }
 
 function parseTotalAssetsM(text: string): number | null {
-  const match = text.match(/总资产[】:\s]*([\d.]+)\s*(亿|[mM]|万|[wW])?/);
+  const match = text.match(
+    /总资产[】：:\s]*([\d.]+)\s*(亿|[mM]|万|[wW])?/
+  );
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return null;
@@ -68,7 +70,9 @@ function parseTotalAssetsM(text: string): number | null {
 }
 
 function parseHafCoins(text: string): number | null {
-  const match = text.match(/哈夫币[】:\s]*([\d.]+)\s*(亿|万|[wW])?/);
+  const match = text.match(
+    /哈夫币[】：:\s]*([\d.]+)\s*(亿|万|[wW])?/
+  );
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return null;

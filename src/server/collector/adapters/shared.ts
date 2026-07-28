@@ -34,7 +34,7 @@ export function parseChineseAmount(
   label: string
 ): number | null {
   const match = text.match(
-    new RegExp(`${label}[】:\\s]*([\\d.]+)\\s*(亿|[wW万]|[mM])?`)
+    new RegExp(`${label}[】：:\\s]*([\\d.]+)\\s*(亿|[wW万]|[mM])?`)
   );
   if (!match) return null;
   const value = Number(match[1]);

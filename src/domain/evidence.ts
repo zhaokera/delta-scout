@@ -136,12 +136,19 @@ export function parseM7(
       } => match !== null
     );
 
-  const unique = new Set(matches.map(({ status }) => status));
+  const explicitMatches = matches.filter(
+    ({ status: candidate }) => candidate !== "unknown"
+  );
+  const unique = new Set(
+    explicitMatches.map(({ status: candidate }) => candidate)
+  );
   const status =
     unique.has("conflicting") || unique.size > 1
       ? "conflicting"
-      : (matches[0]?.status ?? "unknown");
-  const peakQualities = matches.map(({ quality }) => quality);
+      : (explicitMatches[0]?.status ?? "unknown");
+  const peakQualities = explicitMatches
+    .filter(({ status: candidate }) => candidate === "peak")
+    .map(({ quality: candidate }) => candidate);
   const quality =
     status === "peak" &&
     peakQualities.length > 0 &&

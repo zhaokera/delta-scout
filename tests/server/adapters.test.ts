@@ -230,6 +230,20 @@ describe("jiaoyimao adapter", () => {
 });
 
 describe("pxb7 adapter", () => {
+  it("ignores an earlier same-name promo link and verifies the exact catalog", () => {
+    const result = pxb7Adapter.discoverCatalog(
+      `
+        <a href="/specialArea/5?activeGameId=10013">三角洲行动</a>
+        <a href="/buy/10371/1">三角洲行动</a>
+      `,
+      "三角洲行动"
+    );
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected PXB discovery");
+    expect(result.request.url).toContain("selectSearchPageList");
+  });
+
   it("discovers Delta Force and builds the exact approved search request", async () => {
     const result = pxb7Adapter.discoverCatalog(
       await fixture("pxb7-home.html"),
@@ -383,7 +397,8 @@ describe("pxb7 adapter", () => {
     ["bizProd", 2],
     ["gameName", 10371],
     ["productUniqueNo", 99],
-    ["guarantee", "平台验号"]
+    ["guarantee", "平台验号"],
+    ["attrNameList", "QQ登录"]
   ])("blocks an invalid %s field for the whole page", async (field, value) => {
     const response = JSON.parse(
       await fixture("pxb7-list-page-1.json")

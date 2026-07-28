@@ -157,7 +157,7 @@ Origin: https://www.pxb7.com
 Referer: https://www.pxb7.com/
 ```
 
-响应必须满足 `success === true`、`data` 为对象且 `data.list` 为数组。商品只读取以下已验证字段：`productId`、`bizProd`、`gameId`、`gameName`、`price`、`showTitle`、`productUniqueNo`、`guarantee` 和 `data.properties.pageToken`。现场确认的类型为：`productId/gameId/gameName/showTitle/productUniqueNo` 是字符串，`bizProd` 当前为字符串 `"1"`（兼容数字 `1`），`price/guarantee` 是有限数字，`properties` 是对象且存在的 `pageToken` 必须是字符串。无效 JSON、`success !== true`、列表内任一商品字段类型不符、存在但类型错误的 `pageToken` 或根字段结构不符都返回 `blocked/structure_changed`，不得把它们当成空成功，也不得用成功空快照覆盖最近一次有效快照。
+响应必须满足 `success === true`、`data` 为对象且 `data.list` 为数组。商品只读取以下已验证字段：`productId`、`bizProd`、`gameId`、`gameName`、`price`、`showTitle`、`attrNameList`、`productUniqueNo`、`guarantee` 和 `data.properties.pageToken`。现场确认的类型为：`productId/gameId/gameName/showTitle/productUniqueNo` 是字符串，`attrNameList` 存在时是字符串数组，`bizProd` 当前为字符串 `"1"`（兼容数字 `1`），`price/guarantee` 是有限数字，`properties` 是对象且存在的 `pageToken` 必须是字符串。无效 JSON、`success !== true`、列表内任一商品字段类型不符、存在但类型错误的 `pageToken` 或根字段结构不符都返回 `blocked/structure_changed`，不得把它们当成空成功，也不得用成功空快照覆盖最近一次有效快照。
 
 适配器把每个 JSON 商品转换为统一摘要：
 
@@ -165,7 +165,7 @@ Referer: https://www.pxb7.com/
 - `price / 100` → 人民币价格；
 - `showTitle` → 分段后的原始证据，并从目标 M7 条目中提取 `m7PrismQuality: S | A | B | C | null`；
 - `productId` 必须是纯数字字符串，`bizProd` 必须是字符串或数字 `1`，二者构造绝对链接 `https://www.pxb7.com/product/{productId}/1`；只允许同主机正常重定向；
-- 同一商品明确出现 `QQ登录` 时直接写入 `loginPlatform: "qq"` 和 `service: "official"`；明确出现 `微信登录` 时写入 `loginPlatform: "wechat"` 和 `service: "unknown"`；两者同时出现或都未出现时均为未知；
+- `showTitle` 与结构化 `attrNameList` 合并为证据；其中明确出现 `QQ登录` 时直接写入 `loginPlatform: "qq"` 和 `service: "official"`，明确出现 `微信登录` 时写入 `loginPlatform: "wechat"` 和 `service: "unknown"`，两者同时出现或都未出现时均为未知；
 - `总资产`、`哈夫币`、`可二次实名`等字段从证据解析；
 - `guarantee` 不能直接等同于找回包赔，除非文本明确写出包赔，否则保持未知。
 

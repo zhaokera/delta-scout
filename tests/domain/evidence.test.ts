@@ -82,6 +82,20 @@ describe("M7 棱镜攻势 evidence", () => {
       quality: undefined
     });
   });
+
+  it("keeps explicit peak quality when an inventory record repeats it without quality", () => {
+    const result = parseM7(
+      toEvidenceRecords([
+        "【传说典藏皮肤】M7战斗步枪-棱镜攻势S2(极品C)",
+        "【步枪皮肤】M7战斗步枪-棱镜攻势S2"
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: "peak",
+      quality: "C"
+    });
+  });
 });
 
 describe("character red-skin evidence", () => {

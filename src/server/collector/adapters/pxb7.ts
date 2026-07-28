@@ -1,3 +1,4 @@
+import { load } from "cheerio";
 import { z } from "zod";
 import { toEvidenceRecords } from "../../../domain/evidence.js";
 import type {
@@ -6,8 +7,9 @@ import type {
   SourceRequest
 } from "../types.js";
 import {
-  findVisibleCatalogLink,
+  compactText,
   isBlockedHtml,
+  isVisibleLink,
   parseChineseAmount
 } from "./shared.js";
 
@@ -24,6 +26,7 @@ const ProductSchema = z
     gameName: z.literal("三角洲行动"),
     price: z.number().finite().nonnegative(),
     showTitle: z.string().min(1),
+    attrNameList: z.array(z.string()).optional(),
     productUniqueNo: z.string().min(1),
     guarantee: z.number().finite()
   })
@@ -128,7 +131,13 @@ function parseLogin(text: string): Pick<
 }
 
 function embeddedDetail(product: Product): ListingDetail {
-  const evidence = splitShowTitle(product.showTitle);
+  const titleEvidence = splitShowTitle(product.showTitle);
+  const evidence = toEvidenceRecords([
+    ...new Set([
+      ...(product.attrNameList ?? []),
+      ...titleEvidence.map(({ text }) => text)
+    ])
+  ]);
   const text = evidence.map((record) => record.text).join("\n");
   const totalAssets = parseChineseAmount(text, "总资产");
   const cannotSecond = /不可二次实名/.test(text);
@@ -167,15 +176,20 @@ export const pxb7Adapter: SourceAdapter = {
     if (isBlockedHtml(html)) {
       return { kind: "blocked", reason: "captcha_required" };
     }
-    const catalogUrl = findVisibleCatalogLink(html, BASE_URL, query);
-    if (!catalogUrl) {
-      return { kind: "blocked", reason: "catalog_not_found" };
-    }
-    const catalog = new URL(catalogUrl);
-    if (
-      catalog.origin !== BASE_URL.slice(0, -1) ||
-      catalog.pathname !== "/buy/10371/1"
-    ) {
+    const $ = load(html);
+    let foundCatalog = false;
+    $("a[href]").each((_, node) => {
+      if (foundCatalog) return;
+      const link = $(node);
+      const href = link.attr("href");
+      if (!href || !isVisibleLink(link)) return;
+      const candidate = new URL(href, BASE_URL);
+      foundCatalog =
+        candidate.origin === BASE_URL.slice(0, -1) &&
+        candidate.pathname === "/buy/10371/1" &&
+        compactText(link.text()).includes(query);
+    });
+    if (!foundCatalog) {
       return { kind: "blocked", reason: "catalog_not_found" };
     }
     return { kind: "ok", request: makeListRequest(1) };
