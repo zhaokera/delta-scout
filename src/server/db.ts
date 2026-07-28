@@ -28,6 +28,22 @@ export function createDatabase(path: string): DatabaseSync {
     );
   `);
 
+  const columns = new Set(
+    (
+      database.prepare("PRAGMA table_info(source_status)").all() as {
+        name: string;
+      }[]
+    ).map(({ name }) => name)
+  );
+  if (!columns.has("pages_scanned")) {
+    database.exec(
+      "ALTER TABLE source_status ADD COLUMN pages_scanned INTEGER NOT NULL DEFAULT 0"
+    );
+  }
+  if (!columns.has("stop_reason")) {
+    database.exec("ALTER TABLE source_status ADD COLUMN stop_reason TEXT");
+  }
+
   const seed = database.prepare(`
     INSERT INTO source_status (source, state, item_count)
     VALUES (?, 'idle', 0)

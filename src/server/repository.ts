@@ -19,6 +19,8 @@ export interface SourceStatus {
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   itemCount: number;
+  pagesScanned: number;
+  stopReason: string | null;
   error: string | null;
   stale: boolean;
 }
@@ -33,7 +35,14 @@ interface SourceStatusRow {
   last_attempt_at: string | null;
   last_success_at: string | null;
   item_count: number;
+  pages_scanned: number;
+  stop_reason: string | null;
   error: string | null;
+}
+
+interface ScanMetadata {
+  pagesScanned: number;
+  stopReason: string | null;
 }
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
@@ -45,7 +54,8 @@ export class ListingRepository {
     source: SourceId,
     listings: Listing[],
     state: "success" | "partial",
-    now = new Date()
+    now = new Date(),
+    metadata: ScanMetadata = { pagesScanned: 0, stopReason: null }
   ): void {
     const timestamp = now.toISOString();
     try {
@@ -73,10 +83,20 @@ export class ListingRepository {
               last_attempt_at = ?,
               last_success_at = ?,
               item_count = ?,
+              pages_scanned = ?,
+              stop_reason = ?,
               error = NULL
           WHERE source = ?
         `)
-        .run(state, timestamp, timestamp, listings.length, source);
+        .run(
+          state,
+          timestamp,
+          timestamp,
+          listings.length,
+          metadata.pagesScanned,
+          metadata.stopReason,
+          source
+        );
       this.database.exec("COMMIT");
     } catch (error) {
       try {
@@ -97,10 +117,14 @@ export class ListingRepository {
     this.database
       .prepare(`
         UPDATE source_status
-        SET state = ?, last_attempt_at = ?, error = ?
+        SET state = ?,
+            last_attempt_at = ?,
+            pages_scanned = 0,
+            stop_reason = ?,
+            error = ?
         WHERE source = ?
       `)
-      .run(state, now.toISOString(), error, source);
+      .run(state, now.toISOString(), error, error, source);
   }
 
   getListings(eligibility?: Eligibility): Listing[] {
@@ -164,6 +188,8 @@ export class ListingRepository {
       lastAttemptAt: row.last_attempt_at,
       lastSuccessAt: row.last_success_at,
       itemCount: row.item_count,
+      pagesScanned: row.pages_scanned,
+      stopReason: row.stop_reason,
       error: row.error,
       stale:
         row.last_success_at !== null &&
