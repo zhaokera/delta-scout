@@ -68,12 +68,13 @@
 - `source`、`sourceListingId`、`url`、`title`、`capturedAt`、`evidence`；
 - `priceCny`、`loginPlatform`、`service`、`totalAssetsM`、`hafCoins`；
 - `m7PrismStatus`：`absent`、`unknown`、`premium`、`peak`、`conflicting`；
+- `m7PrismQuality`：目标皮肤明确为极品时记录 `S`、`A`、`B` 或 `C`，未明确等级或证据冲突时为 `null`；
 - `redSkins`：已命名角色红皮数组，另存 `redSkinCount`；
 - `julangStatus`：`unknown`、`absent`、`owned`，及可选 `julangQuality`；
 - `realNameStatus`、`secondRealNameAvailable`、`recoveryCoverage`、`verificationAt`；
 - `parseWarnings` 和 `confidence`。
 
-文本解析以明确词组和可追溯证据为准。跨平台规范目标是 M7 的 `棱镜攻势` 皮肤；允许同一条证据中出现 `M7棱镜攻势`、`M7-棱镜攻势`、`M7战斗步枪-棱镜攻势`，以及这些形式的可选 `S2` 后缀、空格和中英文标点。其它只包含“棱镜”的 M7 皮肤名不能命中。M7 的候选证据必须来自同一条结构化字段，或同一条由页面换行、列表项或字段边界分割出的文本记录；目标名后同一条目内出现 `极品` 才映射为 `peak`。同一记录出现 `无棱镜攻势`、`未拥有棱镜攻势` 或 `非极品` 时映射为 `absent`；仅出现 `优品` 映射为 `premium`；同一目标条目同时包含正向 `极品` 与 `优品`/否定词映射为 `conflicting`；只提到目标而没有明确品质映射为 `unknown`。不同记录中的“极品”绝不与 M7 条目拼接。
+文本解析以明确词组和可追溯证据为准。跨平台规范目标是 M7 的 `棱镜攻势` 皮肤；允许同一条证据中出现 `M7棱镜攻势`、`M7-棱镜攻势`、`M7战斗步枪-棱镜攻势`，以及这些形式的可选 `S2` 后缀、空格和中英文标点。其它只包含“棱镜”的 M7 皮肤名不能命中。M7 的候选证据必须来自同一条结构化字段，或同一条由页面换行、列表项或字段边界分割出的文本记录；只有紧随目标名、可被括号或冒号包裹的 `极品` 才映射为 `peak`，可选后缀 `S`、`A`、`B`、`C` 写入 `m7PrismQuality`。同一目标条目出现 `无棱镜攻势`、`未拥有棱镜攻势` 或紧随目标名的 `非极品` 时映射为 `absent`；紧随目标名的 `优品` 映射为 `premium`；同一目标条目同时包含正向 `极品` 与 `优品`/否定词映射为 `conflicting`；只提到目标而没有紧随其后的明确品质映射为 `unknown`。其它武器后面的“极品”和不同记录中的“极品”绝不与 M7 条目拼接。
 
 角色红皮只有在同一结构化字段，或同一文本行中同时出现角色名与 `红皮`/`红色品质` 时才记录角色名；卖家仅写“有红皮”时只记录数量未知和原文证据，绝不把普通角色皮肤推断为红皮。`无巨浪` 或 `未拥有巨浪` 映射为 `absent`；其它包含精确词 `巨浪` 的记录才映射为 `owned`，品质只取同一字段或同一文本行内的明确品质词。
 

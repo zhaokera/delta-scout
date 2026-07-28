@@ -157,13 +157,13 @@ Origin: https://www.pxb7.com
 Referer: https://www.pxb7.com/
 ```
 
-响应必须满足 `success === true`、`data` 为对象且 `data.list` 为数组。商品只读取以下已验证字段：`productId`、`bizProd`、`gameId`、`gameName`、`price`、`showTitle`、`productUniqueNo`、`guarantee` 和 `data.properties.pageToken`。无效 JSON、`success !== true` 或字段类型不符都返回 `blocked/structure_changed`，不得把它们当成空成功。
+响应必须满足 `success === true`、`data` 为对象且 `data.list` 为数组。商品只读取以下已验证字段：`productId`、`bizProd`、`gameId`、`gameName`、`price`、`showTitle`、`productUniqueNo`、`guarantee` 和 `data.properties.pageToken`。现场确认的类型为：`productId/gameId/gameName/showTitle/productUniqueNo` 是字符串，`bizProd` 当前为字符串 `"1"`（兼容数字 `1`），`price/guarantee` 是有限数字，`properties` 是对象且存在的 `pageToken` 必须是字符串。无效 JSON、`success !== true`、列表内任一商品字段类型不符、存在但类型错误的 `pageToken` 或根字段结构不符都返回 `blocked/structure_changed`，不得把它们当成空成功，也不得用成功空快照覆盖最近一次有效快照。
 
 适配器把每个 JSON 商品转换为统一摘要：
 
 - `productId` → 来源商品 ID；
 - `price / 100` → 人民币价格；
-- `showTitle` → 分段后的原始证据；
+- `showTitle` → 分段后的原始证据，并从目标 M7 条目中提取 `m7PrismQuality: S | A | B | C | null`；
 - `productId` 必须是纯数字字符串，`bizProd` 必须是字符串或数字 `1`，二者构造绝对链接 `https://www.pxb7.com/product/{productId}/1`；只允许同主机正常重定向；
 - 同一商品明确出现 `QQ登录` 时直接写入 `loginPlatform: "qq"` 和 `service: "official"`；明确出现 `微信登录` 时写入 `loginPlatform: "wechat"` 和 `service: "unknown"`；两者同时出现或都未出现时均为未知；
 - `总资产`、`哈夫币`、`可二次实名`等字段从证据解析；
@@ -175,7 +175,7 @@ Referer: https://www.pxb7.com/
 
 螃蟹的 `showTitle` 可能超过单条证据 2000 字限制。适配器必须按页面中的栏目边界拆成多条证据，再交给现有解析器，避免后半段的 M7、巨浪或资产信息被截断。
 
-M7 目标名称必须是同一条证据中的精确 `M7战斗步枪-棱镜攻势`，允许可选的 `S2` 后缀和中英文括号。紧随其后的品质包含 `极品` 才映射为 `peak`；包含 `优品` 映射为 `premium`。`M7棱镜幻影`、其它仅含“棱镜”的 M7 名称、其它武器的极品和跨证据拼接都不能成为 `peak`。搜索词中的 `S2` 只是目标皮肤在螃蟹当前数据中的名称变体，不新增独立硬条件。
+M7 目标名称必须是同一条证据中的精确 `M7战斗步枪-棱镜攻势`，允许可选的 `S2` 后缀和中英文括号。只有紧随目标名、可被括号或冒号包裹的品质包含 `极品` 才映射为 `peak`；后缀 `S`、`A`、`B`、`C` 分别写入 `m7PrismQuality`；紧随目标名的 `优品` 映射为 `premium`。`M7棱镜幻影`、其它仅含“棱镜”的 M7 名称、同一长句中其它武器的极品和跨证据拼接都不能成为 `peak`。搜索词中的 `S2` 只是目标皮肤在螃蟹当前数据中的名称变体，不新增独立硬条件。
 
 硬条件仍由领域层统一判断：
 
@@ -230,7 +230,7 @@ M7 目标名称必须是同一条证据中的精确 `M7战斗步枪-棱镜攻势
 - 当连续存在有效下一页 Token 时，一次刷新读取 3 页、最多 48 个不重复商品；库存提前结束时保存实际数量；
 - 离线三页验证 fixture 中合格候选不少于 20 条；实时库存只展示实际合格数量；
 - 每个合格候选都满足 QQ、价格不超过 6000、M7 棱镜攻势极品；
-- 详情面板展示 M7 品质、识别出的角色红皮、巨浪状态、资产和实名字段；
+- 候选表和详情面板展示 M7 极品等级（如 `极品A`）、识别出的角色红皮、巨浪状态、资产和实名字段；
 - 点击原平台链接能打开正确的螃蟹商品页；
 - 交易猫和盼之现有行为无回归。
 
