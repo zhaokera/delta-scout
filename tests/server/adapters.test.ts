@@ -13,6 +13,14 @@ async function fixture(name: string): Promise<string> {
   return readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
 }
 
+describe("pagination progress policy", () => {
+  it("enables strict progress only for Jiaoyimao", () => {
+    expect(jiaoyimaoAdapter.strictPaginationProgress).toBe(true);
+    expect(panzhiAdapter.strictPaginationProgress).toBeUndefined();
+    expect(pxb7Adapter.strictPaginationProgress).toBeUndefined();
+  });
+});
+
 describe("panzhi adapter", () => {
   it("discovers the visible Delta Force catalog link", async () => {
     const result = panzhiAdapter.discoverCatalog(

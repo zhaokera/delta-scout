@@ -350,6 +350,7 @@ function extractDetail(
 export const jiaoyimaoAdapter: SourceAdapter = {
   source: "jiaoyimao",
   entryUrl: BROAD_CATALOG_URL,
+  strictPaginationProgress: true,
 
   discoverCatalog(html, _query) {
     if (isBlockedHtml(html)) {

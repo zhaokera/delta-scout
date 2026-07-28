@@ -737,6 +737,29 @@ describe("App shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("labels stalled pagination as incomplete", async () => {
+    const api = makeApi({
+      sources: [
+        makeSourceStatus({
+          source: "jiaoyimao",
+          state: "partial",
+          pagesScanned: 2,
+          stopReason: "pagination_stalled",
+          completion: "partial"
+        })
+      ]
+    });
+
+    render(<App api={api} />);
+
+    const source = (await screen.findByText("交易猫")).closest("article");
+    expect(source).not.toBeNull();
+    expect(within(source!).getByText("部分完成")).toBeInTheDocument();
+    expect(
+      within(source!).getByText("分页未推进，结果不完整")
+    ).toBeInTheDocument();
+  });
+
   it("loads source states and opens complete candidate evidence", async () => {
     const listing = makeListing({
       key: "panzhi:SA2PEAK",

@@ -66,6 +66,7 @@ export type DetailParseResult =
 export interface SourceAdapter {
   source: SourceId;
   entryUrl: string;
+  readonly strictPaginationProgress?: boolean;
   discoverCatalog(html: string, query: string): DiscoveryResult;
   parseList(html: string): ListParseResult;
   nextPage(

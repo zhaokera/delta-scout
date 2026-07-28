@@ -62,6 +62,7 @@ interface RefreshSourceResult {
 type StopReason =
   | "end_of_pages"
   | "no_new_items"
+  | "pagination_stalled"
   | "repeated_request"
   | "safety_limit"
   | "error";
@@ -496,6 +497,19 @@ export class CollectionCoordinator {
         partial = true;
         stopReason = "error";
         sourceError = errorMessage(error, "next_page_failed");
+        break;
+      }
+      if (
+        adapter.strictPaginationProgress &&
+        pages > 1 &&
+        newItemCount === 0
+      ) {
+        if (parsed.items.length > 0 || next !== null) {
+          partial = true;
+          stopReason = "pagination_stalled";
+        } else {
+          stopReason = "end_of_pages";
+        }
         break;
       }
       if (newItemCount === 0 && seenCountBeforePage > 0) {

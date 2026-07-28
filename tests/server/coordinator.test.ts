@@ -257,6 +257,69 @@ async function collectJiaoyimaoMtopItem(
   return { fetcher, listing, detailUrl: product.detailUrlSeo };
 }
 
+interface StrictPaginationPage {
+  itemIndexes: number[];
+  hasNext: boolean;
+}
+
+async function collectStrictPaginationPages(
+  pageSpecs: StrictPaginationPage[]
+) {
+  const entryUrl = "https://strict-jiaoyimao.test/";
+  const pageUrl = (page: number) =>
+    `https://strict-jiaoyimao.test/list/${page}`;
+  const pageHtml = (page: number) => `strict-page-${page}`;
+  const item = (index: number): ListingSummary =>
+    summaryForSource("jiaoyimao", index, {
+      rawText: "QQ官服 普通账号",
+      priceCny: 7_001
+    });
+  const adapterOverrides = {
+    source: "jiaoyimao" as const,
+    entryUrl,
+    strictPaginationProgress: true,
+    discoverCatalog: () => ({
+      kind: "ok" as const,
+      request: { url: pageUrl(1) }
+    }),
+    parseList: (html: string) => {
+      const page = Number(html.replace("strict-page-", ""));
+      return {
+        kind: "ok" as const,
+        items:
+          pageSpecs[page - 1]?.itemIndexes.map((index) => item(index)) ?? []
+      };
+    },
+    nextPage: (html: string) => {
+      const page = Number(html.replace("strict-page-", ""));
+      return pageSpecs[page - 1]?.hasNext
+        ? { url: pageUrl(page + 1) }
+        : null;
+    }
+  };
+  const adapter = fakeAdapter(adapterOverrides);
+  const responses = new Map<string, FetchResult>([
+    [entryUrl, ok(entryUrl, "home")],
+    ...pageSpecs.map((_page, index) => {
+      const page = index + 1;
+      return [pageUrl(page), ok(pageUrl(page), pageHtml(page))] as const;
+    })
+  ]);
+  const repository = new ListingRepository(createDatabase(":memory:"));
+  const fetcher = new MapFetcher(responses);
+
+  await new CollectionCoordinator({
+    adapters: [adapter],
+    fetcher,
+    repository
+  }).refreshAll();
+
+  return {
+    fetcher,
+    status: sourceStatus(repository, "jiaoyimao")
+  };
+}
+
 describe("CollectionCoordinator", () => {
   it.each([
     [
@@ -324,6 +387,106 @@ describe("CollectionCoordinator", () => {
       "end:panzhi"
     ]);
   });
+
+  it.each([
+    {
+      name: "a repeated page with another page advertised",
+      pages: [
+        { itemIndexes: [1], hasNext: true },
+        { itemIndexes: [1], hasNext: true },
+        { itemIndexes: [3], hasNext: false }
+      ],
+      expectedState: "partial",
+      expectedStopReason: "pagination_stalled",
+      expectedPagesScanned: 2,
+      expectedItemCount: 1
+    },
+    {
+      name: "a repeated terminal page",
+      pages: [
+        { itemIndexes: [1], hasNext: true },
+        { itemIndexes: [1], hasNext: false }
+      ],
+      expectedState: "partial",
+      expectedStopReason: "pagination_stalled",
+      expectedPagesScanned: 2,
+      expectedItemCount: 1
+    },
+    {
+      name: "an empty page with another page advertised",
+      pages: [
+        { itemIndexes: [1], hasNext: true },
+        { itemIndexes: [], hasNext: true },
+        { itemIndexes: [3], hasNext: false }
+      ],
+      expectedState: "partial",
+      expectedStopReason: "pagination_stalled",
+      expectedPagesScanned: 2,
+      expectedItemCount: 1
+    },
+    {
+      name: "an explicitly empty terminal page",
+      pages: [
+        { itemIndexes: [1], hasNext: true },
+        { itemIndexes: [], hasNext: false }
+      ],
+      expectedState: "success",
+      expectedStopReason: "end_of_pages",
+      expectedPagesScanned: 2,
+      expectedItemCount: 1
+    },
+    {
+      name: "a partially overlapping terminal page with one new ID",
+      pages: [
+        { itemIndexes: [1], hasNext: true },
+        { itemIndexes: [1, 2], hasNext: false }
+      ],
+      expectedState: "success",
+      expectedStopReason: "end_of_pages",
+      expectedPagesScanned: 2,
+      expectedItemCount: 2
+    },
+    {
+      name: "a third page that repeats an earlier page",
+      pages: [
+        { itemIndexes: [1], hasNext: true },
+        { itemIndexes: [2], hasNext: true },
+        { itemIndexes: [1], hasNext: true },
+        { itemIndexes: [4], hasNext: false }
+      ],
+      expectedState: "partial",
+      expectedStopReason: "pagination_stalled",
+      expectedPagesScanned: 3,
+      expectedItemCount: 2
+    }
+  ])(
+    "handles $name for a strict pagination source",
+    async ({
+      pages,
+      expectedState,
+      expectedStopReason,
+      expectedPagesScanned,
+      expectedItemCount
+    }) => {
+      const { fetcher, status } =
+        await collectStrictPaginationPages(pages);
+
+      expect(fetcher.calls).toEqual([
+        "https://strict-jiaoyimao.test/",
+        ...Array.from(
+          { length: expectedPagesScanned },
+          (_, index) =>
+            `https://strict-jiaoyimao.test/list/${index + 1}`
+        )
+      ]);
+      expect(status).toMatchObject({
+        state: expectedState,
+        stopReason: expectedStopReason,
+        pagesScanned: expectedPagesScanned,
+        itemCount: expectedItemCount
+      });
+    }
+  );
 
   it("rejects a reentrant refresh before lifecycle hooks and allows a later refresh", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));

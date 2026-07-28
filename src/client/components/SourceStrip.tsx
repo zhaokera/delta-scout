@@ -34,6 +34,7 @@ function sourceState(status: SourceStatusView): {
 const STOP_REASON_LABELS: Record<string, string> = {
   end_of_pages: "已到公开末页",
   no_new_items: "本页无新增商品",
+  pagination_stalled: "分页未推进，结果不完整",
   repeated_request: "重复请求保护停止",
   safety_limit: "达到安全上限",
   captcha_required: "入口触发验证码",
