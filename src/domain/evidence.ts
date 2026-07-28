@@ -44,7 +44,8 @@ const KNOWN_RED_CHARACTER_SKINS = [
     characterAliases: ["蛊"],
     skinAliases: ["能天使午夜邮差"]
   },
-  { character: "红狼", characterAliases: ["红狼"], skinAliases: ["蚀金玫瑰"] }
+  { character: "红狼", characterAliases: ["红狼"], skinAliases: ["蚀金玫瑰"] },
+  { character: "乌鲁鲁", characterAliases: ["乌鲁鲁"], skinAliases: ["狂怒"] }
 ] as const;
 
 function compactSkinName(value: string): string {

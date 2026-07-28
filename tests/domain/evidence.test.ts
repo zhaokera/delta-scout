@@ -65,6 +65,15 @@ describe("character red-skin evidence", () => {
     expect(result.names).toEqual(["威龙", "露娜", "骇爪", "蛊"]);
     expect(result.evidence).toHaveLength(2);
   });
+
+  it("recognizes 乌鲁鲁-狂怒 as a named red-quality skin", () => {
+    const result = parseRedSkins(
+      toEvidenceRecords(["乌鲁鲁-狂怒 M7-极品S"])
+    );
+
+    expect(result.names).toEqual(["乌鲁鲁"]);
+    expect(result.unnamed).toBe(false);
+  });
 });
 
 describe("巨浪 evidence", () => {
