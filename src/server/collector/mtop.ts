@@ -200,6 +200,7 @@ export function deriveApprovedJiaoyimaoMtopPageOneData(
 ): string | null {
   if (!isApprovedJiaoyimaoMtopData(data)) return null;
   const outer = JSON.parse(data) as Record<string, unknown>;
+  if (outer.page !== "2") return null;
   outer.page = "1";
   return JSON.stringify(outer);
 }

@@ -263,6 +263,7 @@ export class CollectionCoordinator {
   private readonly repository: ListingRepository;
   private readonly now: () => Date;
   private readonly limits: CollectionLimits;
+  private refreshInProgress = false;
 
   constructor(options: CoordinatorOptions) {
     this.adapters = options.adapters;
@@ -547,6 +548,18 @@ export class CollectionCoordinator {
   }
 
   async refreshAll(): Promise<void> {
+    if (this.refreshInProgress) {
+      throw new Error("refresh_already_running");
+    }
+    this.refreshInProgress = true;
+    try {
+      await this.performRefreshAll();
+    } finally {
+      this.refreshInProgress = false;
+    }
+  }
+
+  private async performRefreshAll(): Promise<void> {
     const refreshStartedAt = this.now();
     const freshSources = new Set<SourceId>();
     for (const adapter of this.adapters) {

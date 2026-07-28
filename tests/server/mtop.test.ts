@@ -432,6 +432,27 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
+  it("refuses to bootstrap page 3 before page 2 initializes the session", async () => {
+    const fetchFn = vi.fn();
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+    fetcher.beginSource("jiaoyimao");
+
+    await expect(
+      fetcher.fetchPage(
+        approvedRequest(dataForPage(3)),
+        "jiaoyimao"
+      )
+    ).resolves.toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "unapproved_mtop_request"
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("bootstraps page 2 with a page-1 handshake and signed prime", async () => {
     let now = 1_700_000_000_000;
     const calls: Array<{ url: string; init?: RequestInit }> = [];
@@ -590,6 +611,57 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
     expect(new Headers(calls[3]!.init?.headers).get("cookie")).toBe(
       "_m_h5_tk=reused-token_1; _m_h5_tk_enc=reused-enc"
     );
+  });
+
+  it("bootstraps again after a later page returns an invalid response", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (calls.length === 4) {
+        return new Response("not json");
+      }
+      const headers = new Headers(init?.headers);
+      if (!headers.has("cookie")) {
+        return responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+          [
+            `_m_h5_tk=token-${calls.length}_1; Path=/`,
+            `_m_h5_tk_enc=enc-${calls.length}; Path=/`
+          ]
+        );
+      }
+      return new Response(SUCCESS_BODY);
+    });
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      now: () => 1_700_000_000_000,
+      random: () => 0.25,
+      minimumIntervalMs: 0
+    });
+    fetcher.beginSource("jiaoyimao");
+
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({ kind: "ok" });
+    await expect(
+      fetcher.fetchPage(
+        approvedRequest(dataForPage(3)),
+        "jiaoyimao"
+      )
+    ).resolves.toEqual({
+      kind: "failed",
+      url: ENDPOINT,
+      error: "invalid_mtop_response"
+    });
+    await expect(
+      fetcher.fetchPage(approvedRequest(), "jiaoyimao")
+    ).resolves.toMatchObject({ kind: "ok" });
+
+    expect(fetchFn).toHaveBeenCalledTimes(7);
+    expect(new Headers(calls[4]!.init?.headers).has("cookie")).toBe(false);
+    expect(
+      new URLSearchParams(String(calls[4]!.init?.body)).get("data")
+    ).toBe(dataForPage(1));
   });
 
   it("clears the session at source end and bootstraps the next lifecycle", async () => {

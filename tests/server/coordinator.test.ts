@@ -325,6 +325,80 @@ describe("CollectionCoordinator", () => {
     ]);
   });
 
+  it("rejects a reentrant refresh before lifecycle hooks and allows a later refresh", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapter = fakeAdapter({
+      parseList: () => ({
+        kind: "ok",
+        items: [{ ...summary(), embeddedDetail: listingDetail() }]
+      })
+    });
+    let releaseFirstEntry!: () => void;
+    const firstEntryGate = new Promise<void>((resolve) => {
+      releaseFirstEntry = resolve;
+    });
+    let signalFirstEntry!: () => void;
+    const firstEntryStarted = new Promise<void>((resolve) => {
+      signalFirstEntry = resolve;
+    });
+    let shouldWaitForEntry = true;
+    const fetcher = new LifecycleFetcher(async (request) => {
+      if (request.url === adapter.entryUrl && shouldWaitForEntry) {
+        shouldWaitForEntry = false;
+        signalFirstEntry();
+        await firstEntryGate;
+        return ok(request.url, "home");
+      }
+      return ok(request.url, "list");
+    });
+    const coordinator = new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    });
+
+    const firstRefresh = coordinator.refreshAll();
+    await firstEntryStarted;
+
+    await expect(coordinator.refreshAll()).rejects.toThrow(
+      "refresh_already_running"
+    );
+    expect(fetcher.events).toEqual([
+      "begin:panzhi",
+      `fetch:panzhi:${adapter.entryUrl}`
+    ]);
+
+    releaseFirstEntry();
+    await firstRefresh;
+    expect(fetcher.events.filter((event) => event === "begin:panzhi"))
+      .toHaveLength(1);
+    expect(fetcher.events.filter((event) => event === "end:panzhi"))
+      .toHaveLength(1);
+
+    await expect(coordinator.refreshAll()).resolves.toBeUndefined();
+    expect(fetcher.events.filter((event) => event === "begin:panzhi"))
+      .toHaveLength(2);
+    expect(fetcher.events.filter((event) => event === "end:panzhi"))
+      .toHaveLength(2);
+  });
+
+  it("releases the refresh lock after an uncaught refresh error", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    vi.spyOn(repository, "getListings").mockImplementationOnce(() => {
+      throw new Error("derived refresh failed");
+    });
+    const coordinator = new CollectionCoordinator({
+      adapters: [],
+      fetcher: new MapFetcher(new Map()),
+      repository
+    });
+
+    await expect(coordinator.refreshAll()).rejects.toThrow(
+      "derived refresh failed"
+    );
+    await expect(coordinator.refreshAll()).resolves.toBeUndefined();
+  });
+
   it("keeps explicit unknown embedded login authoritative", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const item = {
