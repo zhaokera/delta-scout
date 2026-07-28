@@ -19,6 +19,7 @@ const BASE_URL = "https://www.pzds.com/";
 
 function extractEvidence(html: string): ReturnType<typeof toEvidenceRecords> {
   const $ = load(html);
+  $("script, style, noscript").remove();
   const records: string[] = [];
 
   $(".description p, .description li").each((_, node) => {
@@ -40,9 +41,19 @@ function extractEvidence(html: string): ReturnType<typeof toEvidenceRecords> {
     }
   }
 
-  for (const marker of ["QQ", "可二次实名", "不可二次实名", "支持人脸包赔", "不支持人脸包赔", "无封号"]) {
-    if ($("body").text().includes(marker)) records.push(marker);
+  const fullBody = $("body").text();
+  if (fullBody.includes("QQ")) records.push("QQ");
+  if (fullBody.includes("不可二次实名")) {
+    records.push("不可二次实名");
+  } else if (fullBody.includes("可二次实名")) {
+    records.push("可二次实名");
   }
+  if (fullBody.includes("不支持人脸包赔")) {
+    records.push("不支持人脸包赔");
+  } else if (fullBody.includes("支持人脸包赔")) {
+    records.push("支持人脸包赔");
+  }
+  if (fullBody.includes("无封号")) records.push("无封号");
 
   return toEvidenceRecords([...new Set(records)]);
 }
@@ -55,6 +66,7 @@ function parseDetail(
     return { kind: "blocked", reason: "captcha_required" };
   }
   const $ = load(html);
+  $("script, style, noscript").remove();
   const body = compactText($("body").text());
   const evidence = extractEvidence(html);
   if (evidence.length === 0) {

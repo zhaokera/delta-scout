@@ -73,6 +73,64 @@ describe("panzhi adapter", () => {
       ])
     );
   });
+
+  it("does not add positive safety evidence from a negated phrase", () => {
+    const summary = {
+      source: "panzhi" as const,
+      sourceListingId: "NEGATED",
+      url: "https://www.pzds.com/goodsDetails/NEGATED/6",
+      title: "NEGATED",
+      rawText: "M7棱镜攻势(优品B)",
+      priceCny: 1197
+    };
+    const result = panzhiAdapter.parseDetail(
+      `
+        <body>
+          <div class="description">
+            <p>【传说典藏】M7棱镜攻势(优品B)</p>
+          </div>
+          <span>三角洲行动-QQ</span>
+          <span>不可二次实名</span>
+          <span>不支持人脸包赔</span>
+        </body>
+      `,
+      summary
+    );
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected parsed detail");
+    expect(result.detail.evidence.map(({ text }) => text)).not.toContain(
+      "可二次实名"
+    );
+    expect(result.detail.evidence.map(({ text }) => text)).not.toContain(
+      "支持人脸包赔"
+    );
+  });
+
+  it("ignores embedded application scripts when collecting evidence", () => {
+    const summary = {
+      source: "panzhi" as const,
+      sourceListingId: "SCRIPT",
+      url: "https://www.pzds.com/goodsDetails/SCRIPT/6",
+      title: "SCRIPT",
+      rawText: "M7棱镜(优品B)",
+      priceCny: 1458
+    };
+    const result = panzhiAdapter.parseDetail(
+      `
+        <body>
+          <p>【传说典藏】M7战斗步枪-棱镜攻势S2(优品B/其他)</p>
+          <span>三角洲行动-QQ</span>
+          <script>window.__NUXT__ = "K416(极品C)\\u002FM7棱镜(优品B)"</script>
+        </body>
+      `,
+      summary
+    );
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected parsed detail");
+    expect(
+      result.detail.evidence.some(({ text }) => text.includes("__NUXT__"))
+    ).toBe(false);
+  });
 });
 
 describe("blocked source adapters", () => {

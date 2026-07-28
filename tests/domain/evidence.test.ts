@@ -12,6 +12,22 @@ describe("M7 棱镜攻势 evidence", () => {
     [["M7 棱镜攻势", "另一件皮肤 极品"], "unknown"],
     [["M7 未拥有棱镜攻势 极品"], "conflicting"],
     [["M7 棱镜攻势 极品 优品"], "conflicting"],
+    [
+      [
+        "【传说典藏】M7战斗步枪-棱镜攻势S2(极品C/其他)/AS Val突击步枪-悬赏令(优品C)"
+      ],
+      "peak"
+    ],
+    [
+      [
+        "M7棱镜(极品C)/ASVal悬赏令(优品C)，M250电玩(优品A)"
+      ],
+      "peak"
+    ],
+    [
+      ["M7棱镜(极品C)/M7棱镜(优品A)"],
+      "conflicting"
+    ],
     [["M7 无棱镜攻势"], "absent"],
     [["其它收藏"], "absent"]
   ] as const)("maps %j to %s without crossing records", (lines, expected) => {

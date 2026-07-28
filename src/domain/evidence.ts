@@ -68,17 +68,22 @@ export function parseM7(
   records: EvidenceRecord[]
 ): EvidenceMatch<M7PrismStatus> {
   const relevant = records.filter(
-    ({ text }) => /M7/i.test(text) && text.includes("棱镜攻势")
+    ({ text }) => /M7/i.test(text) && text.includes("棱镜")
   );
 
   if (relevant.length === 0) {
     return { status: "absent", evidence: [] };
   }
 
-  const statuses = relevant.map(({ text }): M7PrismStatus => {
+  const clauses = relevant.flatMap(({ text }) =>
+    splitEvidenceClauses(text).filter(
+      (clause) => /M7/i.test(clause) && clause.includes("棱镜")
+    )
+  );
+  const statuses = clauses.map((text): M7PrismStatus => {
     const denied =
-      text.includes("无棱镜攻势") ||
-      text.includes("未拥有棱镜攻势") ||
+      text.includes("无棱镜") ||
+      text.includes("未拥有棱镜") ||
       text.includes("非极品");
     const peak = text.includes("极品");
     const premium = text.includes("优品");
@@ -105,6 +110,36 @@ export function parseM7(
       : (statuses[0] ?? "unknown");
 
   return { status, evidence: relevant };
+}
+
+function splitEvidenceClauses(text: string): string[] {
+  const clauses: string[] = [];
+  let current = "";
+  let parenthesisDepth = 0;
+
+  for (const character of text) {
+    if (character === "(" || character === "（") {
+      parenthesisDepth += 1;
+    } else if (
+      (character === ")" || character === "）") &&
+      parenthesisDepth > 0
+    ) {
+      parenthesisDepth -= 1;
+    }
+
+    if (
+      parenthesisDepth === 0 &&
+      ["/", "，", ",", "；", ";", "\n"].includes(character)
+    ) {
+      if (current.trim()) clauses.push(current.trim());
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+
+  if (current.trim()) clauses.push(current.trim());
+  return clauses;
 }
 
 export function parseRedSkins(
