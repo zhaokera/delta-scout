@@ -43,6 +43,7 @@ interface SourceStatusRow {
 interface ScanMetadata {
   pagesScanned: number;
   stopReason: string | null;
+  error?: string | null;
 }
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
@@ -85,7 +86,7 @@ export class ListingRepository {
               item_count = ?,
               pages_scanned = ?,
               stop_reason = ?,
-              error = NULL
+              error = ?
           WHERE source = ?
         `)
         .run(
@@ -95,6 +96,7 @@ export class ListingRepository {
           listings.length,
           metadata.pagesScanned,
           metadata.stopReason,
+          metadata.error ?? null,
           source
         );
       this.database.exec("COMMIT");
@@ -120,11 +122,11 @@ export class ListingRepository {
         SET state = ?,
             last_attempt_at = ?,
             pages_scanned = 0,
-            stop_reason = ?,
+            stop_reason = 'error',
             error = ?
         WHERE source = ?
       `)
-      .run(state, now.toISOString(), error, error, source);
+      .run(state, now.toISOString(), error, source);
   }
 
   getListings(eligibility?: Eligibility): Listing[] {

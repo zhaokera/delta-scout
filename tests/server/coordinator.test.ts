@@ -69,6 +69,20 @@ function summary(index = 1): ListingSummary {
   };
 }
 
+function summaryForSource(
+  source: ListingSummary["source"],
+  index: number,
+  overrides: Partial<ListingSummary> = {}
+): ListingSummary {
+  return {
+    ...summary(index),
+    source,
+    sourceListingId: `${source}-${index}`,
+    url: `https://${source}.test/detail/${index}`,
+    ...overrides
+  };
+}
+
 function listingDetail(): ListingDetail {
   return {
     evidence: [
@@ -86,6 +100,15 @@ function listingDetail(): ListingDetail {
     verificationAt: "2026-07-27T10:00:00.000Z",
     banNotes: []
   };
+}
+
+function sourceStatus(
+  repository: ListingRepository,
+  source: ListingSummary["source"] = "panzhi"
+) {
+  return repository
+    .getSourceStatuses()
+    .find((status) => status.source === source);
 }
 
 function fakeAdapter(
@@ -470,7 +493,7 @@ describe("CollectionCoordinator", () => {
     });
   });
 
-  it("keeps the twenty-first hinted summary in review when detail collection is capped", async () => {
+  it("fetches more than twenty matching details under production defaults", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const items = Array.from({ length: 21 }, (_, index) => ({
       ...summary(index + 1),
@@ -484,7 +507,7 @@ describe("CollectionCoordinator", () => {
       [adapter.entryUrl, ok(adapter.entryUrl, "home")],
       ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
     ]);
-    for (const item of items.slice(0, 20)) {
+    for (const item of items) {
       responses.set(item.url, ok(item.url, "detail"));
     }
     const fetcher = new MapFetcher(responses);
@@ -496,16 +519,20 @@ describe("CollectionCoordinator", () => {
     }).refreshAll();
 
     expect(fetcher.calls.filter((url) => url.includes("/detail/")))
-      .toHaveLength(20);
+      .toHaveLength(21);
     expect(
       repository
         .getListings()
         .find(({ sourceListingId }) => sourceListingId === "S21")
     ).toMatchObject({
-      m7PrismStatus: "unknown",
-      m7PrismQuality: null,
-      eligibility: "needs_verification",
-      parseWarnings: ["达到详情采集上限，待人工核验"]
+      m7PrismStatus: "peak",
+      eligibility: "eligible",
+      parseWarnings: []
+    });
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "success",
+      pagesScanned: 1,
+      stopReason: "end_of_pages"
     });
   });
 
@@ -569,8 +596,17 @@ describe("CollectionCoordinator", () => {
 
   it("stops before fetching the same request fingerprint twice", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
-    const listRequest = { url: "https://source.test/list/1" };
+    const listRequest = {
+      url: "https://source.test/list/1?a=1&b=2"
+    };
+    const reorderedRequest = {
+      url: "https://source.test/list/1?b=2&a=1"
+    };
     const adapter = fakeAdapter({
+      discoverCatalog: () => ({
+        kind: "ok",
+        request: listRequest
+      }),
       parseList: () => ({
         kind: "ok",
         items: [
@@ -580,7 +616,7 @@ describe("CollectionCoordinator", () => {
           }
         ]
       }),
-      nextPage: () => listRequest
+      nextPage: () => reorderedRequest
     });
     const fetcher = new MapFetcher(
       new Map([
@@ -600,7 +636,12 @@ describe("CollectionCoordinator", () => {
       repository
         .getSourceStatuses()
         .find(({ source }) => source === "panzhi")
-    ).toMatchObject({ state: "success", itemCount: 1 });
+    ).toMatchObject({
+      state: "success",
+      itemCount: 1,
+      pagesScanned: 1,
+      stopReason: "repeated_request"
+    });
   });
 
   it("keeps request fingerprints local to concurrent refreshes", async () => {
@@ -699,19 +740,35 @@ describe("CollectionCoordinator", () => {
     expect(repository.getSourceStatuses()[1]).toMatchObject({
       source: "panzhi",
       state: "success",
-      itemCount: 2
+      itemCount: 2,
+      pagesScanned: 2,
+      stopReason: "end_of_pages"
     });
   });
 
-  it("isolates blocked sources and retains their previous snapshot", async () => {
+  it("keeps failed old payloads unscored while scoring other fresh sources", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
+    const oldScore = {
+      total: 99,
+      parts: {
+        safety: 40,
+        price: 25,
+        assets: 20,
+        confidence: 14
+      },
+      reasons: ["stale"]
+    };
     repository.replaceSourceSnapshot(
       "jiaoyimao",
       [
         makeListing({
           source: "jiaoyimao",
           key: "jiaoyimao:old",
-          sourceListingId: "old"
+          sourceListingId: "old",
+          capturedAt: "2026-07-27T00:00:00.000Z",
+          priceCny: 6_000,
+          totalAssetsM: 1_000,
+          score: oldScore
         })
       ],
       "success"
@@ -748,27 +805,55 @@ describe("CollectionCoordinator", () => {
       repository
         .getSourceStatuses()
         .find(({ source }) => source === "jiaoyimao")
-    ).toMatchObject({ state: "blocked", error: "captcha_required" });
-    expect(repository.getListings().some(({ source }) => source === "panzhi"))
-      .toBe(true);
+    ).toMatchObject({
+      state: "blocked",
+      pagesScanned: 0,
+      stopReason: "error",
+      error: "captcha_required"
+    });
+    expect(repository.getListing("jiaoyimao:old")).toMatchObject({
+      score: null
+    });
+    expect(
+      repository.getListings().find(({ source }) => source === "panzhi")
+        ?.score?.parts
+    ).toMatchObject({
+      price: 12.5,
+      assets: 11.5
+    });
   });
 
-  it("caps a source at 60 summaries and 20 details and marks it partial", async () => {
+  it("collects more than three pages and sixty unique summaries by default", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
-    const items = Array.from({ length: 61 }, (_, index) => summary(index + 1));
-    const detailParser = vi.fn(fakeAdapter().parseDetail);
+    const pageItems = new Map(
+      Array.from({ length: 4 }, (_, pageIndex) => [
+        `page-${pageIndex + 1}`,
+        Array.from({ length: 16 }, (_, itemIndex) => ({
+          ...summary(pageIndex * 16 + itemIndex + 1),
+          rawText: "QQ官服 普通账号"
+        }))
+      ])
+    );
     const adapter = fakeAdapter({
-      parseList: () => ({ kind: "ok", items }),
-      nextPage: () => ({ url: "https://source.test/list/2" }),
-      parseDetail: detailParser
+      parseList: (html) => ({
+        kind: "ok",
+        items: pageItems.get(html) ?? []
+      }),
+      nextPage: (html) => {
+        const page = Number(html.replace("page-", ""));
+        return page < 4
+          ? { url: `https://source.test/list/${page + 1}` }
+          : null;
+      }
     });
     const responses = new Map<string, FetchResult>([
       [adapter.entryUrl, ok(adapter.entryUrl, "home")],
-      ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+      ...Array.from({ length: 4 }, (_, pageIndex) => {
+        const page = pageIndex + 1;
+        const url = `https://source.test/list/${page}`;
+        return [url, ok(url, `page-${page}`)] as const;
+      })
     ]);
-    for (const item of items.slice(0, 20)) {
-      responses.set(item.url, ok(item.url, "detail"));
-    }
 
     await new CollectionCoordinator({
       adapters: [adapter],
@@ -776,14 +861,287 @@ describe("CollectionCoordinator", () => {
       repository
     }).refreshAll();
 
-    expect(detailParser).toHaveBeenCalledTimes(20);
-    expect(repository.getListings()).toHaveLength(60);
-    expect(repository.getListings("eligible")).toHaveLength(20);
+    expect(repository.getListings()).toHaveLength(64);
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "success",
+      itemCount: 64,
+      pagesScanned: 4,
+      stopReason: "end_of_pages"
+    });
+  });
+
+  it("deduplicates canonical listing URLs without replacing the first record", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const first = {
+      ...summary(1),
+      sourceListingId: null,
+      url: "https://SOURCE.test/detail/1?b=2&a=1",
+      title: "第一页有效标题",
+      rawText: "QQ官服 普通账号",
+      priceCny: 1_888
+    };
+    const duplicate = {
+      ...first,
+      url: "https://source.test/detail/1?a=1&utm_campaign=x&b=2#card",
+      title: "重复页不应覆盖",
+      priceCny: 5_999
+    };
+    const adapter = fakeAdapter({
+      parseList: (html) => ({
+        kind: "ok",
+        items: html === "page-one" ? [first] : [duplicate]
+      }),
+      nextPage: (html) =>
+        html === "page-one"
+          ? { url: "https://source.test/list/2" }
+          : null
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "page-one")],
+        ["https://source.test/list/2", ok("https://source.test/list/2", "page-two")]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(fetcher.calls).toHaveLength(3);
+    expect(repository.getListings()).toHaveLength(1);
+    expect(repository.getListings()[0]).toMatchObject({
+      title: "第一页有效标题",
+      priceCny: 1_888
+    });
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "success",
+      pagesScanned: 2,
+      stopReason: "no_new_items"
+    });
+  });
+
+  it("marks a later page failure partial and scores its fresh snapshot", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const freshItem = {
+      ...summary(),
+      embeddedDetail: listingDetail()
+    };
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items: [freshItem] }),
+      nextPage: () => ({ url: "https://source.test/list/2" })
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "page-one")],
+        [
+          "https://source.test/list/2",
+          {
+            kind: "failed",
+            url: "https://source.test/list/2",
+            error: "request_timeout"
+          }
+        ]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      now: () => new Date("2026-07-28T12:00:00.000Z")
+    }).refreshAll();
+
+    expect(repository.getListings()[0].score).not.toBeNull();
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "partial",
+      itemCount: 1,
+      pagesScanned: 1,
+      stopReason: "error",
+      error: "request_timeout"
+    });
+  });
+
+  it("uses one normalization set for fresh listings from different sources", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const cheap = summaryForSource("panzhi", 1, {
+      priceCny: 1_000,
+      embeddedDetail: {
+        ...listingDetail(),
+        totalAssetsM: 100,
+        hafCoins: 10
+      }
+    });
+    const rich = summaryForSource("pxb7", 1, {
+      priceCny: 5_000,
+      embeddedDetail: {
+        ...listingDetail(),
+        totalAssetsM: 500,
+        hafCoins: 50
+      }
+    });
+    const makeSourceAdapter = (
+      source: ListingSummary["source"],
+      item: ListingSummary
+    ): SourceAdapter =>
+      fakeAdapter({
+        source,
+        entryUrl: `https://${source}.test/`,
+        discoverCatalog: () => ({
+          kind: "ok",
+          request: { url: `https://${source}.test/list/1` }
+        }),
+        parseList: () => ({ kind: "ok", items: [item] })
+      });
+    const adapters = [
+      makeSourceAdapter("panzhi", cheap),
+      makeSourceAdapter("pxb7", rich)
+    ];
+    const fetcher = new MapFetcher(
+      new Map(
+        adapters.flatMap((adapter) => [
+          [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+          [
+            `https://${adapter.source}.test/list/1`,
+            ok(`https://${adapter.source}.test/list/1`, "list")
+          ]
+        ])
+      )
+    );
+
+    await new CollectionCoordinator({
+      adapters,
+      fetcher,
+      repository,
+      now: () => new Date("2026-07-28T12:00:00.000Z")
+    }).refreshAll();
+
+    const listings = repository.getListings();
+    expect(listings.find(({ source }) => source === "panzhi")?.score?.parts)
+      .toMatchObject({ price: 25, assets: 3 });
+    expect(listings.find(({ source }) => source === "pxb7")?.score?.parts)
+      .toMatchObject({ price: 0, assets: 20 });
+  });
+
+  it("stops at an injected page safety limit deterministically", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapter = fakeAdapter({
+      parseList: (html) => ({
+        kind: "ok",
+        items: [{
+          ...summary(Number(html.replace("page-", ""))),
+          rawText: "QQ官服 普通账号"
+        }]
+      }),
+      nextPage: (html) => ({
+        url: `https://source.test/list/${Number(html.replace("page-", "")) + 1}`
+      })
+    });
+    const fetcher = new RoutingFetcher((request) => {
+      if (request.url === adapter.entryUrl) {
+        return ok(request.url, "home");
+      }
+      const page = request.url.match(/\/list\/(\d+)/)?.[1] ?? "1";
+      return ok(request.url, `page-${page}`);
+    });
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      limits: { maxPages: 2, maxSummaries: 8, maxDetails: 4 }
+    }).refreshAll();
+
+    expect(fetcher.calls.map(({ url }) => url)).toEqual([
+      adapter.entryUrl,
+      "https://source.test/list/1",
+      "https://source.test/list/2"
+    ]);
+    expect(repository.getListings()).toHaveLength(2);
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "partial",
+      pagesScanned: 2,
+      stopReason: "safety_limit"
+    });
+  });
+
+  it("keeps the first unique summaries at an injected summary safety limit", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const items = Array.from({ length: 5 }, (_, index) => ({
+      ...summary(index + 1),
+      rawText: "QQ官服 普通账号"
+    }));
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items })
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      limits: { maxPages: 5, maxSummaries: 3, maxDetails: 4 }
+    }).refreshAll();
+
+    expect(repository.getListings().map(({ sourceListingId }) => sourceListingId))
+      .toEqual(["S1", "S2", "S3"]);
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "partial",
+      itemCount: 3,
+      pagesScanned: 1,
+      stopReason: "safety_limit"
+    });
+  });
+
+  it("keeps deferred hinted items in review at an injected detail safety limit", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const items = Array.from({ length: 5 }, (_, index) => ({
+      ...summary(index + 1),
+      rawText: "QQ官服 查询匹配",
+      detailFetchHint: "m7_prism_query" as const
+    }));
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items })
+    });
+    const responses = new Map<string, FetchResult>([
+      [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+      ["https://source.test/list/1", ok("https://source.test/list/1", "list")],
+      ...items.map((item) => [item.url, ok(item.url, "detail")] as const)
+    ]);
+    const fetcher = new MapFetcher(responses);
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      limits: { maxPages: 5, maxSummaries: 8, maxDetails: 4 }
+    }).refreshAll();
+
+    expect(fetcher.calls.filter((url) => url.includes("/detail/")))
+      .toHaveLength(4);
     expect(
       repository
-        .getSourceStatuses()
-        .find(({ source }) => source === "panzhi")
-    ).toMatchObject({ state: "partial", itemCount: 60 });
+        .getListings()
+        .find(({ sourceListingId }) => sourceListingId === "S5")
+    ).toMatchObject({
+      eligibility: "needs_verification",
+      m7PrismStatus: "unknown",
+      parseWarnings: ["达到详情采集上限，待人工核验"]
+    });
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "partial",
+      itemCount: 5,
+      pagesScanned: 1,
+      stopReason: "safety_limit"
+    });
   });
 
   it("keeps a summary at needs verification when detail fetch fails", async () => {

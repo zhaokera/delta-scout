@@ -144,14 +144,19 @@ describe("ListingRepository", () => {
       [makeListing()],
       "partial",
       new Date("2026-07-28T10:00:00+08:00"),
-      { pagesScanned: 5, stopReason: "request_timeout" }
+      {
+        pagesScanned: 5,
+        stopReason: "error",
+        error: "request_timeout"
+      }
     );
     expect(repository.getSourceStatuses().find(({ source }) => source === "panzhi"))
       .toMatchObject({
         state: "partial",
         itemCount: 1,
         pagesScanned: 5,
-        stopReason: "request_timeout"
+        stopReason: "error",
+        error: "request_timeout"
       });
 
     repository.markSourceFailure(
@@ -167,7 +172,8 @@ describe("ListingRepository", () => {
         state: "blocked",
         itemCount: 1,
         pagesScanned: 0,
-        stopReason: "captcha_required"
+        stopReason: "error",
+        error: "captcha_required"
       });
   });
 

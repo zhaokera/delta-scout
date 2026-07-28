@@ -24,15 +24,24 @@ import type {
   SourceRequest
 } from "./types.js";
 
-const MAX_PAGES = 3;
-const MAX_SUMMARIES = 60;
-const MAX_DETAILS = 20;
+interface CollectionLimits {
+  maxPages: number;
+  maxSummaries: number;
+  maxDetails: number;
+}
+
+const DEFAULT_LIMITS: CollectionLimits = {
+  maxPages: 100,
+  maxSummaries: 2_000,
+  maxDetails: 500
+};
 
 interface CoordinatorOptions {
   adapters: SourceAdapter[];
   fetcher: PageFetcher;
   repository: ListingRepository;
   now?: () => Date;
+  limits?: Partial<CollectionLimits>;
 }
 
 interface CollectedSummary {
@@ -40,6 +49,51 @@ interface CollectedSummary {
   detail: ListingDetail | null;
   detailAttempted: boolean;
   warnings: string[];
+}
+
+interface RefreshSourceResult {
+  source: SourceId;
+  fresh: boolean;
+}
+
+type StopReason =
+  | "end_of_pages"
+  | "no_new_items"
+  | "repeated_request"
+  | "safety_limit"
+  | "error";
+
+function positiveLimit(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${name} 必须是正整数`);
+  }
+  return value;
+}
+
+function canonicalRequestUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.hostname = url.hostname.toLowerCase();
+    url.searchParams.sort();
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+function requestFingerprint(request: SourceRequest): string {
+  return [
+    request.options?.method ?? "GET",
+    canonicalRequestUrl(request.url),
+    request.options?.body ?? ""
+  ].join("\n");
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.length > 0
+    ? error.message
+    : fallback;
 }
 
 function inferLoginPlatform(text: string): LoginPlatform {
@@ -190,12 +244,19 @@ export class CollectionCoordinator {
   private readonly fetcher: PageFetcher;
   private readonly repository: ListingRepository;
   private readonly now: () => Date;
+  private readonly limits: CollectionLimits;
 
   constructor(options: CoordinatorOptions) {
     this.adapters = options.adapters;
     this.fetcher = options.fetcher;
     this.repository = options.repository;
     this.now = options.now ?? (() => new Date());
+    const limits = { ...DEFAULT_LIMITS, ...options.limits };
+    this.limits = {
+      maxPages: positiveLimit(limits.maxPages, "maxPages"),
+      maxSummaries: positiveLimit(limits.maxSummaries, "maxSummaries"),
+      maxDetails: positiveLimit(limits.maxDetails, "maxDetails")
+    };
   }
 
   private failSource(
@@ -222,14 +283,16 @@ export class CollectionCoordinator {
     }
   }
 
-  private async refreshSource(adapter: SourceAdapter): Promise<void> {
+  private async refreshSource(
+    adapter: SourceAdapter
+  ): Promise<RefreshSourceResult> {
     const entry = await this.fetcher.fetchPage(
       { url: adapter.entryUrl },
       adapter.source
     );
     if (entry.kind !== "ok") {
       this.failSource(adapter.source, entry);
-      return;
+      return { source: adapter.source, fresh: false };
     }
 
     const discovery = adapter.discoverCatalog(entry.html, "三角洲行动");
@@ -240,7 +303,7 @@ export class CollectionCoordinator {
         this.now(),
         "blocked"
       );
-      return;
+      return { source: adapter.source, fresh: false };
     }
 
     const collected: CollectedSummary[] = [];
@@ -250,59 +313,96 @@ export class CollectionCoordinator {
     let pages = 0;
     let detailCount = 0;
     let partial = false;
+    let stopReason: StopReason | null = null;
+    let sourceError: string | null = null;
 
-    while (
-      listRequest &&
-      pages < MAX_PAGES &&
-      collected.length < MAX_SUMMARIES
-    ) {
+    while (listRequest) {
       const currentRequest = listRequest;
-      const requestFingerprint = [
-        currentRequest.options?.method ?? "GET",
-        currentRequest.url,
-        currentRequest.options?.body ?? ""
-      ].join("\n");
-      if (seenRequests.has(requestFingerprint)) break;
-      seenRequests.add(requestFingerprint);
-      const page = await this.fetcher.fetchPage(
-        currentRequest,
-        adapter.source
-      );
-      if (page.kind !== "ok") {
-        if (collected.length === 0) {
-          this.failSource(adapter.source, page);
-          return;
-        }
-        partial = true;
+      const fingerprint = requestFingerprint(currentRequest);
+      if (seenRequests.has(fingerprint)) {
+        stopReason = "repeated_request";
         break;
       }
-      const parsed = adapter.parseList(page.html);
+      seenRequests.add(fingerprint);
+
+      let page: Awaited<ReturnType<PageFetcher["fetchPage"]>>;
+      try {
+        page = await this.fetcher.fetchPage(
+          currentRequest,
+          adapter.source
+        );
+      } catch (error) {
+        page = {
+          kind: "failed",
+          url: currentRequest.url,
+          error: errorMessage(error, "list_fetch_failed")
+        };
+      }
+      if (page.kind !== "ok") {
+        if (pages === 0) {
+          this.failSource(adapter.source, page);
+          return { source: adapter.source, fresh: false };
+        }
+        partial = true;
+        stopReason = "error";
+        sourceError =
+          page.kind === "blocked" ? page.reason : page.error;
+        break;
+      }
+
+      let parsed: ReturnType<SourceAdapter["parseList"]>;
+      try {
+        parsed = adapter.parseList(page.html);
+      } catch (error) {
+        const reason = errorMessage(error, "list_parse_failed");
+        if (pages === 0) {
+          this.repository.markSourceFailure(
+            adapter.source,
+            reason,
+            this.now(),
+            "failed"
+          );
+          return { source: adapter.source, fresh: false };
+        }
+        partial = true;
+        stopReason = "error";
+        sourceError = reason;
+        break;
+      }
       if (parsed.kind === "blocked") {
-        if (collected.length === 0) {
+        if (pages === 0) {
           this.repository.markSourceFailure(
             adapter.source,
             parsed.reason,
             this.now(),
             "blocked"
           );
-          return;
+          return { source: adapter.source, fresh: false };
         }
         partial = true;
+        stopReason = "error";
+        sourceError = parsed.reason;
         break;
       }
 
       pages += 1;
-      if (parsed.items.length + collected.length > MAX_SUMMARIES) {
-        partial = true;
-      }
+      const seenCountBeforePage = seen.size;
+      let newItemCount = 0;
+      let summaryLimitReached = false;
+      let detailLimitReached = false;
       for (const item of parsed.items) {
-        const identity = item.sourceListingId ?? item.url;
+        const identity = listingKey(
+          item.source,
+          item.sourceListingId,
+          item.url
+        );
         if (seen.has(identity)) continue;
-        if (collected.length >= MAX_SUMMARIES) {
-          partial = true;
+        if (collected.length >= this.limits.maxSummaries) {
+          summaryLimitReached = true;
           break;
         }
         seen.add(identity);
+        newItemCount += 1;
         const record: CollectedSummary = {
           summary: item,
           detail: item.embeddedDetail ?? null,
@@ -315,17 +415,26 @@ export class CollectionCoordinator {
           item.embeddedDetail === undefined &&
           shouldFetchDetail(item)
         ) {
-          if (detailCount >= MAX_DETAILS) {
-            partial = true;
+          if (detailCount >= this.limits.maxDetails) {
+            detailLimitReached = true;
             record.warnings.push("达到详情采集上限，待人工核验");
             continue;
           }
           detailCount += 1;
           record.detailAttempted = true;
-          const detailPage = await this.fetcher.fetchPage(
-            adapter.detailRequest(item),
-            adapter.source
-          );
+          let detailPage: Awaited<ReturnType<PageFetcher["fetchPage"]>>;
+          try {
+            const detailRequest = adapter.detailRequest(item);
+            detailPage = await this.fetcher.fetchPage(
+              detailRequest,
+              adapter.source
+            );
+          } catch (error) {
+            record.warnings.push(
+              `详情获取失败：${errorMessage(error, "detail_fetch_failed")}`
+            );
+            continue;
+          }
           if (detailPage.kind !== "ok") {
             record.warnings.push(
               detailPage.kind === "blocked"
@@ -334,7 +443,15 @@ export class CollectionCoordinator {
             );
             continue;
           }
-          const detail = adapter.parseDetail(detailPage.html, item);
+          let detail: ReturnType<SourceAdapter["parseDetail"]>;
+          try {
+            detail = adapter.parseDetail(detailPage.html, item);
+          } catch (error) {
+            record.warnings.push(
+              `详情解析失败：${errorMessage(error, "detail_parse_failed")}`
+            );
+            continue;
+          }
           if (detail.kind === "blocked") {
             record.warnings.push(`详情解析受阻：${detail.reason}`);
           } else {
@@ -343,12 +460,43 @@ export class CollectionCoordinator {
         }
       }
 
-      const next = adapter.nextPage(page.html, currentRequest);
+      if (summaryLimitReached || detailLimitReached) {
+        partial = true;
+        stopReason = "safety_limit";
+        break;
+      }
+
+      let next: SourceRequest | null;
+      try {
+        next = adapter.nextPage(page.html, currentRequest);
+      } catch (error) {
+        partial = true;
+        stopReason = "error";
+        sourceError = errorMessage(error, "next_page_failed");
+        break;
+      }
+      if (newItemCount === 0 && seenCountBeforePage > 0) {
+        stopReason = "no_new_items";
+        break;
+      }
+      if (next === null) {
+        stopReason = "end_of_pages";
+        break;
+      }
+      if (newItemCount === 0) {
+        stopReason = "no_new_items";
+        break;
+      }
+      if (seenRequests.has(requestFingerprint(next))) {
+        stopReason = "repeated_request";
+        break;
+      }
       if (
-        collected.length >= MAX_SUMMARIES ||
-        (pages >= MAX_PAGES && next !== null)
+        pages >= this.limits.maxPages ||
+        collected.length >= this.limits.maxSummaries
       ) {
-        if (next !== null) partial = true;
+        partial = true;
+        stopReason = "safety_limit";
         break;
       }
       listRequest = next;
@@ -362,34 +510,62 @@ export class CollectionCoordinator {
       adapter.source,
       listings,
       partial ? "partial" : "success",
-      capturedAt
+      capturedAt,
+      {
+        pagesScanned: pages,
+        stopReason: stopReason ?? "end_of_pages",
+        error: sourceError
+      }
     );
+    return { source: adapter.source, fresh: true };
   }
 
   async refreshAll(): Promise<void> {
+    const refreshStartedAt = this.now();
+    const freshSources = new Set<SourceId>();
     for (const adapter of this.adapters) {
       try {
-        await this.refreshSource(adapter);
+        const result = await this.refreshSource(adapter);
+        if (result.fresh) {
+          freshSources.add(result.source);
+        }
       } catch (error) {
         this.repository.markSourceFailure(
           adapter.source,
-          error instanceof Error ? error.message : "未知采集错误",
+          errorMessage(error, "未知采集错误"),
           this.now(),
           "failed"
         );
       }
     }
 
-    const withDuplicates = markPossibleDuplicates(
-      this.repository.getListings()
+    const retainedListings = this.repository.getListings();
+    const freshListings = retainedListings.filter(
+      (listing) =>
+        freshSources.has(listing.source) &&
+        Date.parse(listing.capturedAt) >= refreshStartedAt.getTime()
     );
-    const scored = scoreEligibleListings(withDuplicates, this.now());
+    const freshWithDuplicates = markPossibleDuplicates(freshListings);
+    const scored = scoreEligibleListings(freshWithDuplicates, this.now());
     const scores = new Map(scored.map((listing) => [listing.key, listing.score]));
+    const freshDerived = new Map(
+      freshWithDuplicates.map((listing) => [
+        listing.key,
+        {
+          ...listing,
+          score: scores.get(listing.key) ?? null
+        }
+      ])
+    );
     this.repository.updateDerivedListings(
-      withDuplicates.map((listing) => ({
-        ...listing,
-        score: scores.get(listing.key) ?? null
-      }))
+      retainedListings.map(
+        (listing) =>
+          freshDerived.get(listing.key) ?? {
+            ...listing,
+            score: null,
+            possibleDuplicateKeys: []
+          }
+      )
     );
   }
 }
