@@ -184,6 +184,50 @@ describe("anonymous MTop helpers", () => {
   });
 
   it.each([
+    [
+      "unrelated first",
+      [
+        "cookie2=unrelated-secret; Path=/",
+        "_m_h5_tk=token_123; Path=/",
+        "_m_h5_tk_enc=encoded; Path=/"
+      ]
+    ],
+    [
+      "unrelated between required cookies",
+      [
+        "_m_h5_tk=token_123; Path=/",
+        "login_session=unrelated-secret; Path=/",
+        "_m_h5_tk_enc=encoded; Path=/"
+      ]
+    ],
+    [
+      "unrelated last",
+      [
+        "_m_h5_tk_enc=encoded; Path=/",
+        "_m_h5_tk=token_123; Path=/",
+        "cookie2=unrelated-secret; Path=/"
+      ]
+    ]
+  ])(
+    "ignores an %s and returns only the two approved cookies",
+    (_name, cookieLines) => {
+      const headers = new Headers();
+      for (const cookie of cookieLines) {
+        headers.append("set-cookie", cookie);
+      }
+
+      const session = extractAnonymousMtopSession(headers);
+      expect(session).toEqual({
+        token: "token",
+        cookieHeader: "_m_h5_tk=token_123; _m_h5_tk_enc=encoded"
+      });
+      expect(JSON.stringify(session)).not.toContain("unrelated-secret");
+      expect(JSON.stringify(session)).not.toContain("cookie2");
+      expect(JSON.stringify(session)).not.toContain("login_session");
+    }
+  );
+
+  it.each([
     ["missing token cookie", ["_m_h5_tk_enc=encoded; Path=/"]],
     ["missing encoded cookie", ["_m_h5_tk=token_123; Path=/"]],
     [
@@ -191,14 +235,6 @@ describe("anonymous MTop helpers", () => {
       [
         "_m_h5_tk=token; Path=/",
         "_m_h5_tk_enc=encoded; Path=/"
-      ]
-    ],
-    [
-      "an unrelated cookie",
-      [
-        "_m_h5_tk=token_123; Path=/",
-        "_m_h5_tk_enc=encoded; Path=/",
-        "login_session=secret; Path=/"
       ]
     ],
     [
@@ -217,6 +253,22 @@ describe("anonymous MTop helpers", () => {
       [
         "_m_h5_tk=token_; Path=/",
         "_m_h5_tk_enc=encoded; Path=/"
+      ]
+    ],
+    [
+      "duplicate token cookies",
+      [
+        "_m_h5_tk=first_123; Path=/",
+        "_m_h5_tk=second_456; Path=/",
+        "_m_h5_tk_enc=encoded; Path=/"
+      ]
+    ],
+    [
+      "duplicate encoded cookies",
+      [
+        "_m_h5_tk=token_123; Path=/",
+        "_m_h5_tk_enc=first; Path=/",
+        "_m_h5_tk_enc=second; Path=/"
       ]
     ]
   ])("rejects %s", (_name, cookies) => {

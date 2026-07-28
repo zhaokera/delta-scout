@@ -90,20 +90,24 @@ export function extractAnonymousMtopSession(
   const cookieLines =
     withGetSetCookie.getSetCookie?.() ??
     splitCombinedSetCookie(headers.get("set-cookie"));
-  if (cookieLines.length !== 2) return null;
 
   const cookies = new Map<string, string>();
   for (const cookieLine of cookieLines) {
     const pair = cookieLine.split(";", 1)[0]?.trim();
     const separator = pair?.indexOf("=") ?? -1;
-    if (!pair || separator <= 0) return null;
+    if (!pair) continue;
+    if (separator <= 0) {
+      if (pair === "_m_h5_tk" || pair === "_m_h5_tk_enc") {
+        return null;
+      }
+      continue;
+    }
     const name = pair.slice(0, separator);
     const value = pair.slice(separator + 1);
-    if (
-      (name !== "_m_h5_tk" && name !== "_m_h5_tk_enc") ||
-      value.length === 0 ||
-      cookies.has(name)
-    ) {
+    if (name !== "_m_h5_tk" && name !== "_m_h5_tk_enc") {
+      continue;
+    }
+    if (value.length === 0 || cookies.has(name)) {
       return null;
     }
     cookies.set(name, value);
