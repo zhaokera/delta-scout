@@ -57,11 +57,11 @@ flowchart LR
 - POST 请求体由来源适配器构造；
 - 继续应用现有 15 秒超时、单来源 2 秒间隔、最多重试一次和 2 MB 响应限制。
 
-其他来源不传请求描述，行为保持不变。
+其他来源返回只有 URL 的请求描述，不设置 `options`，行为保持为普通 GET。
 
 ### 螃蟹适配器
 
-螃蟹公开首页当前包含可见的 `/buy/10371/1`《三角洲行动》链接。适配器先从首页确认该目录存在，再返回预注册的列表请求 URL；首页检查失败时不得调用接口。列表请求 URL 指向已从一方公开页面代码观察并验证为无需认证的只读接口：
+螃蟹公开首页当前包含可见的 `/buy/10371/1`《三角洲行动》链接。适配器先从首页确认该目录存在，再返回预注册的列表 `SourceRequest`；首页检查失败时不得调用接口。该请求指向已从一方公开页面代码观察并验证为无需认证的只读接口：
 
 `POST https://api-pc.pxb7.com/api/search/product/v2/selectSearchPageList`
 
@@ -74,17 +74,17 @@ flowchart LR
 - `type`: `4`
 - `posType`: `1`
 
-第一页不传 `pageToken`；后续页只使用前一页响应中 `data.properties.pageToken` 返回的非空字符串。最多读取 3 页，沿用协调器的页数上限。若 Token 缺失、与当前页相同或会生成已访问过的请求 URL，则成功停止分页，不能猜测下一页。
+第一页不传 `pageToken`；后续页只使用前一页响应中 `data.properties.pageToken` 返回的非空字符串。最多读取 3 页，沿用协调器的页数上限。若 Token 缺失、与当前请求 body 中的 Token 相同或会生成已访问过的请求指纹，则成功停止分页，不能猜测下一页。
 
 公开接口是对总设计中“不得猜测或调用未公开内部 API”的窄化例外：只有同时满足“由一方公开页面代码直接调用、无需登录、无需 Cookie 或 Token、只读商品查询、请求形状已经现场验证”的接口才能预注册；不得据此尝试相邻路径或其它操作。
 
 ### 类型契约
 
-为保持交易猫和盼之的 GET 行为不变，现有接口只增加可选字段：
+请求 URL、方法、请求头和请求体必须作为一个不可变描述一起在协调器与适配器之间传递，不能把分页 Token 放入全局可变状态。交易猫和盼之只返回含 URL 的描述，因此仍执行 GET：
 
 ```ts
 interface PublicRequestOptions {
-  method: "GET" | "POST";
+  method?: "GET" | "POST";
   accept?: string;
   contentType?: string;
   origin?: string;
@@ -92,11 +92,15 @@ interface PublicRequestOptions {
   body?: string;
 }
 
+interface SourceRequest {
+  url: string;
+  options?: PublicRequestOptions;
+}
+
 interface PageFetcher {
   fetchPage(
-    url: string,
-    source: SourceId,
-    request?: PublicRequestOptions
+    request: SourceRequest,
+    source: SourceId
   ): Promise<FetchResult>;
 }
 
@@ -105,18 +109,30 @@ interface ListingSummary {
   embeddedDetail?: ListingDetail;
 }
 
+type DiscoveryResult =
+  | { kind: "ok"; request: SourceRequest }
+  | { kind: "blocked"; reason: string };
+
 interface SourceAdapter {
-  // 现有方法保持不变
-  requestFor?(
-    phase: "entry" | "list" | "detail",
-    url: string,
-    summary?: ListingSummary
-  ): PublicRequestOptions | undefined;
-  nextPage(content: string, currentUrl?: string): string | null;
+  source: SourceId;
+  entryUrl: string;
+  discoverCatalog(content: string, query: string): DiscoveryResult;
+  parseList(content: string): ListParseResult;
+  nextPage(
+    content: string,
+    currentRequest: SourceRequest
+  ): SourceRequest | null;
+  detailRequest(summary: ListingSummary): SourceRequest;
+  parseDetail(
+    content: string,
+    summary: ListingSummary
+  ): DetailParseResult;
 }
 ```
 
-`FetchResult.kind === "ok"` 继续用现有 `html` 字段承载响应文本，避免扩大无关重构；螃蟹 `parseList` 把它作为 JSON 解析。协调器在每个阶段把 `adapter.requestFor(...)` 的结果传给 Fetcher。没有 `requestFor` 的适配器继续执行原有 GET。
+`FetchResult.kind === "ok"` 继续用现有 `html` 字段承载响应文本，避免扩大无关重构；螃蟹 `parseList` 把它作为 JSON 解析。协调器用 `{ url: adapter.entryUrl }` 构造入口 GET，随后逐页传递 `DiscoveryResult.request` 或 `nextPage` 返回的完整 `SourceRequest`。`options.method` 缺省为 GET。
+
+螃蟹 `nextPage` 同时读取当前响应的 `data.properties.pageToken` 和 `currentRequest.options.body` 中的 `pageIndex`，返回一个新的 `SourceRequest`，其 POST body 使用 `pageIndex + 1` 和新的 Token。适配器不得保存页码或 Token。协调器在单次来源刷新内部维护 `Set<method + url + body>` 请求指纹，拒绝重复请求；该 Set 是方法局部状态，因此并发刷新不会串页。
 
 螃蟹列表请求使用以下精确参数：
 
@@ -196,7 +212,7 @@ M7 目标名称必须是同一条证据中的精确 `M7战斗步枪-棱镜攻势
 
 1. Fetcher 能按适配器请求描述发送 JSON POST，同时保留节流、超时、重试和大小限制。
 2. 螃蟹适配器能解析价格分、商品链接、QQ/微信、极品等级、红皮、巨浪、资产和实名字段。
-3. 分页只使用响应中的真实 `pageToken`；无 Token、重复 Token 或重复请求 URL 时停止。
+3. 分页只使用响应中的真实 `pageToken`；无 Token、重复 Token 或重复请求指纹时停止，两个并发刷新不会共享游标。
 4. 无效 JSON 或字段结构变化返回明确阻塞/失败状态。
 5. 协调器优先使用嵌入式详情，不再请求客户端商品详情页。
 6. `QQ登录` 直接映射 QQ 官服；微信、双登录和未知登录不能进入合格候选。
