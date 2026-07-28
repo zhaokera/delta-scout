@@ -31,6 +31,26 @@ const DEFAULT_CHARACTER_ALIASES = [
   "疾风"
 ] as const;
 
+const KNOWN_RED_CHARACTER_SKINS = [
+  { character: "威龙", characterAliases: ["威龙"], skinAliases: ["凌霄戍卫"] },
+  { character: "露娜", characterAliases: ["露娜"], skinAliases: ["黑天际线"] },
+  {
+    character: "骇爪",
+    characterAliases: ["骇爪", "麦晓雯"],
+    skinAliases: ["维什戴尔", "水墨云图"]
+  },
+  {
+    character: "蛊",
+    characterAliases: ["蛊"],
+    skinAliases: ["能天使午夜邮差"]
+  },
+  { character: "红狼", characterAliases: ["红狼"], skinAliases: ["蚀金玫瑰"] }
+] as const;
+
+function compactSkinName(value: string): string {
+  return value.replace(/[\s·•・._—–-]/g, "");
+}
+
 export function toEvidenceRecords(lines: string[]): EvidenceRecord[] {
   return lines
     .map((line) => line.trim())
@@ -95,20 +115,49 @@ export function parseRedSkins(
   unnamed: boolean;
   evidence: EvidenceRecord[];
 } {
-  const evidence = records.filter(
+  const explicitEvidence = records.filter(
     ({ text }) => text.includes("红皮") || text.includes("红色品质")
   );
-  const names = aliases.filter((alias) =>
-    evidence.some(
+  const knownMatches = KNOWN_RED_CHARACTER_SKINS.filter((entry) =>
+    records.some(({ text }) => {
+      const compact = compactSkinName(text);
+      return (
+        entry.characterAliases.some((alias) => compact.includes(alias)) &&
+        entry.skinAliases.some((skin) =>
+          compact.includes(compactSkinName(skin))
+        )
+      );
+    })
+  );
+  const knownEvidence = records.filter(({ text }) => {
+    const compact = compactSkinName(text);
+    return knownMatches.some(
+      (entry) =>
+        entry.characterAliases.some((alias) => compact.includes(alias)) &&
+        entry.skinAliases.some((skin) =>
+          compact.includes(compactSkinName(skin))
+        )
+    );
+  });
+  const evidence = [...explicitEvidence, ...knownEvidence].filter(
+    (record, index, all) =>
+      all.findIndex(({ text }) => text === record.text) === index
+  );
+  const explicitlyNamed = aliases.filter((alias) =>
+    explicitEvidence.some(
       ({ text }) =>
         text.includes(alias) &&
         (text.includes("红皮") || text.includes("红色品质"))
     )
   );
+  const names = [
+    ...explicitlyNamed,
+    ...knownMatches.map(({ character }) => character)
+  ];
 
   return {
     names: [...new Set(names)],
-    unnamed: evidence.length > 0 && names.length === 0,
+    unnamed: explicitEvidence.length > 0 && names.length === 0,
     evidence
   };
 }

@@ -1,0 +1,169 @@
+import { load } from "cheerio";
+import { toEvidenceRecords } from "../../../domain/evidence.js";
+import type {
+  DetailParseResult,
+  ListingSummary,
+  SourceAdapter
+} from "../types.js";
+import {
+  absoluteUrl,
+  compactText,
+  findVisibleCatalogLink,
+  isBlockedHtml,
+  isVisibleLink,
+  parseChineseAmount,
+  parsePrice
+} from "./shared.js";
+
+const BASE_URL = "https://www.pzds.com/";
+
+function extractEvidence(html: string): ReturnType<typeof toEvidenceRecords> {
+  const $ = load(html);
+  const records: string[] = [];
+
+  $(".description p, .description li").each((_, node) => {
+    const text = compactText($(node).text());
+    if (text) records.push(text);
+  });
+
+  if (records.length === 0) {
+    const body = $("body").text();
+    for (const line of body.split(/\n+/)) {
+      const text = compactText(line);
+      if (
+        text &&
+        (/^【[^】]+】/.test(text) ||
+          /M7.*棱镜|二次实名|人脸包赔|无封号/.test(text))
+      ) {
+        records.push(text);
+      }
+    }
+  }
+
+  for (const marker of ["QQ", "可二次实名", "不可二次实名", "支持人脸包赔", "不支持人脸包赔", "无封号"]) {
+    if ($("body").text().includes(marker)) records.push(marker);
+  }
+
+  return toEvidenceRecords([...new Set(records)]);
+}
+
+function parseDetail(
+  html: string,
+  _summary: ListingSummary
+): DetailParseResult {
+  if (isBlockedHtml(html)) {
+    return { kind: "blocked", reason: "captcha_required" };
+  }
+  const $ = load(html);
+  const body = compactText($("body").text());
+  const evidence = extractEvidence(html);
+  if (evidence.length === 0) {
+    return { kind: "blocked", reason: "structure_changed" };
+  }
+
+  const totalAssetsRaw = parseChineseAmount(body, "总资产");
+  const totalAssetsM =
+    totalAssetsRaw === null ? null : totalAssetsRaw / 1_000_000;
+
+  const loginPlatform = /三角洲行动[-—\s]*QQ|(?:^|\s)QQ(?:\s|$)/i.test(body)
+    ? "qq"
+    : /微信/.test(body)
+      ? "wechat"
+      : "unknown";
+  const service =
+    /三角洲行动[-—\s]*QQ(?:官服)?|QQ官服/.test(body)
+      ? "official"
+      : /渠道服|非官服/.test(body)
+        ? "non_official"
+        : "unknown";
+
+  const cannotSecond = /不可二次实名/.test(body);
+  const canSecond = !cannotSecond && /可二次实名/.test(body);
+  const secondRealNameAvailable = cannotSecond
+    ? false
+    : canSecond
+      ? true
+      : null;
+  const realNameStatus = cannotSecond
+    ? "already_second"
+    : canSecond
+      ? "second_available"
+      : /原实名/.test(body)
+        ? "original"
+        : "unknown";
+
+  const noCoverage = /不支持人脸包赔|无包赔/.test(body);
+  const hasCoverage = !noCoverage && /支持人脸包赔|人脸包赔/.test(body);
+
+  return {
+    kind: "ok",
+    detail: {
+      evidence,
+      loginPlatform,
+      service,
+      totalAssetsM,
+      hafCoins: parseChineseAmount(body, "哈夫币"),
+      realNameStatus,
+      secondRealNameAvailable,
+      recoveryCoverage: noCoverage ? false : hasCoverage ? true : null,
+      verificationAt: null,
+      banNotes: /有封号|封禁记录/.test(body) ? ["页面提示存在封号记录"] : []
+    }
+  };
+}
+
+export const panzhiAdapter: SourceAdapter = {
+  source: "panzhi",
+  entryUrl: BASE_URL,
+
+  discoverCatalog(html, query) {
+    if (isBlockedHtml(html)) {
+      return { kind: "blocked", reason: "captcha_required" };
+    }
+    const url = findVisibleCatalogLink(html, BASE_URL, query);
+    return url
+      ? { kind: "ok", url }
+      : { kind: "blocked", reason: "catalog_not_found" };
+  },
+
+  parseList(html) {
+    if (isBlockedHtml(html)) {
+      return { kind: "blocked", reason: "captcha_required" };
+    }
+    const $ = load(html);
+    const items: ListingSummary[] = [];
+    $("a[href*='/goodsDetails/']").each((_, node) => {
+      const link = $(node);
+      if (!isVisibleLink(link)) return;
+      const href = link.attr("href");
+      if (!href) return;
+      const match = href.match(/\/goodsDetails\/([^/?#]+)\//);
+      const rawText = compactText(link.text());
+      if (!rawText) return;
+      items.push({
+        source: "panzhi",
+        sourceListingId: match?.[1] ?? null,
+        url: absoluteUrl(BASE_URL, href),
+        title: compactText(link.find("p").first().text()) || rawText,
+        rawText,
+        priceCny: parsePrice(rawText)
+      });
+    });
+    return items.length > 0
+      ? { kind: "ok", items }
+      : { kind: "blocked", reason: "structure_changed" };
+  },
+
+  nextPage(html) {
+    const $ = load(html);
+    const link = $("a[rel='next'][href]").first();
+    const href = link.attr("href");
+    return href && isVisibleLink(link) ? absoluteUrl(BASE_URL, href) : null;
+  },
+
+  detailUrl(summary) {
+    return summary.url;
+  },
+
+  parseDetail
+};

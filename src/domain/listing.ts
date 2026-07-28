@@ -83,5 +83,6 @@ export type SourceId = z.infer<typeof SourceIdSchema>;
 export type LoginPlatform = z.infer<typeof LoginPlatformSchema>;
 export type Service = z.infer<typeof ServiceSchema>;
 export type Eligibility = z.infer<typeof EligibilitySchema>;
+export type RealNameStatus = z.infer<typeof RealNameStatusSchema>;
 export type Listing = z.infer<typeof ListingSchema>;
 export type Score = z.infer<typeof ScoreSchema>;

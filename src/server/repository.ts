@@ -126,6 +126,33 @@ export class ListingRepository {
     return row ? ListingSchema.parse(JSON.parse(row.payload)) : null;
   }
 
+  updateDerivedListings(listings: Listing[]): void {
+    try {
+      this.database.exec("BEGIN IMMEDIATE");
+      const update = this.database.prepare(`
+        UPDATE listings
+        SET eligibility = ?, payload = ?
+        WHERE listing_key = ?
+      `);
+      for (const listing of listings) {
+        const parsed = ListingSchema.parse(listing);
+        update.run(
+          parsed.eligibility,
+          JSON.stringify(parsed),
+          parsed.key
+        );
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.database.exec("ROLLBACK");
+      } catch {
+        // Preserve the original update error.
+      }
+      throw new Error("无法更新候选派生数据", { cause: error });
+    }
+  }
+
   getSourceStatuses(now = new Date()): SourceStatus[] {
     const rows = this.database
       .prepare("SELECT * FROM source_status ORDER BY source")

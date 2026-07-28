@@ -37,6 +37,18 @@ describe("character red-skin evidence", () => {
     expect(result.names).toEqual([]);
     expect(result.unnamed).toBe(true);
   });
+
+  it("recognizes known red-quality character skins from marketplace text", () => {
+    const result = parseRedSkins(
+      toEvidenceRecords([
+        "【角色皮肤】威龙-凌霄戍卫/露娜-黑·天际线/红狼-电锯惊魂",
+        "骇爪-维什戴尔/蛊-能天使·午夜邮差"
+      ])
+    );
+
+    expect(result.names).toEqual(["威龙", "露娜", "骇爪", "蛊"]);
+    expect(result.evidence).toHaveLength(2);
+  });
 });
 
 describe("巨浪 evidence", () => {
