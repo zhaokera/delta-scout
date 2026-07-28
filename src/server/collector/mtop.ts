@@ -182,7 +182,7 @@ export function isApprovedJiaoyimaoMtopData(data: string): boolean {
       outer.parentId === 8_845_003 &&
       outer.class === APPROVED_CLASS &&
       typeof outer.page === "string" &&
-      /^[1-9]\d*$/.test(outer.page)
+      /^(?:[2-9]|[1-9]\d+)$/.test(outer.page)
     );
   } catch {
     return false;

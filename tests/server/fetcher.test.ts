@@ -93,7 +93,16 @@ describe("PublicPageFetcher", () => {
     ],
     ["origin", { origin: "https://evil.example" }],
     ["referer", { referer: `${APPROVED_JIAOYIMAO_REFERER}&extra=1` }],
-    ["missing metadata", { anonymousMtop: undefined }]
+    ["missing metadata", { anonymousMtop: undefined }],
+    [
+      "SSR-only page 1 body",
+      {
+        body: APPROVED_MTOP_BODY.replace(
+          '"page":"2"',
+          '"page":"1"'
+        )
+      }
+    ]
   ])(
     "refuses an unapproved anonymous MTop %s before the network",
     async (_name, mutation) => {
