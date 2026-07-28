@@ -1,7 +1,16 @@
-import { scoreEligibleListings } from "../../src/domain/score";
+import {
+  compareRecommendations,
+  scoreEligibleListings
+} from "../../src/domain/score";
+import type { Score } from "../../src/domain/listing";
 import { makeListing } from "./listingFactory";
 
 const now = new Date("2026-07-28T12:00:00+08:00");
+const tiedScore: Score = {
+  total: 80,
+  parts: { safety: 0, price: 0, assets: 0, confidence: 0 },
+  reasons: []
+};
 
 describe("scoreEligibleListings", () => {
   it("uses neutral set-relative values for a single candidate", () => {
@@ -63,5 +72,36 @@ describe("scoreEligibleListings", () => {
     );
 
     expect(first.key).toBe("pxb7:high-confidence");
+  });
+
+  it("exports the complete recommendation comparator", () => {
+    const lowerConfidence = makeListing({ score: tiedScore, confidence: 90 });
+    const lowerPrice = makeListing({
+      key: "panzhi:lower-price",
+      score: tiedScore,
+      confidence: 95,
+      priceCny: 100
+    });
+    const newerCapture = makeListing({
+      key: "panzhi:newer-capture",
+      score: tiedScore,
+      confidence: 95,
+      priceCny: 100,
+      capturedAt: "2026-07-28T11:00:00+08:00"
+    });
+    const earlierUrl = makeListing({
+      key: "panzhi:earlier-url",
+      score: tiedScore,
+      confidence: 95,
+      priceCny: 100,
+      capturedAt: "2026-07-28T11:00:00+08:00",
+      url: "https://example.test/a"
+    });
+
+    expect(
+      [lowerConfidence, lowerPrice, newerCapture, earlierUrl].sort(
+        compareRecommendations
+      )
+    ).toEqual([earlierUrl, newerCapture, lowerPrice, lowerConfidence]);
   });
 });

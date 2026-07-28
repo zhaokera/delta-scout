@@ -78,6 +78,20 @@ function scoreOne(
   };
 }
 
+export function compareRecommendations(left: Listing, right: Listing): number {
+  const totalDifference = (right.score?.total ?? 0) - (left.score?.total ?? 0);
+  if (totalDifference !== 0) return totalDifference;
+  if (right.confidence !== left.confidence) {
+    return right.confidence - left.confidence;
+  }
+  if ((left.priceCny ?? Infinity) !== (right.priceCny ?? Infinity)) {
+    return (left.priceCny ?? Infinity) - (right.priceCny ?? Infinity);
+  }
+  const capturedDifference = Date.parse(right.capturedAt) - Date.parse(left.capturedAt);
+  if (capturedDifference !== 0) return capturedDifference;
+  return left.url.localeCompare(right.url);
+}
+
 export function scoreEligibleListings(
   listings: Listing[],
   now = new Date()
@@ -90,19 +104,5 @@ export function scoreEligibleListings(
       ...listing,
       score: scoreOne(listing, candidates, now)
     }))
-    .sort((left, right) => {
-      const totalDifference =
-        (right.score?.total ?? 0) - (left.score?.total ?? 0);
-      if (totalDifference !== 0) return totalDifference;
-      if (right.confidence !== left.confidence) {
-        return right.confidence - left.confidence;
-      }
-      if ((left.priceCny ?? Infinity) !== (right.priceCny ?? Infinity)) {
-        return (left.priceCny ?? Infinity) - (right.priceCny ?? Infinity);
-      }
-      const capturedDifference =
-        Date.parse(right.capturedAt) - Date.parse(left.capturedAt);
-      if (capturedDifference !== 0) return capturedDifference;
-      return left.url.localeCompare(right.url);
-    });
+    .sort(compareRecommendations);
 }
