@@ -10,6 +10,17 @@ Delta Account Scout 每次刷新时，应尽量遍历交易猫、盼之代售和
 
 默认候选池采用用户确认的均衡规则：在全部合格账号已经完成统一评分后，从交易猫、盼之和螃蟹账号分别取本平台得分最高的 10 个，合并后再按统一得分排序，形成最多 30 个账号的跨平台候选池。某个平台不足 10 个真实合格账号时展示实际数量，不由其它平台补位，也不复制或伪造商品凑数。
 
+## 与现有设计的关系
+
+本设计是 `2026-07-28-delta-account-scout-design.md` 和 `2026-07-28-pxb7-public-api-collector-design.md` 的增量替代规格，并在以下冲突点拥有更高优先级：
+
+- 用“遍历到平台自然末页 + 100 页/2000 摘要/500 详情异常安全上限”替换总设计中的“最多 3 页/60 摘要/20 详情”；
+- 用同一通用安全上限替换螃蟹设计中的“最多 3 页/48 条”；
+- 用“全部新鲜合格账号统一评分后，每平台 Top 10，合并为均衡 Top 30”替换旧设计中“默认展示全部 eligible”的行为；
+- 用本设计的来源状态、API 视图和实时验收契约补充旧设计。
+
+旧设计的硬条件、证据解析、评分权重、请求限速、只读安全边界、失败隔离和螃蟹字段契约在未被上述条目明确替换时继续有效。实施计划和验收测试必须同时引用本设计与仍有效的旧规格条款，不能继续保留旧上限。
+
 ## 已验证的当前问题
 
 现有协调器把单来源扫描固定限制为 3 页、60 条摘要和 20 条详情。交易猫和盼之的适配器只识别 HTML 中的 `rel=next`，但两个站点当前页面都不提供这种链接，导致一次刷新只读取第一页。
@@ -78,29 +89,91 @@ flowchart LR
 
 ### 交易猫
 
-第一页继续从用户确认过的公开筛选 URL读取 SSR 商品卡，避免额外接口请求。若第一页有商品，下一页改为页面实际使用的公开只读 MTop 请求：
+第一页继续从用户确认过的公开筛选 URL 读取 SSR 商品卡，避免额外接口请求。若第一页有商品，下一页改为页面实际使用的公开只读 MTop 请求：
 
-- API：`mtop.com.jym.layout.pc.goodslist.getUnifiedGoodsList`
+- 方法与地址：`POST https://mtop.jiaoyimao.com/h5/mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist/1.0/`
+- API 名：`mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist`
 - 版本：`1.0`
 - `appKey`：`12574478`
 - `pageSize`：`16`
 - `modelType`：`h5`
-- 页码从字符串 `"2"` 开始递增；
-- 搜索条件、游戏 ID、客户端 ID、平台 ID、分类 ID和父分类 ID固定来自已验证的目标筛选；
-- 嵌套对象按网页的 `needFormatMtopDate` 行为先序列化为 JSON 字符串；
-- 返回值只接受 `ret` 包含 `SUCCESS::调用成功`、`data.result.deliverComps` 为数组且 `hasNextPage` 可解释为布尔值的结构。
+- 页码从字符串 `"2"` 开始递增。
+
+每次请求的 URL 查询参数固定为：
+
+```text
+jsv=2.7.2
+appKey=12574478
+t={13 位毫秒时间戳}
+sign={32 位小写 MD5}
+api=mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist
+v=1.0
+type=original
+dataType=json
+```
+
+POST 请求头固定为：
+
+```text
+Accept: application/json
+Content-Type: application/x-www-form-urlencoded
+Origin: https://www.jiaoyimao.com
+Referer: {完整的目标筛选 URL}
+User-Agent: DeltaAccountScout/0.1 (+local personal comparison tool)
+jym-meta-h5: {下述单行 JSON}
+x-ua: DeltaAccountScout/0.1 (+local personal comparison tool)
+Cookie: _m_h5_tk={匿名 Token 值}; _m_h5_tk_enc={匿名校验值}
+```
+
+`jym-meta-h5` 使用网页已验证的字段形状：
+
+```json
+{
+  "sid": "{200 至 599 的随机整数}{13 位毫秒时间戳}",
+  "ssids": "{与 sid 相同}",
+  "ch": "",
+  "plat": "JYM_IOS_TOUCH",
+  "platform": "JYM_IOS_TOUCH",
+  "terminal": "pc",
+  "osCode": "other",
+  "chCode": "h5",
+  "ieuAppCode": "",
+  "webEntryType": "",
+  "ttidExtInfo": "#H5"
+}
+```
+
+POST body 只有一个 `data` 表单字段。先构造下列对象，其中 `searchCondition` 和 `gameCondition` 已经是 JSON 字符串，不能再次按对象转义；然后对整个对象执行一次 `JSON.stringify`，最后用标准 `application/x-www-form-urlencoded` 编码为 `data={百分号编码后的 JSON 文本}`：
+
+```json
+{
+  "searchCondition": "{\"is_second_real_name\":{\"selectType\":1,\"conditionList\":[\"10071\"],\"statConditionList\":[\"可二次实名\"],\"conditionType\":2},\"attr_7393855783477590029\":{\"selectType\":2,\"multiSearchCondition\":true,\"conditionList\":[],\"childCondition\":{\"mp_7393855783922186253\":{\"极品|S\":[\"M7战斗步枪-棱镜攻势S2\"],\"极品|A\":[\"M7战斗步枪-棱镜攻势S2\"]}},\"statConditionList\":[],\"conditionType\":3}}",
+  "relateId": "10101",
+  "pageSize": 16,
+  "modelType": "h5",
+  "queryType": 1,
+  "goodsScene": "goods_search_new",
+  "gameCondition": "{\"gameId\":2007840,\"platformId\":2,\"clientId\":110}",
+  "categoryId": 8845004,
+  "parentId": 8845003,
+  "class": "com.jym.delivery.hsf.dto.unifiedgoodslist.GoodsListQueryParams",
+  "page": "2"
+}
+```
+
+后续页只修改 `page` 字符串；筛选条件、游戏 ID、客户端 ID、平台 ID、分类 ID 和父分类 ID 不得改变。上述对象等价于网页的 `needFormatMtopDate` 行为：原始嵌套对象先各自 `JSON.stringify`，再序列化最外层 `data`。
 
 MTop H5 签名使用网页自身的匿名握手：
 
-1. 对精确列表 API 发起无登录、只读 POST；
-2. 接收平台签发的 `_m_h5_tk` 和 `_m_h5_tk_enc` 匿名 Cookie；
+1. 首次请求不带 Cookie，Token 视为空字符串，仍按完整公式生成签名并发送上述精确请求；
+2. 接受预期的 `FAIL_SYS_TOKEN_EMPTY` 响应，并只从 `Set-Cookie` 读取平台签发的 `_m_h5_tk` 和 `_m_h5_tk_enc`；
 3. 取 `_m_h5_tk` 下划线前的 Token，按 `md5(token + "&" + t + "&" + appKey + "&" + data)` 生成签名；
-4. 使用同一匿名 Cookie 重发该只读列表请求；
+4. 使用新的 `t`、重新计算的 `sign` 和同一份未重新编码的 `data` JSON 文本，携带两个匿名 Cookie 重发该只读列表请求；
 5. Token 只保存在采集器内存，不写入 SQLite、日志、证据、配置或浏览器，不读取或复用用户的登录 Cookie。
 
-Token 失效时允许重新握手一次；仍失败则按来源失败或部分失败处理。不得调用商品操作、收藏、沟通、下单或支付 API，也不得尝试相邻接口。
+签名输入中的 `data` 是 URL 编码前的完整 JSON 文本，编码顺序固定为“构造内层 JSON 字符串 → 外层 `JSON.stringify` → 计算 MD5 → 表单百分号编码”。Token 失效响应允许清除内存 Cookie 并重新握手一次；仍失败则按来源失败或部分失败处理。不得把 Cookie 合并字符串输出到日志，也不得调用商品操作、收藏、沟通、下单或支付 API，或尝试相邻接口。
 
-MTop `deliverComps` 中只有结构明确、能解析出纯数字 `goodsId`、价格、标题和商品 URL 的商品组件进入摘要。页面装饰、广告或缺少身份字段的组件忽略。分页以响应的 `hasNextPage` 为权威；如果它为真但下一页无新 ID，通用无新增保护停止并记录成功。
+成功响应只接受 `ret` 为字符串数组且包含 `SUCCESS::调用成功`、`data.result` 为对象、`data.result.deliverComps` 为数组、`data.result.hasNextPage` 为布尔值或字符串 `"true" | "false"` 的结构。MTop `deliverComps` 中只有结构明确、能解析出纯数字 `goodsId`、有限非负价格、标题和本站商品 URL 的商品组件进入摘要；页面装饰、广告或缺少身份字段的组件忽略。分页以响应的 `hasNextPage` 为权威；如果它为真但下一页无新 ID，通用无新增保护停止并记录成功。
 
 ### 盼之代售
 
@@ -143,20 +216,35 @@ MTop `deliverComps` 中只有结构明确、能解析出纯数字 `goodsId`、�
 - `view=all&status=needs_verification`：待人工核验；
 - `view=all&status=rejected`：已淘汰。
 
+API 参数契约：
+
+- `status` 允许 `eligible | needs_verification | rejected`，省略时默认 `eligible`；
+- `view` 允许 `pool | all`；
+- 同时省略 `view` 和 `status` 时等价于 `view=pool&status=eligible`；
+- 只省略 `view` 时，`status=eligible` 默认 `pool`，其它两个状态默认 `all`，兼容现有只传状态的客户端；
+- 只省略 `status` 时按默认 `eligible` 处理；
+- 显式 `view=pool` 只允许与 `status=eligible` 组合；
+- 未知 `view`、未知 `status` 或 `pool + 非 eligible` 返回 HTTP 400 和稳定错误码 `invalid_listing_view`，不能静默退化。
+
 候选池不足 30 条时显示实际数量，并在界面标明每个平台贡献数量。全部合格视图不应用每平台 10 条限制。
 
 ## 来源状态与界面
 
-来源状态新增并持久化以下字段：
+数据库继续以现有 `source_status.state` 作为唯一持久化状态，允许值保持 `idle | success | partial | blocked | failed`，不新增第二个容易冲突的状态列。只新增并持久化：
 
 - `pagesScanned`：本轮成功解析的列表页数；
 - `itemCount`：本轮去重后的来源商品总数；
-- `eligibleCount`：刷新和统一派生处理后的合格商品数；
-- `candidateCount`：进入均衡候选池的数量，范围 0–10；
-- `completion`：`complete | partial | blocked | failed`；
 - `stopReason`：例如 `end_of_pages`、`no_new_items`、`repeated_request`、`safety_limit`、`captcha_required` 或结构错误。
 
-SQLite 启动迁移使用幂等 `ALTER TABLE` 或表重建方式补齐缺失列，保留用户已有快照。
+API 的来源视图额外返回派生字段：
+
+- `eligibleCount`：当前可参与统一评分的来源商品中，`eligibility === "eligible"` 的数量；
+- `candidateCount`：当前进入均衡候选池的数量，范围 0–10；
+- `completion`：`state=success` 映射为 `complete`，`partial | blocked | failed` 保持同名，`idle` 映射为 `idle`。
+
+SQLite 启动迁移使用幂等 `ALTER TABLE` 补充 `pages_scanned INTEGER NOT NULL DEFAULT 0` 与可空 `stop_reason TEXT`，保留旧行的 `state`、`item_count` 和时间戳。旧行启动后 `pagesScanned=0`、`stopReason=null`；未扫描来源继续为 `idle`。入口失败时重置本轮 `pagesScanned=0`，但不删除旧 Listing。
+
+`eligibleCount` 和 `candidateCount` 不写入数据库，避免它们在统一评分前失真。每轮三来源尝试完成后，协调器先在一个派生更新事务中写回所有新鲜 Listing 的统一分数，再由 API/Repository 使用同一个 `selectBalancedCandidatePool` 结果动态计算两个数量；因此来源卡、候选 API 和全部合格 API 使用同一候选定义。
 
 前端默认状态标签改为：
 
@@ -186,6 +274,8 @@ SQLite 启动迁移使用幂等 `ALTER TABLE` 或表重建方式补齐缺失列�
 - 交易猫匿名签名或响应结构变化：明确标记结构/签名错误，不退化为重复第一页；
 - 数据库写入失败：本轮不覆盖旧快照；
 - 某来源失败不妨碍其它来源完成和统一评分；失败来源保留旧快照时，其数据必须显示陈旧时间。
+
+每轮刷新开始时记录统一的 `refreshStartedAt`。只有本轮结果为 `success` 或 `partial` 且该来源快照的 `capturedAt >= refreshStartedAt`，其 Listing 才属于“新鲜集合”，参与本轮三平台统一评分、每平台 Top 10 和默认候选池。入口即 `blocked`/`failed` 的来源保留旧 Listing 供 `view=all` 查阅，但旧 Listing 的 `score` 在派生更新中清空为 `null`，不进入默认候选池，也不影响价格或资产归一化；界面显示来源失败和旧快照时间。部分成功来源使用本轮已取得的新快照参与评分，同时显示 `partial` 警告。
 
 ## 测试策略
 
