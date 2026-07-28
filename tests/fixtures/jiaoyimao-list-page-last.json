@@ -1,0 +1,34 @@
+{
+  "ret": ["SUCCESS::调用成功"],
+  "data": {
+    "result": {
+      "hasNextPage": "false",
+      "deliverComps": [
+        {
+          "type": "8",
+          "subType": "10",
+          "data": {
+            "goodsId": "1784550994519333",
+            "detailUrlSeo": "https://www.jiaoyimao.com/jg2007840/1784550994519333.html?isGray=true",
+            "price": "5888",
+            "title": "总资产268M 9干员外观",
+            "publishName": "QQ双端",
+            "serverName": "安卓QQ",
+            "sellPoints": [
+              {
+                "desc": "巨浪(极品)"
+              }
+            ],
+            "tagMap": {
+              "safeServiceTag": [
+                {
+                  "tagName": "平台验号"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

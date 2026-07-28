@@ -2,9 +2,16 @@ import { load } from "cheerio";
 import { toEvidenceRecords } from "../../../domain/evidence.js";
 import type {
   DetailParseResult,
+  ListParseResult,
   ListingSummary,
-  SourceAdapter
+  SourceAdapter,
+  SourceRequest
 } from "../types.js";
+import {
+  APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
+  APPROVED_JIAOYIMAO_REFERER,
+  isApprovedJiaoyimaoMtopRequest
+} from "../mtop.js";
 import {
   absoluteUrl,
   compactText,
@@ -14,12 +21,34 @@ import {
 } from "./shared.js";
 
 const BASE_URL = "https://www.jiaoyimao.com/";
-const FILTERED_CATALOG_URL =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?searchCondition=%7B%22is_second_real_name%22%3A%7B%22selectType%22%3A1%2C%22conditionList%22%3A%5B%2210071%22%5D%2C%22statConditionList%22%3A%5B%22%E5%8F%AF%E4%BA%8C%E6%AC%A1%E5%AE%9E%E5%90%8D%22%5D%2C%22conditionType%22%3A2%7D%2C%22attr_7393855783477590029%22%3A%7B%22selectType%22%3A2%2C%22multiSearchCondition%22%3Atrue%2C%22conditionList%22%3A%5B%5D%2C%22childCondition%22%3A%7B%22mp_7393855783922186253%22%3A%7B%22%E6%9E%81%E5%93%81%7CS%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CA%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%7D%7D%2C%22statConditionList%22%3A%5B%5D%2C%22conditionType%22%3A3%7D%7D&enforcePlat=2&newPage=true";
+const BROAD_CATALOG_URL = APPROVED_JIAOYIMAO_REFERER;
+const M7_QUERY_EVIDENCE = "M7战斗步枪-棱镜攻势S2(极品)";
+const BROAD_SEARCH_CONDITION = {
+  attr_7393855783477590029: {
+    selectType: 2,
+    multiSearchCondition: true,
+    conditionList: [],
+    childCondition: {
+      mp_7393855783922186253: {
+        "极品|S": ["M7战斗步枪-棱镜攻势S2"],
+        "极品|A": ["M7战斗步枪-棱镜攻势S2"],
+        "极品|B": ["M7战斗步枪-棱镜攻势S2"],
+        "极品|C": ["M7战斗步枪-棱镜攻势S2"]
+      }
+    },
+    statConditionList: [],
+    conditionType: 3
+  }
+};
+const GAME_CONDITION = {
+  gameId: 2_007_840,
+  platformId: 2,
+  clientId: 110
+};
 
 function normalizedM7Evidence(text: string): string | null {
   const match = text.match(
-    /M7\s*[-·：:]?\s*极品(?:\||\s)*([SA])/i
+    /M7\s*[-·：:]?\s*极品(?:\||\s)*([SABC])/i
   );
   return match ? `M7棱镜攻势(极品${match[1].toUpperCase()})` : null;
 }
@@ -37,6 +66,217 @@ function parseVerificationAt(text: string): string | null {
   if (!match) return null;
   const parsed = new Date(`${match[1]}T${match[2]}+08:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+type MtopEnvelope =
+  | { kind: "not_json" }
+  | { kind: "invalid" }
+  | {
+      kind: "ok";
+      hasNextPage: boolean;
+      deliverComps: unknown[];
+    };
+
+function parseMtopEnvelope(content: string): MtopEnvelope {
+  let root: unknown;
+  try {
+    root = JSON.parse(content);
+  } catch {
+    return { kind: "not_json" };
+  }
+  if (
+    !isRecord(root) ||
+    !Array.isArray(root.ret) ||
+    !root.ret.every((value) => typeof value === "string") ||
+    !root.ret.includes("SUCCESS::调用成功") ||
+    !isRecord(root.data) ||
+    !isRecord(root.data.result) ||
+    !Array.isArray(root.data.result.deliverComps)
+  ) {
+    return { kind: "invalid" };
+  }
+  const hasNextPage = root.data.result.hasNextPage;
+  if (
+    typeof hasNextPage !== "boolean" &&
+    hasNextPage !== "true" &&
+    hasNextPage !== "false"
+  ) {
+    return { kind: "invalid" };
+  }
+  return {
+    kind: "ok",
+    hasNextPage:
+      typeof hasNextPage === "boolean"
+        ? hasNextPage
+        : hasNextPage === "true",
+    deliverComps: root.data.result.deliverComps
+  };
+}
+
+function parseMtopPrice(value: unknown): number | null {
+  if (
+    typeof value !== "number" &&
+    (typeof value !== "string" || value.trim().length === 0)
+  ) {
+    return null;
+  }
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 ? price : null;
+}
+
+function parseMtopDetailUrl(
+  value: unknown,
+  goodsId: string
+): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.origin === "https://www.jiaoyimao.com" &&
+      url.pathname === `/jg2007840/${goodsId}.html`
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0
+    ? compactText(value)
+    : null;
+}
+
+function mtopComponentText(data: Record<string, unknown>): string[] {
+  const sellPoints = Array.isArray(data.sellPoints)
+    ? data.sellPoints.flatMap((point) =>
+        isRecord(point) && stringField(point.desc)
+          ? [stringField(point.desc)!]
+          : []
+      )
+    : [];
+  const tags = isRecord(data.tagMap)
+    ? Object.values(data.tagMap).flatMap((group) =>
+        Array.isArray(group)
+          ? group.flatMap((tag) =>
+              isRecord(tag) && stringField(tag.tagName)
+                ? [stringField(tag.tagName)!]
+                : []
+            )
+          : []
+      )
+    : [];
+  return [
+    stringField(data.title),
+    stringField(data.publishName),
+    stringField(data.serverName),
+    ...sellPoints,
+    ...tags,
+    M7_QUERY_EVIDENCE
+  ].filter((value): value is string => value !== null);
+}
+
+function parseMtopComponent(component: unknown): ListingSummary | null {
+  if (
+    !isRecord(component) ||
+    component.type !== "8" ||
+    component.subType !== "10" ||
+    !isRecord(component.data)
+  ) {
+    return null;
+  }
+  const data = component.data;
+  const goodsId =
+    typeof data.goodsId === "string" && /^\d+$/.test(data.goodsId)
+      ? data.goodsId
+      : null;
+  if (!goodsId) return null;
+  const title = stringField(data.title);
+  const priceCny = parseMtopPrice(data.price);
+  const url = parseMtopDetailUrl(data.detailUrlSeo, goodsId);
+  if (!title || priceCny === null || !url) return null;
+  return {
+    source: "jiaoyimao",
+    sourceListingId: goodsId,
+    url,
+    title,
+    rawText: [...new Set(mtopComponentText(data))].join("\n"),
+    priceCny
+  };
+}
+
+function parseSsrList(html: string): ListParseResult {
+  const $ = load(html);
+  const items: ListingSummary[] = [];
+  $(".pcGoodsListItem[data-goodsid][data-price][href]").each(
+    (_, node) => {
+      const card = $(node);
+      if (!isVisibleLink(card)) return;
+      const href = card.attr("href");
+      const sourceListingId = card.attr("data-goodsid");
+      if (!href || !sourceListingId) return;
+      const visibleText = compactText(card.text());
+      if (!visibleText) return;
+      const m7Evidence = normalizedM7Evidence(visibleText);
+      const title =
+        compactText(
+          card.find("[data-goods-name]").first().attr("data-goods-name") ??
+            ""
+        ) || visibleText;
+      items.push({
+        source: "jiaoyimao",
+        sourceListingId,
+        url: absoluteUrl(BASE_URL, href),
+        title,
+        rawText: m7Evidence
+          ? `${visibleText}\n${m7Evidence}`
+          : visibleText,
+        priceCny: parseNumber(card.attr("data-price"))
+      });
+    }
+  );
+  return items.length > 0
+    ? { kind: "ok", items }
+    : { kind: "blocked", reason: "structure_changed" };
+}
+
+function makeMtopListRequest(page: number): SourceRequest {
+  return {
+    url: APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
+    options: {
+      method: "POST",
+      accept: "application/json",
+      contentType: "application/x-www-form-urlencoded",
+      origin: "https://www.jiaoyimao.com",
+      referer: BROAD_CATALOG_URL,
+      body: JSON.stringify({
+        searchCondition: JSON.stringify(BROAD_SEARCH_CONDITION),
+        relateId: "10101",
+        pageSize: 16,
+        modelType: "h5",
+        queryType: 1,
+        goodsScene: "goods_search_new",
+        gameCondition: JSON.stringify(GAME_CONDITION),
+        categoryId: 8_845_004,
+        parentId: 8_845_003,
+        class:
+          "com.jym.delivery.hsf.dto.unifiedgoodslist.GoodsListQueryParams",
+        page: String(page)
+      }),
+      anonymousMtop: {
+        api: "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist",
+        version: "1.0",
+        appKey: "12574478"
+      }
+    }
+  };
 }
 
 function extractDetail(
@@ -110,7 +350,7 @@ function extractDetail(
 
 export const jiaoyimaoAdapter: SourceAdapter = {
   source: "jiaoyimao",
-  entryUrl: FILTERED_CATALOG_URL,
+  entryUrl: BROAD_CATALOG_URL,
 
   discoverCatalog(html, _query) {
     if (isBlockedHtml(html)) {
@@ -121,54 +361,56 @@ export const jiaoyimaoAdapter: SourceAdapter = {
       ".pcGoodsListItem[data-goodsid][data-price][href]"
     ).first();
     return verifiedCard.length > 0 && isVisibleLink(verifiedCard)
-      ? { kind: "ok", request: { url: FILTERED_CATALOG_URL } }
+      ? { kind: "ok", request: { url: BROAD_CATALOG_URL } }
       : { kind: "blocked", reason: "unverified_structure" };
   },
 
-  parseList(html) {
-    if (isBlockedHtml(html)) {
+  parseList(content) {
+    const envelope = parseMtopEnvelope(content);
+    if (envelope.kind === "invalid") {
+      return { kind: "blocked", reason: "structure_changed" };
+    }
+    if (envelope.kind === "ok") {
+      return {
+        kind: "ok",
+        items: envelope.deliverComps.flatMap((component) => {
+          const item = parseMtopComponent(component);
+          return item ? [item] : [];
+        })
+      };
+    }
+    if (isBlockedHtml(content)) {
       return { kind: "blocked", reason: "captcha_required" };
     }
-    const $ = load(html);
-    const items: ListingSummary[] = [];
-    $(".pcGoodsListItem[data-goodsid][data-price][href]").each(
-      (_, node) => {
-        const card = $(node);
-        if (!isVisibleLink(card)) return;
-        const href = card.attr("href");
-        const sourceListingId = card.attr("data-goodsid");
-        if (!href || !sourceListingId) return;
-        const visibleText = compactText(card.text());
-        if (!visibleText) return;
-        const m7Evidence = normalizedM7Evidence(visibleText);
-        const title =
-          compactText(
-            card.find("[data-goods-name]").first().attr("data-goods-name") ??
-              ""
-          ) || visibleText;
-        items.push({
-          source: "jiaoyimao",
-          sourceListingId,
-          url: absoluteUrl(BASE_URL, href),
-          title,
-          rawText: m7Evidence
-            ? `${visibleText}\n${m7Evidence}`
-            : visibleText,
-          priceCny: parseNumber(card.attr("data-price"))
-        });
-      }
-    );
-    return items.length > 0
-      ? { kind: "ok", items }
-      : { kind: "blocked", reason: "structure_changed" };
+    return parseSsrList(content);
   },
 
-  nextPage(html) {
-    const $ = load(html);
-    const link = $("a[rel='next'][href]").first();
-    const href = link.attr("href");
-    return href && isVisibleLink(link)
-      ? { url: absoluteUrl(BASE_URL, href) }
+  nextPage(content, currentRequest) {
+    const envelope = parseMtopEnvelope(content);
+    if (envelope.kind === "ok") {
+      if (
+        !envelope.hasNextPage ||
+        !isApprovedJiaoyimaoMtopRequest(currentRequest)
+      ) {
+        return null;
+      }
+      const body = JSON.parse(
+        currentRequest.options?.body ?? ""
+      ) as { page?: unknown };
+      const currentPage = Number(body.page);
+      return Number.isSafeInteger(currentPage) && currentPage >= 2
+        ? makeMtopListRequest(currentPage + 1)
+        : null;
+    }
+    if (
+      envelope.kind === "invalid" ||
+      currentRequest.url !== BROAD_CATALOG_URL ||
+      currentRequest.options !== undefined
+    ) {
+      return null;
+    }
+    return parseSsrList(content).kind === "ok"
+      ? makeMtopListRequest(2)
       : null;
   },
 

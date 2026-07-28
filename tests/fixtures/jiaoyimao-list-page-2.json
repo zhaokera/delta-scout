@@ -1,0 +1,46 @@
+{
+  "ret": ["SUCCESS::调用成功"],
+  "data": {
+    "result": {
+      "hasNextPage": "true",
+      "deliverComps": [
+        {
+          "type": "2",
+          "subType": "banner",
+          "data": {
+            "title": "热门推荐"
+          }
+        },
+        {
+          "type": "8",
+          "subType": "10",
+          "data": {
+            "goodsId": "1784550994519222",
+            "detailUrlSeo": "https://www.jiaoyimao.com/jg2007840/1784550994519222.html?isGray=true",
+            "price": "2000.0",
+            "title": "总资产33.3M 6干员外观",
+            "publishName": "QQ双端",
+            "serverName": "安卓QQ",
+            "sellPoints": [
+              {
+                "desc": "威龙-凌霄戍卫"
+              }
+            ],
+            "tagMap": {
+              "featureTag": [
+                {
+                  "tagName": "不可二次实名"
+                }
+              ],
+              "safeServiceTag": [
+                {
+                  "tagName": "赠永久包赔"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

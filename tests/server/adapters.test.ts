@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 import { jiaoyimaoAdapter } from "../../src/server/collector/adapters/jiaoyimao.js";
 import { panzhiAdapter } from "../../src/server/collector/adapters/panzhi.js";
 import { pxb7Adapter } from "../../src/server/collector/adapters/pxb7.js";
+import {
+  APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
+  isApprovedJiaoyimaoMtopRequest
+} from "../../src/server/collector/mtop.js";
 
 async function fixture(name: string): Promise<string> {
   return readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
@@ -151,7 +155,32 @@ describe("jiaoyimao adapter", () => {
     });
   });
 
-  it("recognizes the verified filtered catalog and parses its cards", async () => {
+  it("uses the broad S/A/B/C catalog without a second-real-name filter", () => {
+    const entry = new URL(jiaoyimaoAdapter.entryUrl);
+    const search = JSON.parse(
+      entry.searchParams.get("searchCondition") ?? ""
+    ) as Record<string, unknown>;
+    expect(search).not.toHaveProperty("is_second_real_name");
+    expect(search).toEqual({
+      attr_7393855783477590029: {
+        selectType: 2,
+        multiSearchCondition: true,
+        conditionList: [],
+        childCondition: {
+          mp_7393855783922186253: {
+            "极品|S": ["M7战斗步枪-棱镜攻势S2"],
+            "极品|A": ["M7战斗步枪-棱镜攻势S2"],
+            "极品|B": ["M7战斗步枪-棱镜攻势S2"],
+            "极品|C": ["M7战斗步枪-棱镜攻势S2"]
+          }
+        },
+        statConditionList: [],
+        conditionType: 3
+      }
+    });
+  });
+
+  it("recognizes the verified broad catalog and parses its SSR cards", async () => {
     const html = await fixture("jiaoyimao-list.html");
     const discovery = jiaoyimaoAdapter.discoverCatalog(
       html,
@@ -182,12 +211,169 @@ describe("jiaoyimao adapter", () => {
     expect(result.items[2].rawText).toContain(
       "M7棱镜攻势(极品A)"
     );
-    expect(
-      jiaoyimaoAdapter.nextPage(html, {
-        url: jiaoyimaoAdapter.entryUrl
-      })
-    ).toBeNull();
   });
+
+  it("continues from SSR page one with the approved MTop page-two request", async () => {
+    const html = await fixture("jiaoyimao-list.html");
+    const next = jiaoyimaoAdapter.nextPage(html, {
+      url: jiaoyimaoAdapter.entryUrl
+    });
+
+    expect(next).not.toBeNull();
+    expect(next?.url).toBe(APPROVED_JIAOYIMAO_MTOP_ENDPOINT);
+    expect(next?.options).toMatchObject({
+      method: "POST",
+      contentType: "application/x-www-form-urlencoded",
+      origin: "https://www.jiaoyimao.com",
+      referer: jiaoyimaoAdapter.entryUrl,
+      anonymousMtop: {
+        api: "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist",
+        version: "1.0",
+        appKey: "12574478"
+      }
+    });
+    expect(isApprovedJiaoyimaoMtopRequest(next!)).toBe(true);
+    expect(JSON.parse(next?.options?.body ?? "")).toMatchObject({
+      page: "2",
+      pageSize: 16,
+      categoryId: 8845004,
+      parentId: 8845003
+    });
+  });
+
+  it("maps MTop products, ignores decorations, and advances only the page", async () => {
+    const page = await fixture("jiaoyimao-list-page-2.json");
+    const parsed = jiaoyimaoAdapter.parseList(page);
+    expect(parsed.kind).toBe("ok");
+    if (parsed.kind !== "ok") throw new Error("expected MTop list");
+    expect(parsed.items).toHaveLength(1);
+    expect(parsed.items[0]).toMatchObject({
+      source: "jiaoyimao",
+      sourceListingId: "1784550994519222",
+      url:
+        "https://www.jiaoyimao.com/jg2007840/1784550994519222.html?isGray=true",
+      title: "总资产33.3M 6干员外观",
+      priceCny: 2000
+    });
+    expect(parsed.items[0].rawText).toContain("QQ双端");
+    expect(parsed.items[0].rawText).toContain("安卓QQ");
+    expect(parsed.items[0].rawText).toContain("威龙-凌霄戍卫");
+    expect(parsed.items[0].rawText).toContain("不可二次实名");
+    expect(parsed.items[0].rawText).toContain("赠永久包赔");
+    expect(parsed.items[0].rawText).toContain(
+      "M7战斗步枪-棱镜攻势S2(极品)"
+    );
+    expect(jiaoyimaoAdapter.detailRequest(parsed.items[0])).toEqual({
+      url: parsed.items[0].url
+    });
+
+    const pageTwo = jiaoyimaoAdapter.nextPage(
+      await fixture("jiaoyimao-list.html"),
+      { url: jiaoyimaoAdapter.entryUrl }
+    );
+    if (!pageTwo?.options?.body) {
+      throw new Error("expected page-two MTop request");
+    }
+    const pageThree = jiaoyimaoAdapter.nextPage(page, pageTwo);
+    expect(pageThree).not.toBeNull();
+    expect(isApprovedJiaoyimaoMtopRequest(pageThree!)).toBe(true);
+    const pageTwoBody = JSON.parse(pageTwo.options.body) as Record<
+      string,
+      unknown
+    >;
+    const pageThreeBody = JSON.parse(
+      pageThree?.options?.body ?? ""
+    ) as Record<string, unknown>;
+    expect(pageThreeBody).toEqual({ ...pageTwoBody, page: "3" });
+  });
+
+  it("validates MTop JSON before applying HTML block-page detection", async () => {
+    const page = (await fixture("jiaoyimao-list-page-2.json")).replace(
+      "赠永久包赔",
+      "安全验证服务"
+    );
+    const parsed = jiaoyimaoAdapter.parseList(page);
+    expect(parsed.kind).toBe("ok");
+    if (parsed.kind !== "ok") throw new Error("expected MTop list");
+    expect(parsed.items[0].rawText).toContain("安全验证服务");
+  });
+
+  it("stops at the MTop natural last page", async () => {
+    const page = await fixture("jiaoyimao-list-page-last.json");
+    const parsed = jiaoyimaoAdapter.parseList(page);
+    expect(parsed.kind).toBe("ok");
+    if (parsed.kind !== "ok") throw new Error("expected MTop list");
+    expect(parsed.items).toHaveLength(1);
+    expect(parsed.items[0].sourceListingId).toBe("1784550994519333");
+
+    const pageTwo = jiaoyimaoAdapter.nextPage(
+      await fixture("jiaoyimao-list.html"),
+      { url: jiaoyimaoAdapter.entryUrl }
+    );
+    const pageThree = jiaoyimaoAdapter.nextPage(
+      await fixture("jiaoyimao-list-page-2.json"),
+      pageTwo!
+    );
+    expect(jiaoyimaoAdapter.nextPage(page, pageThree!)).toBeNull();
+  });
+
+  it.each([
+    ["invalid JSON", "{"],
+    [
+      "failed ret",
+      JSON.stringify({
+        ret: ["FAIL_SYS_TOKEN_EXPIRED::令牌过期"],
+        data: { result: { hasNextPage: false, deliverComps: [] } }
+      })
+    ],
+    [
+      "missing deliverComps",
+      JSON.stringify({
+        ret: ["SUCCESS::调用成功"],
+        data: { result: { hasNextPage: false } }
+      })
+    ],
+    [
+      "invalid hasNextPage",
+      JSON.stringify({
+        ret: ["SUCCESS::调用成功"],
+        data: { result: { hasNextPage: "yes", deliverComps: [] } }
+      })
+    ]
+  ])("blocks malformed MTop payload: %s", (_label, content) => {
+    expect(jiaoyimaoAdapter.parseList(content)).toEqual({
+      kind: "blocked",
+      reason: "structure_changed"
+    });
+  });
+
+  it.each(["B", "C"])(
+    "normalizes SSR M7 peak quality %s into detail-fetch evidence",
+    (quality) => {
+      const url =
+        `https://www.jiaoyimao.com/jg2007840/${quality}123.html`;
+      const result = jiaoyimaoAdapter.parseList(`
+        <a
+          class="pcGoodsListItem"
+          href="${url}"
+          data-goodsid="${quality}123"
+          data-price="5888"
+        >
+          <span data-goods-name="M7 account ${quality}"></span>
+          M7-极品${quality} 安卓QQ
+        </a>
+      `);
+      expect(result.kind).toBe("ok");
+      if (result.kind !== "ok") throw new Error("expected SSR list");
+      expect(result.items[0].rawText).toContain(
+        `M7棱镜攻势(极品${quality})`
+      );
+      expect(result.items[0].rawText).toMatch(/M7.*棱镜/);
+      expect(jiaoyimaoAdapter.detailRequest(result.items[0])).toEqual({
+        url
+      });
+    }
+  );
 
   it("parses only the current product detail and safety report", async () => {
     const summary = {
