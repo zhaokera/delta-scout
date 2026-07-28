@@ -457,6 +457,45 @@ describe("CollectionCoordinator", () => {
     });
   });
 
+  it("keeps the twenty-first hinted summary in review when detail collection is capped", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const items = Array.from({ length: 21 }, (_, index) => ({
+      ...summary(index + 1),
+      rawText: "QQ官服 查询匹配",
+      detailFetchHint: "m7_prism_query" as const
+    }));
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items })
+    });
+    const responses = new Map<string, FetchResult>([
+      [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+      ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+    ]);
+    for (const item of items.slice(0, 20)) {
+      responses.set(item.url, ok(item.url, "detail"));
+    }
+    const fetcher = new MapFetcher(responses);
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(fetcher.calls.filter((url) => url.includes("/detail/")))
+      .toHaveLength(20);
+    expect(
+      repository
+        .getListings()
+        .find(({ sourceListingId }) => sourceListingId === "S21")
+    ).toMatchObject({
+      m7PrismStatus: "unknown",
+      m7PrismQuality: null,
+      eligibility: "needs_verification",
+      parseWarnings: ["达到详情采集上限，待人工核验"]
+    });
+  });
+
   it.each(["B", "C"] as const)(
     "sends SSR peak quality %s through the real detail prefilter",
     async (quality) => {

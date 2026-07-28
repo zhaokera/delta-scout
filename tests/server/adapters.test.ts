@@ -290,6 +290,83 @@ describe("jiaoyimao adapter", () => {
     expect(pageThreeBody).toEqual({ ...pageTwoBody, page: "3" });
   });
 
+  it.each([
+    ["non-numeric goodsId", "goodsId", "invalid-id"],
+    ["invalid price", "price", "free"],
+    ["negative price", "price", "-1"],
+    ["non-finite price", "price", "Infinity"],
+    ["empty title", "title", "   "],
+    [
+      "external detail URL",
+      "detailUrlSeo",
+      "https://example.com/jg2007840/1784550994519222.html"
+    ],
+    [
+      "goodsId/path mismatch",
+      "detailUrlSeo",
+      "https://www.jiaoyimao.com/jg2007840/1784550994519999.html"
+    ]
+  ] as const)(
+    "ignores a product with %s while retaining its valid sibling",
+    async (_label, field, value) => {
+      const response = JSON.parse(
+        await fixture("jiaoyimao-list-page-2.json")
+      ) as {
+        data: {
+          result: {
+            deliverComps: Array<{
+              type: string;
+              subType: string;
+              data: Record<string, unknown>;
+            }>;
+          };
+        };
+      };
+      const product = response.data.result.deliverComps.find(
+        ({ type }) => type === "8"
+      );
+      if (!product) throw new Error("expected fixture product");
+      const validSibling = structuredClone(product);
+      validSibling.data.goodsId = "1784550994519244";
+      validSibling.data.detailUrlSeo =
+        "https://www.jiaoyimao.com/jg2007840/1784550994519244.html?isGray=true";
+      product.data[field] = value;
+      response.data.result.deliverComps.push(validSibling);
+
+      const parsed = jiaoyimaoAdapter.parseList(
+        JSON.stringify(response)
+      );
+      expect(parsed.kind).toBe("ok");
+      if (parsed.kind !== "ok") throw new Error("expected MTop list");
+      expect(parsed.items.map(({ sourceListingId }) => sourceListingId))
+        .toEqual(["1784550994519244"]);
+    }
+  );
+
+  it("accepts a valid envelope containing only decorations and invalid products", async () => {
+    const response = JSON.parse(
+      await fixture("jiaoyimao-list-page-2.json")
+    ) as {
+      data: {
+        result: {
+          deliverComps: Array<{
+            type: string;
+            data: Record<string, unknown>;
+          }>;
+        };
+      };
+    };
+    const product = response.data.result.deliverComps.find(
+      ({ type }) => type === "8"
+    );
+    if (!product) throw new Error("expected fixture product");
+    product.data.goodsId = "invalid-id";
+
+    expect(
+      jiaoyimaoAdapter.parseList(JSON.stringify(response))
+    ).toEqual({ kind: "ok", items: [] });
+  });
+
   it("validates MTop JSON before applying HTML block-page detection", async () => {
     const page = (await fixture("jiaoyimao-list-page-2.json")).replace(
       "赠永久包赔",
