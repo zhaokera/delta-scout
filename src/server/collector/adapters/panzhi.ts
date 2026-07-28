@@ -144,7 +144,8 @@ export const panzhiAdapter: SourceAdapter = {
     }
     const $ = load(html);
     const items: ListingSummary[] = [];
-    $("a[href*='/goodsDetails/']").each((_, node) => {
+    const goodsLinks = $("a[href*='/goodsDetails/']");
+    goodsLinks.each((_, node) => {
       const link = $(node);
       if (!isVisibleLink(link)) return;
       const href = link.attr("href");
@@ -161,7 +162,10 @@ export const panzhiAdapter: SourceAdapter = {
         priceCny: parsePrice(rawText)
       });
     });
-    if (items.length > 0 || $(".goods-list-with-game").length > 0) {
+    if (
+      items.length > 0 ||
+      ($(".goods-list-with-game").length > 0 && goodsLinks.length === 0)
+    ) {
       return { kind: "ok", items };
     }
     return { kind: "blocked", reason: "structure_changed" };

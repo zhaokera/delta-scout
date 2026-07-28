@@ -91,6 +91,19 @@ describe("panzhi adapter", () => {
     ).toBeNull();
   });
 
+  it("blocks a Panzhi catalog whose product links cannot be parsed", () => {
+    const html = `
+      <main class="goods-list-with-game">
+        <a href="/goodsDetails/BROKEN/6"></a>
+      </main>
+    `;
+
+    expect(panzhiAdapter.parseList(html)).toEqual({
+      kind: "blocked",
+      reason: "structure_changed"
+    });
+  });
+
   it.each([
     [
       "arbitrary HTML",
