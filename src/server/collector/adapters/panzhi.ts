@@ -17,6 +17,56 @@ import {
 
 const BASE_URL = "https://www.pzds.com/";
 
+function parsePanzhiDetailLink(
+  href: string
+): { sourceListingId: string; url: string } | null {
+  const absoluteAuthority = href
+    .trim()
+    .match(/^(?:https:)?\/\/([^/?#]+)/i)?.[1];
+  if (absoluteAuthority?.includes(":")) return null;
+  try {
+    const url = new URL(href, BASE_URL);
+    const match = url.pathname.match(
+      /^\/goodsDetails\/([A-Za-z0-9_-]+)\/6$/
+    );
+    if (
+      url.origin !== "https://www.pzds.com" ||
+      url.username ||
+      url.password ||
+      url.hash ||
+      !match
+    ) {
+      return null;
+    }
+    return {
+      sourceListingId: match[1],
+      url: absoluteUrl(BASE_URL, url.toString())
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isPanzhiLoginWall($: ReturnType<typeof load>): boolean {
+  const hasLoginAction = $("form[action]")
+    .toArray()
+    .some((node) =>
+      /(?:^|\/)login(?:[/?#]|$)/i.test($(node).attr("action") ?? "")
+    );
+  const hasPasswordInput = $("input")
+    .toArray()
+    .some((node) => {
+      const input = $(node);
+      return (
+        input.attr("type")?.toLowerCase() === "password" ||
+        /password|passwd/i.test(input.attr("name") ?? "")
+      );
+    });
+  const hasLoginText =
+    /登录|登\s*录|sign\s*in|log\s*in/i.test(compactText($("body").text()));
+  return hasLoginAction || (hasPasswordInput && hasLoginText);
+}
+
 function extractEvidence(html: string): ReturnType<typeof toEvidenceRecords> {
   const $ = load(html);
   $("script, style, noscript").remove();
@@ -143,6 +193,9 @@ export const panzhiAdapter: SourceAdapter = {
       return { kind: "blocked", reason: "captcha_required" };
     }
     const $ = load(html);
+    if (isPanzhiLoginWall($)) {
+      return { kind: "blocked", reason: "structure_changed" };
+    }
     const items: ListingSummary[] = [];
     const goodsLinks = $("a[href*='/goodsDetails/']");
     goodsLinks.each((_, node) => {
@@ -150,13 +203,14 @@ export const panzhiAdapter: SourceAdapter = {
       if (!isVisibleLink(link)) return;
       const href = link.attr("href");
       if (!href) return;
-      const match = href.match(/\/goodsDetails\/([^/?#]+)\//);
+      const detailLink = parsePanzhiDetailLink(href);
+      if (!detailLink) return;
       const rawText = compactText(link.text());
       if (!rawText) return;
       items.push({
         source: "panzhi",
-        sourceListingId: match?.[1] ?? null,
-        url: absoluteUrl(BASE_URL, href),
+        sourceListingId: detailLink.sourceListingId,
+        url: detailLink.url,
         title: compactText(link.find("p").first().text()) || rawText,
         rawText,
         priceCny: parsePrice(rawText)
@@ -173,6 +227,9 @@ export const panzhiAdapter: SourceAdapter = {
 
   nextPage(html, currentRequest) {
     const $ = load(html);
+    if (isBlockedHtml(html) || isPanzhiLoginWall($)) {
+      return null;
+    }
     if (
       $(".goods-list-with-game").length > 0 &&
       $("a[href*='/goodsDetails/']").length === 0
@@ -188,6 +245,9 @@ export const panzhiAdapter: SourceAdapter = {
     }
     if (
       currentUrl.origin !== "https://www.pzds.com" ||
+      currentUrl.username ||
+      currentUrl.password ||
+      currentUrl.port ||
       currentUrl.pathname !== "/goodsList/391/6"
     ) {
       return null;

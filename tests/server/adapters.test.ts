@@ -39,6 +39,68 @@ describe("panzhi adapter", () => {
     });
   });
 
+  it("keeps only canonical relative and absolute Panzhi detail URLs", () => {
+    const result = panzhiAdapter.parseList(`
+      <main class="goods-list-with-game">
+        <a href="/goodsDetails/RELATIVE_1/6?from=商品列表">
+          <p>合法相对链接</p><strong>¥ 100</strong>
+        </a>
+        <a href="https://www.pzds.com/goodsDetails/ABSOLUTE-2/6">
+          <p>合法绝对链接</p><strong>¥ 200</strong>
+        </a>
+        <a href="https://evil.example/goodsDetails/EVIL/6">
+          <p>跨域链接</p><strong>¥ 300</strong>
+        </a>
+      </main>
+    `);
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected parsed list");
+    expect(
+      result.items.map(({ sourceListingId, url }) => ({
+        sourceListingId,
+        url
+      }))
+    ).toEqual([
+      {
+        sourceListingId: "RELATIVE_1",
+        url: "https://www.pzds.com/goodsDetails/RELATIVE_1/6"
+      },
+      {
+        sourceListingId: "ABSOLUTE-2",
+        url: "https://www.pzds.com/goodsDetails/ABSOLUTE-2/6"
+      }
+    ]);
+    expect(result.items.map((item) => panzhiAdapter.detailRequest(item)))
+      .toEqual(result.items.map(({ url }) => ({ url })));
+  });
+
+  it.each([
+    ["external host", "https://evil.example/goodsDetails/EVIL/6"],
+    ["empty ID", "/goodsDetails//6"],
+    [
+      "userinfo",
+      "https://user:pass@www.pzds.com/goodsDetails/USERINFO/6"
+    ],
+    ["non-default port", "https://www.pzds.com:444/goodsDetails/PORT/6"],
+    ["explicit default port", "https://www.pzds.com:443/goodsDetails/PORT/6"],
+    ["hash", "/goodsDetails/HASH/6#fragment"],
+    ["extra path", "/goodsDetails/EXTRA/6/more"]
+  ])("blocks a catalog containing only an invalid %s detail URL", (_label, href) => {
+    const result = panzhiAdapter.parseList(`
+      <main class="goods-list-with-game">
+        <a href="${href}">
+          <p>无效商品</p><strong>¥ 100</strong>
+        </a>
+      </main>
+    `);
+
+    expect(result).toEqual({
+      kind: "blocked",
+      reason: "structure_changed"
+    });
+  });
+
   it("increments deterministic Panzhi result URLs without changing filters", async () => {
     const html = await fixture("panzhi-list-page-2.html");
     expect(
@@ -62,6 +124,8 @@ describe("panzhi adapter", () => {
   it.each([
     "https://example.com/goodsList/391/6?page=2",
     "https://www.pzds.com/goodsList/391/7?page=2",
+    "https://user:pass@www.pzds.com/goodsList/391/6?page=2",
+    "https://www.pzds.com:444/goodsList/391/6?page=2",
     "https://www.pzds.com/goodsList/391/6?page=",
     "https://www.pzds.com/goodsList/391/6?page=next",
     "https://www.pzds.com/goodsList/391/6?page=0",
@@ -71,6 +135,40 @@ describe("panzhi adapter", () => {
     expect(
       panzhiAdapter.nextPage(await fixture("panzhi-list.html"), { url })
     ).toBeNull();
+  });
+
+  it("blocks a Panzhi login wall before applying the empty marker", () => {
+    const html = `
+      <main class="goods-list-with-game">
+        <form action="/login">
+          <input type="password" name="password">
+          <button>登录</button>
+        </form>
+      </main>
+    `;
+
+    expect(panzhiAdapter.parseList(html)).toEqual({
+      kind: "blocked",
+      reason: "structure_changed"
+    });
+    expect(
+      panzhiAdapter.nextPage(html, {
+        url: "https://www.pzds.com/goodsList/391/6?page=2"
+      })
+    ).toBeNull();
+  });
+
+  it("does not mistake incidental login text for a Panzhi login wall", () => {
+    expect(
+      panzhiAdapter.parseList(`
+        <main class="goods-list-with-game">
+          <p>当前没有商品，登录后可同步筛选条件</p>
+        </main>
+      `)
+    ).toEqual({
+      kind: "ok",
+      items: []
+    });
   });
 
   it("treats only a verified empty Panzhi catalog as a natural end", () => {
