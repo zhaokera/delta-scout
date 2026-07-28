@@ -492,7 +492,7 @@ describe("listing API", () => {
     });
   });
 
-  it("excludes a newly blocked source while refresh score cleanup is pending", async () => {
+  it("keeps failed-source snapshots in the complete eligible view but not the pool", async () => {
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => {
       release = resolve;
@@ -588,7 +588,9 @@ describe("listing API", () => {
     ]);
     expect(pool.body.map(({ key }: Listing) => key)).toEqual(["panzhi:1"]);
     expect(allEligible.body.map(({ key }: Listing) => key)).toEqual([
-      "panzhi:1"
+      "jiaoyimao:1",
+      "panzhi:1",
+      "pxb7:1"
     ]);
     expect(
       allNeedsVerification.body.map(({ key }: Listing) => key)

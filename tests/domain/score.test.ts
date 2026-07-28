@@ -124,4 +124,34 @@ describe("scoreEligibleListings", () => {
       missingScore
     ]);
   });
+
+  it("scores 6000 candidates without rebuilding normalization ranges per item", () => {
+    const candidates = Array.from({ length: 6_000 }, (_, index) =>
+      makeListing({
+        key: `panzhi:bulk-${index}`,
+        sourceListingId: `bulk-${index}`,
+        url: `https://example.test/bulk/${index}`,
+        priceCny: index + 1,
+        totalAssetsM: null,
+        hafCoins: null
+      })
+    );
+    const originalMinimum = Math.min;
+    let minimumCalls = 0;
+    let results = candidates;
+    Math.min = (...values: number[]) => {
+      minimumCalls += 1;
+      return originalMinimum(...values);
+    };
+    try {
+      results = scoreEligibleListings(candidates, now);
+    } finally {
+      Math.min = originalMinimum;
+    }
+
+    expect(results).toHaveLength(6_000);
+    expect(results[0].priceCny).toBe(1);
+    expect(results.at(-1)?.priceCny).toBe(6_000);
+    expect(minimumCalls).toBeLessThanOrEqual(1);
+  });
 });

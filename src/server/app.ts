@@ -134,12 +134,9 @@ export function createApp(dependencies?: AppDependencies): Express {
     }
 
     const snapshot = readCurrentListingSnapshot(repository);
-    const listings =
-      status === "eligible"
-        ? snapshot.activeEligibleListings
-        : snapshot.listings.filter(
-            (listing) => listing.eligibility === status
-          );
+    const listings = snapshot.listings.filter(
+      (listing) => listing.eligibility === status
+    );
     response.json(
       view === "pool"
         ? snapshot.pool

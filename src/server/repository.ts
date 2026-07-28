@@ -40,11 +40,26 @@ interface SourceStatusRow {
   error: string | null;
 }
 
-interface ScanMetadata {
+export interface ScanMetadata {
   pagesScanned: number;
   stopReason: string | null;
   error?: string | null;
 }
+
+export type SourceRefreshStatusUpdate =
+  | {
+      source: SourceId;
+      state: "success" | "partial";
+      attemptedAt: Date;
+      itemCount: number;
+      metadata: ScanMetadata;
+    }
+  | {
+      source: SourceId;
+      state: "blocked" | "failed";
+      attemptedAt: Date;
+      error: string;
+    };
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
 
@@ -127,6 +142,80 @@ export class ListingRepository {
         WHERE source = ?
       `)
       .run(state, now.toISOString(), error, source);
+  }
+
+  commitRefresh(
+    listings: Listing[],
+    statusUpdates: SourceRefreshStatusUpdate[]
+  ): void {
+    try {
+      this.database.exec("BEGIN IMMEDIATE");
+      this.database.exec("DELETE FROM listings");
+      const insert = this.database.prepare(`
+        INSERT INTO listings (listing_key, source, eligibility, payload)
+        VALUES (?, ?, ?, ?)
+      `);
+      for (const listing of listings) {
+        const parsed = ListingSchema.parse(listing);
+        insert.run(
+          parsed.key,
+          parsed.source,
+          parsed.eligibility,
+          JSON.stringify(parsed)
+        );
+      }
+
+      const updateSuccess = this.database.prepare(`
+        UPDATE source_status
+        SET state = ?,
+            last_attempt_at = ?,
+            last_success_at = ?,
+            item_count = ?,
+            pages_scanned = ?,
+            stop_reason = ?,
+            error = ?
+        WHERE source = ?
+      `);
+      const updateFailure = this.database.prepare(`
+        UPDATE source_status
+        SET state = ?,
+            last_attempt_at = ?,
+            pages_scanned = 0,
+            stop_reason = 'error',
+            error = ?
+        WHERE source = ?
+      `);
+      for (const update of statusUpdates) {
+        const timestamp = update.attemptedAt.toISOString();
+        if ("metadata" in update) {
+          updateSuccess.run(
+            update.state,
+            timestamp,
+            timestamp,
+            update.itemCount,
+            update.metadata.pagesScanned,
+            update.metadata.stopReason,
+            update.metadata.error ?? null,
+            update.source
+          );
+        } else {
+          updateFailure.run(
+            update.state,
+            timestamp,
+            update.error,
+            update.source
+          );
+        }
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.database.exec("ROLLBACK");
+      } catch {
+        // Preserve the original validation or SQL error.
+      }
+      throw new Error("无法提交刷新快照", { cause: error });
+    }
   }
 
   getListings(eligibility?: Eligibility): Listing[] {

@@ -1,11 +1,51 @@
 import type { Listing, Score } from "./listing.js";
 
-function normalize(value: number | null, values: number[]): number {
-  if (value === null || values.length === 0) {
+interface NormalizationRange {
+  minimum: number;
+  maximum: number;
+}
+
+interface NormalizationStats {
+  prices: NormalizationRange | null;
+  totalAssets: NormalizationRange | null;
+  hafCoins: NormalizationRange | null;
+}
+
+function includeValue(
+  range: NormalizationRange | null,
+  value: number | null
+): NormalizationRange | null {
+  if (value === null) return range;
+  if (range === null) {
+    return { minimum: value, maximum: value };
+  }
+  if (value < range.minimum) range.minimum = value;
+  if (value > range.maximum) range.maximum = value;
+  return range;
+}
+
+function buildNormalizationStats(
+  candidates: Listing[]
+): NormalizationStats {
+  let prices: NormalizationRange | null = null;
+  let totalAssets: NormalizationRange | null = null;
+  let hafCoins: NormalizationRange | null = null;
+  for (const listing of candidates) {
+    prices = includeValue(prices, listing.priceCny);
+    totalAssets = includeValue(totalAssets, listing.totalAssetsM);
+    hafCoins = includeValue(hafCoins, listing.hafCoins);
+  }
+  return { prices, totalAssets, hafCoins };
+}
+
+function normalize(
+  value: number | null,
+  range: NormalizationRange | null
+): number {
+  if (value === null || range === null) {
     return 0;
   }
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
+  const { minimum, maximum } = range;
   if (minimum === maximum) {
     return 0.5;
   }
@@ -39,28 +79,18 @@ function safetyScore(listing: Listing, now: Date): number {
 
 function scoreOne(
   listing: Listing,
-  candidates: Listing[],
+  stats: NormalizationStats,
   now: Date
 ): Score {
-  const prices = candidates
-    .map(({ priceCny }) => priceCny)
-    .filter((value): value is number => value !== null);
-  const totalAssets = candidates
-    .map(({ totalAssetsM }) => totalAssetsM)
-    .filter((value): value is number => value !== null);
-  const hafCoins = candidates
-    .map(({ hafCoins: value }) => value)
-    .filter((value): value is number => value !== null);
-
   const price =
     listing.priceCny === null
       ? 0
-      : (1 - normalize(listing.priceCny, prices)) * 25;
+      : (1 - normalize(listing.priceCny, stats.prices)) * 25;
   const hasAssets =
     listing.totalAssetsM !== null || listing.hafCoins !== null;
   const assets =
-    normalize(listing.totalAssetsM, totalAssets) * 12 +
-    normalize(listing.hafCoins, hafCoins) * 5 +
+    normalize(listing.totalAssetsM, stats.totalAssets) * 12 +
+    normalize(listing.hafCoins, stats.hafCoins) * 5 +
     (hasAssets ? 3 : 0);
   const safety = safetyScore(listing, now);
   const confidence = (listing.confidence / 100) * 15;
@@ -100,10 +130,11 @@ export function scoreEligibleListings(
   const candidates = listings.filter(
     ({ eligibility }) => eligibility === "eligible"
   );
+  const stats = buildNormalizationStats(candidates);
   return candidates
     .map((listing) => ({
       ...listing,
-      score: scoreOne(listing, candidates, now)
+      score: scoreOne(listing, stats, now)
     }))
     .sort(compareRecommendations);
 }

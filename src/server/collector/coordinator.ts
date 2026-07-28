@@ -18,7 +18,10 @@ import {
   listingKey,
   normalizeListingUrl
 } from "../../domain/url.js";
-import type { ListingRepository } from "../repository.js";
+import type {
+  ListingRepository,
+  SourceRefreshStatusUpdate
+} from "../repository.js";
 import type {
   ListingDetail,
   ListingSummary,
@@ -54,10 +57,18 @@ interface CollectedSummary {
   warnings: string[];
 }
 
-interface RefreshSourceResult {
-  source: SourceId;
-  fresh: boolean;
-}
+type RefreshSourceResult =
+  | {
+      kind: "fresh";
+      source: SourceId;
+      listings: Listing[];
+      statusUpdate: SourceRefreshStatusUpdate;
+    }
+  | {
+      kind: "failed";
+      source: SourceId;
+      statusUpdate: SourceRefreshStatusUpdate;
+    };
 
 type StopReason =
   | "end_of_pages"
@@ -279,28 +290,40 @@ export class CollectionCoordinator {
     };
   }
 
-  private failSource(
+  private failedSource(
     source: SourceId,
     result: Exclude<
       Awaited<ReturnType<PageFetcher["fetchPage"]>>,
       { kind: "ok" }
     >
-  ): void {
-    if (result.kind === "blocked") {
-      this.repository.markSourceFailure(
+  ): RefreshSourceResult {
+    return {
+      kind: "failed",
+      source,
+      statusUpdate: {
         source,
-        result.reason,
-        this.now(),
-        "blocked"
-      );
-    } else {
-      this.repository.markSourceFailure(
+        state: result.kind === "blocked" ? "blocked" : "failed",
+        attemptedAt: this.now(),
+        error: result.kind === "blocked" ? result.reason : result.error
+      }
+    };
+  }
+
+  private failedSourceFromError(
+    source: SourceId,
+    error: unknown,
+    fallback: string
+  ): RefreshSourceResult {
+    return {
+      kind: "failed",
+      source,
+      statusUpdate: {
         source,
-        result.error,
-        this.now(),
-        "failed"
-      );
-    }
+        state: "failed",
+        attemptedAt: this.now(),
+        error: errorMessage(error, fallback)
+      }
+    };
   }
 
   private async refreshSource(
@@ -312,19 +335,21 @@ export class CollectionCoordinator {
       adapter.source
     );
     if (entry.kind !== "ok") {
-      this.failSource(adapter.source, entry);
-      return { source: adapter.source, fresh: false };
+      return this.failedSource(adapter.source, entry);
     }
 
     const discovery = adapter.discoverCatalog(entry.html, "三角洲行动");
     if (discovery.kind === "blocked") {
-      this.repository.markSourceFailure(
-        adapter.source,
-        discovery.reason,
-        this.now(),
-        "blocked"
-      );
-      return { source: adapter.source, fresh: false };
+      return {
+        kind: "failed",
+        source: adapter.source,
+        statusUpdate: {
+          source: adapter.source,
+          state: "blocked",
+          attemptedAt: this.now(),
+          error: discovery.reason
+        }
+      };
     }
 
     const collected: CollectedSummary[] = [];
@@ -361,8 +386,7 @@ export class CollectionCoordinator {
       }
       if (page.kind !== "ok") {
         if (pages === 0) {
-          this.failSource(adapter.source, page);
-          return { source: adapter.source, fresh: false };
+          return this.failedSource(adapter.source, page);
         }
         partial = true;
         stopReason = "error";
@@ -377,13 +401,11 @@ export class CollectionCoordinator {
       } catch (error) {
         const reason = errorMessage(error, "list_parse_failed");
         if (pages === 0) {
-          this.repository.markSourceFailure(
+          return this.failedSourceFromError(
             adapter.source,
-            reason,
-            this.now(),
-            "failed"
+            error,
+            "list_parse_failed"
           );
-          return { source: adapter.source, fresh: false };
         }
         partial = true;
         stopReason = "error";
@@ -392,13 +414,16 @@ export class CollectionCoordinator {
       }
       if (parsed.kind === "blocked") {
         if (pages === 0) {
-          this.repository.markSourceFailure(
-            adapter.source,
-            parsed.reason,
-            this.now(),
-            "blocked"
-          );
-          return { source: adapter.source, fresh: false };
+          return {
+            kind: "failed",
+            source: adapter.source,
+            statusUpdate: {
+              source: adapter.source,
+              state: "blocked",
+              attemptedAt: this.now(),
+              error: parsed.reason
+            }
+          };
         }
         partial = true;
         stopReason = "error";
@@ -547,18 +572,22 @@ export class CollectionCoordinator {
     const listings = collected.map((record) =>
       buildListing(record, capturedAt)
     );
-    this.repository.replaceSourceSnapshot(
-      adapter.source,
+    return {
+      kind: "fresh",
+      source: adapter.source,
       listings,
-      partial ? "partial" : "success",
-      capturedAt,
-      {
-        pagesScanned: pages,
-        stopReason: stopReason ?? "end_of_pages",
-        error: sourceError
+      statusUpdate: {
+        source: adapter.source,
+        state: partial ? "partial" : "success",
+        attemptedAt: capturedAt,
+        itemCount: listings.length,
+        metadata: {
+          pagesScanned: pages,
+          stopReason: stopReason ?? "end_of_pages",
+          error: sourceError
+        }
       }
-    );
-    return { source: adapter.source, fresh: true };
+    };
   }
 
   async refreshAll(): Promise<void> {
@@ -575,9 +604,10 @@ export class CollectionCoordinator {
 
   private async performRefreshAll(): Promise<void> {
     const refreshStartedAt = this.now();
-    const freshSources = new Set<SourceId>();
+    const retainedListings = this.repository.getListings();
+    const outcomes: RefreshSourceResult[] = [];
     for (const adapter of this.adapters) {
-      let result: RefreshSourceResult | null = null;
+      let result: RefreshSourceResult;
       try {
         await this.fetcher.beginSource?.(adapter.source);
         result = await this.refreshSource(
@@ -585,57 +615,55 @@ export class CollectionCoordinator {
           refreshStartedAt
         );
       } catch (error) {
-        this.repository.markSourceFailure(
+        result = this.failedSourceFromError(
           adapter.source,
-          errorMessage(error, "未知采集错误"),
-          this.now(),
-          "failed"
+          error,
+          "未知采集错误"
         );
       } finally {
         try {
           await this.fetcher.endSource?.(adapter.source);
         } catch (error) {
-          result = null;
-          this.repository.markSourceFailure(
+          result = this.failedSourceFromError(
             adapter.source,
-            errorMessage(error, "来源会话清理失败"),
-            this.now(),
-            "failed"
+            error,
+            "来源会话清理失败"
           );
         }
       }
-      if (result?.fresh) {
-        freshSources.add(result.source);
-      }
+      outcomes.push(result);
     }
 
-    const retainedListings = this.repository.getListings();
-    const freshListings = retainedListings.filter(
-      (listing) =>
-        freshSources.has(listing.source) &&
-        Date.parse(listing.capturedAt) >= refreshStartedAt.getTime()
+    const freshOutcomes = outcomes.filter(
+      (
+        outcome
+      ): outcome is Extract<RefreshSourceResult, { kind: "fresh" }> =>
+        outcome.kind === "fresh"
+    );
+    const freshListings = freshOutcomes.flatMap(
+      ({ listings }) => listings
     );
     const freshWithDuplicates = markPossibleDuplicates(freshListings);
     const scored = scoreEligibleListings(freshWithDuplicates, this.now());
     const scores = new Map(scored.map((listing) => [listing.key, listing.score]));
-    const freshDerived = new Map(
-      freshWithDuplicates.map((listing) => [
-        listing.key,
-        {
-          ...listing,
-          score: scores.get(listing.key) ?? null
-        }
-      ])
+    const freshDerived = freshWithDuplicates.map((listing) => ({
+      ...listing,
+      score: scores.get(listing.key) ?? null
+    }));
+    const replacedSources = new Set(
+      freshOutcomes.map(({ source }) => source)
     );
-    this.repository.updateDerivedListings(
-      retainedListings.map(
-        (listing) =>
-          freshDerived.get(listing.key) ?? {
-            ...listing,
-            score: null,
-            possibleDuplicateKeys: []
-          }
-      )
+    const retainedWithoutDerivedData = retainedListings
+      .filter((listing) => !replacedSources.has(listing.source))
+      .map((listing) => ({
+        ...listing,
+        score: null,
+        possibleDuplicateKeys: []
+      }));
+
+    this.repository.commitRefresh(
+      [...retainedWithoutDerivedData, ...freshDerived],
+      outcomes.map(({ statusUpdate }) => statusUpdate)
     );
   }
 }

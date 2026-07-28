@@ -158,6 +158,28 @@ function fakeAdapter(
   };
 }
 
+function freshSourceAdapter(
+  source: ListingSummary["source"],
+  index: number
+): SourceAdapter {
+  return fakeAdapter({
+    source,
+    entryUrl: `https://${source}.test/`,
+    discoverCatalog: () => ({
+      kind: "ok",
+      request: { url: `https://${source}.test/list/1` }
+    }),
+    parseList: () => ({
+      kind: "ok",
+      items: [
+        summaryForSource(source, index, {
+          embeddedDetail: listingDetail()
+        })
+      ]
+    })
+  });
+}
+
 function jiaoyimaoSsrCard(
   id: string,
   visibleText = "普通账号"
@@ -1092,6 +1114,131 @@ describe("CollectionCoordinator", () => {
     });
   });
 
+  it("collects every source before replacing any stored snapshot", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [
+        makeListing({
+          key: "panzhi:old",
+          sourceListingId: "old"
+        })
+      ],
+      "success"
+    );
+    repository.replaceSourceSnapshot(
+      "pxb7",
+      [
+        makeListing({
+          source: "pxb7",
+          key: "pxb7:old",
+          sourceListingId: "old"
+        })
+      ],
+      "success"
+    );
+    const adapters = [
+      freshSourceAdapter("panzhi", 1),
+      freshSourceAdapter("pxb7", 1)
+    ];
+    let panzhiSnapshotDuringPxb7Fetch: string[] = [];
+    const fetcher = new RoutingFetcher((request) => {
+      if (request.url === adapters[1].entryUrl) {
+        panzhiSnapshotDuringPxb7Fetch = repository
+          .getListings()
+          .filter(({ source }) => source === "panzhi")
+          .map(({ key }) => key);
+      }
+      return ok(request.url, "fixture");
+    });
+
+    await new CollectionCoordinator({
+      adapters,
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(panzhiSnapshotDuringPxb7Fetch).toEqual(["panzhi:old"]);
+    expect(repository.getListings().map(({ key }) => key)).toEqual([
+      "panzhi:panzhi-1",
+      "pxb7:pxb7-1"
+    ]);
+  });
+
+  it("rolls back every listing and source status when the atomic refresh commit fails", async () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const oldCapturedAt = new Date("2026-07-27T10:00:00.000Z");
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [
+        makeListing({
+          key: "panzhi:old",
+          sourceListingId: "old",
+          score: {
+            total: 90,
+            parts: {
+              safety: 40,
+              price: 20,
+              assets: 15,
+              confidence: 15
+            },
+            reasons: ["old"]
+          }
+        })
+      ],
+      "success",
+      oldCapturedAt
+    );
+    repository.replaceSourceSnapshot(
+      "pxb7",
+      [
+        makeListing({
+          source: "pxb7",
+          key: "pxb7:old",
+          sourceListingId: "old"
+        })
+      ],
+      "partial",
+      oldCapturedAt,
+      {
+        pagesScanned: 2,
+        stopReason: "error",
+        error: "old_partial"
+      }
+    );
+    const beforeListings = repository.getListings();
+    const beforeStatuses = repository.getSourceStatuses(oldCapturedAt);
+    database.exec(`
+      CREATE TRIGGER abort_second_source_status
+      BEFORE UPDATE ON source_status
+      WHEN NEW.source = 'pxb7' AND NEW.state = 'success'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced atomic refresh failure');
+      END;
+    `);
+    const adapters = [
+      freshSourceAdapter("panzhi", 1),
+      freshSourceAdapter("pxb7", 1)
+    ];
+
+    await expect(
+      new CollectionCoordinator({
+        adapters,
+        fetcher: new RoutingFetcher((request) =>
+          ok(request.url, "fixture")
+        ),
+        repository,
+        now: () => new Date("2026-07-28T12:00:00.000Z")
+      }).refreshAll()
+    ).rejects.toThrow();
+
+    expect(repository.getListings()).toEqual(beforeListings);
+    expect(
+      repository.getSourceStatuses(oldCapturedAt)
+    ).toEqual(beforeStatuses);
+  });
+
   it("keeps failed old payloads unscored while scoring other fresh sources", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const oldScore = {
@@ -1114,11 +1261,13 @@ describe("CollectionCoordinator", () => {
           capturedAt: "2026-07-27T00:00:00.000Z",
           priceCny: 6_000,
           totalAssetsM: 1_000,
-          score: oldScore
+          score: oldScore,
+          possibleDuplicateKeys: ["panzhi:duplicate"]
         })
       ],
       "success"
     );
+    const oldStatus = sourceStatus(repository, "jiaoyimao");
     const blockedAdapter = fakeAdapter({
       source: "jiaoyimao",
       entryUrl: "https://blocked.test/"
@@ -1155,10 +1304,13 @@ describe("CollectionCoordinator", () => {
       state: "blocked",
       pagesScanned: 0,
       stopReason: "error",
-      error: "captcha_required"
+      error: "captcha_required",
+      itemCount: oldStatus?.itemCount,
+      lastSuccessAt: oldStatus?.lastSuccessAt
     });
     expect(repository.getListing("jiaoyimao:old")).toMatchObject({
-      score: null
+      score: null,
+      possibleDuplicateKeys: []
     });
     expect(
       repository.getListings().find(({ source }) => source === "panzhi")
