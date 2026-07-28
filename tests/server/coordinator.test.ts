@@ -133,7 +133,10 @@ function jiaoyimaoDetail(evidence: string): string {
   `;
 }
 
-async function collectJiaoyimaoMtopItem(detailEvidence: string) {
+async function collectJiaoyimaoMtopItem(
+  detailEvidence: string,
+  failure?: "fetch_failed" | "parse_blocked"
+) {
   const page = JSON.parse(
     await fixture("jiaoyimao-list-page-2.json")
   ) as {
@@ -173,6 +176,16 @@ async function collectJiaoyimaoMtopItem(detailEvidence: string) {
       return ok(request.url, pageContent);
     }
     if (request.url === product.detailUrlSeo) {
+      if (failure === "fetch_failed") {
+        return {
+          kind: "failed",
+          url: request.url,
+          error: "request_timeout"
+        };
+      }
+      if (failure === "parse_blocked") {
+        return ok(request.url, "unrecognized detail page");
+      }
       return ok(request.url, jiaoyimaoDetail(detailEvidence));
     }
     return {
@@ -349,6 +362,98 @@ describe("CollectionCoordinator", () => {
     expect(listing).toMatchObject({
       m7PrismStatus: "premium",
       m7PrismQuality: null
+    });
+  });
+
+  it.each([
+    [
+      "a failed detail fetch",
+      "fetch_failed",
+      "详情获取失败：request_timeout"
+    ],
+    [
+      "a blocked detail parser",
+      "parse_blocked",
+      "详情解析受阻：structure_changed"
+    ]
+  ] as const)(
+    "keeps a hinted MTop listing in review after %s",
+    async (_label, failure, warning) => {
+      const { fetcher, listing, detailUrl } =
+        await collectJiaoyimaoMtopItem("", failure);
+
+      expect(fetcher.calls.map(({ url }) => url)).toContain(detailUrl);
+      expect(listing).toMatchObject({
+        m7PrismStatus: "unknown",
+        m7PrismQuality: null,
+        eligibility: "needs_verification",
+        parseWarnings: [warning]
+      });
+    }
+  );
+
+  it("keeps a truly unhinted summary without M7 evidence rejected", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapter = fakeAdapter({
+      parseList: () => ({
+        kind: "ok",
+        items: [{
+          ...summary(),
+          rawText: "QQ官服 普通账号"
+        }]
+      })
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(repository.getListings()[0]).toMatchObject({
+      m7PrismStatus: "absent",
+      m7PrismQuality: null,
+      eligibility: "rejected"
+    });
+  });
+
+  it("keeps explicit negative M7 evidence rejected after hinted detail failure", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const item = {
+      ...summary(),
+      rawText: "QQ官服 M7无棱镜攻势",
+      detailFetchHint: "m7_prism_query" as const
+    };
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items: [item] })
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")],
+        [
+          item.url,
+          { kind: "failed", url: item.url, error: "request_timeout" }
+        ]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(repository.getListings()[0]).toMatchObject({
+      m7PrismStatus: "absent",
+      m7PrismQuality: null,
+      eligibility: "rejected"
     });
   });
 
