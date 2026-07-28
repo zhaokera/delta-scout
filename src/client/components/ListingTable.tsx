@@ -1,4 +1,5 @@
-import type { Listing } from "../../domain/listing";
+import type { Listing, SourceId } from "../../domain/listing";
+import type { ListingView } from "../api";
 import type { SortKey } from "./FilterBar";
 
 const SOURCE_LABELS = {
@@ -6,6 +7,18 @@ const SOURCE_LABELS = {
   panzhi: "盼之",
   pxb7: "螃蟹"
 } as const;
+
+const VIEW_LABELS: Record<Exclude<ListingView, "pool">, string> = {
+  eligible: "全部合格",
+  needs_verification: "待人工核验",
+  rejected: "已淘汰"
+};
+
+const EMPTY_CONTRIBUTIONS: Record<SourceId, number> = {
+  jiaoyimao: 0,
+  panzhi: 0,
+  pxb7: 0
+};
 
 function money(value: number | null): string {
   return value === null
@@ -50,6 +63,9 @@ export interface ListingTableProps {
   listings: Listing[];
   selectedKey: string | null;
   sort: SortKey;
+  view?: ListingView;
+  totalCount?: number;
+  sourceContributions?: Record<SourceId, number>;
   onSortChange(sort: SortKey): void;
   onSelect(listing: Listing): void;
 }
@@ -58,19 +74,55 @@ export function ListingTable({
   listings,
   selectedKey,
   sort,
+  view = "pool",
+  totalCount,
+  sourceContributions = EMPTY_CONTRIBUTIONS,
   onSelect
 }: ListingTableProps) {
   const sorted = sortListings(listings, sort);
+  const loadedCount = totalCount ?? listings.length;
+  const filtered = sorted.length !== loadedCount;
+  const heading =
+    view === "pool"
+      ? `推荐候选 ${loadedCount} / 30`
+      : `${VIEW_LABELS[view]} ${loadedCount}`;
   return (
     <section className="listing-panel" aria-label="账号候选列表">
       <div className="listing-panel__heading">
-        <div>
-          <span className="section-index">02 / CANDIDATES</span>
-          <h2>候选清单</h2>
+        <div className="listing-panel__heading-main">
+          <span className="section-index">
+            {view === "pool" ? "02 / BALANCED POOL" : "02 / LISTING VIEW"}
+          </span>
+          <h2>{heading}</h2>
+          {view === "pool" ? (
+            <p className="listing-panel__dek">
+              每平台最多 10 · 跨平台统一评分 Top 30
+            </p>
+          ) : (
+            <p className="listing-panel__dek">
+              仅显示当前视图数据，高级筛选不会混入其它状态
+            </p>
+          )}
+          {filtered ? (
+            <p className="listing-panel__filter-count">
+              高级筛选显示 {sorted.length} / {loadedCount}
+            </p>
+          ) : null}
         </div>
-        <p>
-          <strong>{sorted.length}</strong> 条
-        </p>
+        {view === "pool" ? (
+          <div
+            className="listing-panel__contributions"
+            aria-label="推荐候选平台贡献"
+          >
+            <span>交易猫 {sourceContributions.jiaoyimao}</span>
+            <span>盼之 {sourceContributions.panzhi}</span>
+            <span>螃蟹 {sourceContributions.pxb7}</span>
+          </div>
+        ) : (
+          <p className="listing-panel__view-count">
+            <strong>{loadedCount}</strong> 当前视图
+          </p>
+        )}
       </div>
       <div className="listing-columns" aria-hidden="true">
         <span>账号 / 来源</span>

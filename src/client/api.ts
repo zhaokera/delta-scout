@@ -1,8 +1,13 @@
 import type {
-  Eligibility,
   Listing,
   SourceId
 } from "../domain/listing";
+
+export type ListingView =
+  | "pool"
+  | "eligible"
+  | "needs_verification"
+  | "rejected";
 
 export type SourceState =
   | "idle"
@@ -11,22 +16,41 @@ export type SourceState =
   | "blocked"
   | "failed";
 
+export type SourceCompletion =
+  | "complete"
+  | "partial"
+  | "blocked"
+  | "failed"
+  | "idle";
+
 export interface SourceStatusView {
   source: SourceId;
   state: SourceState;
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
+  pagesScanned: number;
   itemCount: number;
+  eligibleCount: number;
+  candidateCount: number;
+  stopReason: string | null;
+  completion: SourceCompletion;
   error: string | null;
   stale: boolean;
 }
 
 export interface ScoutApi {
   getSources(): Promise<SourceStatusView[]>;
-  getListings(status: Eligibility): Promise<Listing[]>;
+  getListings(view: ListingView): Promise<Listing[]>;
   getListing(key: string): Promise<Listing>;
   refresh(): Promise<void>;
 }
+
+const LISTING_QUERIES: Record<ListingView, string> = {
+  pool: "view=pool&status=eligible",
+  eligible: "view=all&status=eligible",
+  needs_verification: "view=all&status=needs_verification",
+  rejected: "view=all&status=rejected"
+};
 
 async function requestJson<T>(
   input: string,
@@ -44,10 +68,8 @@ async function requestJson<T>(
 
 export const httpScoutApi: ScoutApi = {
   getSources: () => requestJson<SourceStatusView[]>("/api/sources"),
-  getListings: (status) =>
-    requestJson<Listing[]>(
-      `/api/listings?status=${encodeURIComponent(status)}`
-    ),
+  getListings: (view) =>
+    requestJson<Listing[]>(`/api/listings?${LISTING_QUERIES[view]}`),
   getListing: (key) =>
     requestJson<Listing>(
       `/api/listings/${encodeURIComponent(key)}`

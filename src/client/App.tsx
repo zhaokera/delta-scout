@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Eligibility, Listing } from "../domain/listing";
+import type { Listing, SourceId } from "../domain/listing";
 import {
   httpScoutApi,
+  type ListingView,
   type ScoutApi,
   type SourceStatusView
 } from "./api";
@@ -20,6 +21,32 @@ const DEFAULT_FILTERS: AdvancedFilters = {
   recoveryCoverage: false,
   redSkin: "",
   julang: "all"
+};
+
+const EMPTY_STATES: Record<
+  ListingView,
+  { title: string; description: string }
+> = {
+  pool: {
+    title: "推荐候选暂为空",
+    description:
+      "当前没有可进入均衡 Top 30 的新鲜合格账号。商品会实时上下架，可刷新公开数据，或切到“待人工核验”检查证据不足的记录。"
+  },
+  eligible: {
+    title: "全部合格视图暂无记录",
+    description:
+      "当前快照中没有满足 QQ 官服、¥6,000 以内与 M7 棱镜攻势极品条件的账号。"
+  },
+  needs_verification: {
+    title: "待人工核验视图暂无记录",
+    description:
+      "当前没有因价格、武器品质或安全证据不足而需要人工补充核验的记录。"
+  },
+  rejected: {
+    title: "已淘汰视图暂无记录",
+    description:
+      "当前快照中没有明确违反硬条件而被淘汰的记录。"
+  }
 };
 
 function matchesFilters(
@@ -41,7 +68,7 @@ function matchesFilters(
 export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [sources, setSources] = useState<SourceStatusView[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
-  const [status, setStatus] = useState<Eligibility>("eligible");
+  const [view, setView] = useState<ListingView>("pool");
   const [sort, setSort] = useState<SortKey>("score");
   const [filters, setFilters] =
     useState<AdvancedFilters>(DEFAULT_FILTERS);
@@ -58,7 +85,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     try {
       const [nextSources, nextListings] = await Promise.all([
         api.getSources(),
-        api.getListings(status)
+        api.getListings(view)
       ]);
       setSources(nextSources);
       setListings(nextListings);
@@ -75,7 +102,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     } finally {
       setLoading(false);
     }
-  }, [api, status]);
+  }, [api, view]);
 
   useEffect(() => {
     void load();
@@ -85,6 +112,21 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     () => listings.filter((listing) => matchesFilters(listing, filters)),
     [filters, listings]
   );
+  const sourceContributions = useMemo<Record<SourceId, number>>(
+    () => ({
+      jiaoyimao:
+        sources.find(({ source }) => source === "jiaoyimao")
+          ?.candidateCount ?? 0,
+      panzhi:
+        sources.find(({ source }) => source === "panzhi")
+          ?.candidateCount ?? 0,
+      pxb7:
+        sources.find(({ source }) => source === "pxb7")
+          ?.candidateCount ?? 0
+    }),
+    [sources]
+  );
+  const emptyState = EMPTY_STATES[view];
 
   async function selectListing(listing: Listing) {
     setSelected(listing);
@@ -165,13 +207,16 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       <SourceStrip statuses={sources} />
 
       <FilterBar
-        status={status}
+        view={view}
         sort={sort}
         filters={filters}
         advancedOpen={advancedOpen}
-        onStatusChange={(nextStatus) => {
-          setStatus(nextStatus);
+        onViewChange={(nextView) => {
+          if (nextView === view) return;
+          setView(nextView);
+          setListings([]);
           setSelected(null);
+          setLoading(true);
         }}
         onSortChange={setSort}
         onFiltersChange={setFilters}
@@ -190,17 +235,27 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       ) : null}
 
       <div className="workspace">
-        <div className="workspace__list">
+        <div
+          className="workspace__list"
+          id="listing-view-panel"
+          role="tabpanel"
+          aria-labelledby={`listing-view-tab-${view}`}
+          aria-busy={loading}
+          tabIndex={0}
+        >
           {loading ? (
             <div className="loading-state" aria-live="polite">
               <i aria-hidden="true" />
-              正在读取候选快照…
+              正在读取当前视图快照…
             </div>
           ) : visibleListings.length > 0 ? (
             <ListingTable
               listings={visibleListings}
               selectedKey={selected?.key ?? null}
               sort={sort}
+              view={view}
+              totalCount={listings.length}
+              sourceContributions={sourceContributions}
               onSortChange={setSort}
               onSelect={(listing) => void selectListing(listing)}
             />
@@ -208,11 +263,8 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             <section className="empty-state" aria-label="空候选">
               <span aria-hidden="true">Ø</span>
               <div>
-                <h2>当前没有命中硬条件的账号</h2>
-                <p>
-                  这不代表平台上永久没有。商品会实时上下架，建议刷新后再看，
-                  或切到“待人工核验”检查证据不足的记录。
-                </p>
+                <h2>{emptyState.title}</h2>
+                <p>{emptyState.description}</p>
               </div>
               <button type="button" onClick={() => void refresh()}>
                 立即刷新

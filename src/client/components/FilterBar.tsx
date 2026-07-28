@@ -1,4 +1,6 @@
-import type { Eligibility, SourceId } from "../../domain/listing";
+import type { KeyboardEvent } from "react";
+import type { SourceId } from "../../domain/listing";
+import type { ListingView } from "../api";
 
 export type SortKey = "score" | "price" | "assets" | "confidence";
 
@@ -11,35 +13,66 @@ export interface AdvancedFilters {
 }
 
 interface FilterBarProps {
-  status: Eligibility;
+  view: ListingView;
   sort: SortKey;
   filters: AdvancedFilters;
   advancedOpen: boolean;
-  onStatusChange(status: Eligibility): void;
+  onViewChange(view: ListingView): void;
   onSortChange(sort: SortKey): void;
   onFiltersChange(filters: AdvancedFilters): void;
   onToggleAdvanced(): void;
   onReset(): void;
 }
 
-const STATUS_TABS: Array<{ value: Eligibility; label: string }> = [
-  { value: "eligible", label: "合格候选" },
+const VIEW_TABS: Array<{ value: ListingView; label: string }> = [
+  { value: "pool", label: "推荐候选" },
+  { value: "eligible", label: "全部合格" },
   { value: "needs_verification", label: "待人工核验" },
   { value: "rejected", label: "已淘汰" }
 ];
 
 export function FilterBar(props: FilterBarProps) {
+  function navigateTabs(
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number
+  ) {
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") {
+      nextIndex = (index + 1) % VIEW_TABS.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (index - 1 + VIEW_TABS.length) % VIEW_TABS.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = VIEW_TABS.length - 1;
+    }
+    if (nextIndex === null) return;
+
+    event.preventDefault();
+    const nextView = VIEW_TABS[nextIndex].value;
+    const tabs =
+      event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+        '[role="tab"]'
+      );
+    tabs?.[nextIndex]?.focus();
+    props.onViewChange(nextView);
+  }
+
   return (
     <section className="filter-panel" aria-label="候选筛选">
       <div className="filter-panel__primary">
-        <div className="status-tabs" role="tablist" aria-label="候选状态">
-          {STATUS_TABS.map((tab) => (
+        <div className="status-tabs" role="tablist" aria-label="候选视图">
+          {VIEW_TABS.map((tab, index) => (
             <button
               key={tab.value}
+              id={`listing-view-tab-${tab.value}`}
               type="button"
               role="tab"
-              aria-selected={props.status === tab.value}
-              onClick={() => props.onStatusChange(tab.value)}
+              aria-controls="listing-view-panel"
+              aria-selected={props.view === tab.value}
+              tabIndex={props.view === tab.value ? 0 : -1}
+              onClick={() => props.onViewChange(tab.value)}
+              onKeyDown={(event) => navigateTabs(event, index)}
             >
               {tab.label}
             </button>
