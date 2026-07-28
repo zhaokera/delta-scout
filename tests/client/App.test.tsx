@@ -1,4 +1,5 @@
 import {
+  act,
   render,
   screen,
   waitFor,
@@ -36,13 +37,15 @@ function makeSourceStatus(
 
 function makeApi({
   sources = [],
+  getSources = async () => sources,
   getListings = async () => []
 }: {
   sources?: SourceStatusView[];
+  getSources?: ScoutApi["getSources"];
   getListings?: ScoutApi["getListings"];
 } = {}): ScoutApi {
   return {
-    getSources: vi.fn(async () => sources),
+    getSources: vi.fn(getSources),
     getListings: vi.fn(getListings),
     getListing: vi.fn(async (key) => {
       const listings = await getListings("pool");
@@ -52,6 +55,16 @@ function makeApi({
     }),
     refresh: vi.fn(async () => undefined)
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
 }
 
 function makeViewListings(count: number, source: SourceId): Listing[] {
@@ -165,6 +178,132 @@ describe("App shell", () => {
     );
   });
 
+  it("ignores source and listing data from a stale view request", async () => {
+    const oldSources = deferred<SourceStatusView[]>();
+    const oldListings = deferred<Listing[]>();
+    let sourceRequestCount = 0;
+    const currentListing = makeListing({
+      key: "panzhi:current-view",
+      source: "panzhi",
+      sourceListingId: "PZ-CURRENT"
+    });
+    const api = makeApi({
+      getSources: async () => {
+        sourceRequestCount += 1;
+        return sourceRequestCount === 1
+          ? oldSources.promise
+          : [
+              makeSourceStatus({
+                source: "panzhi",
+                pagesScanned: 9,
+                itemCount: 19
+              })
+            ];
+      },
+      getListings: async (view) =>
+        view === "pool" ? oldListings.promise : [currentListing]
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await waitFor(() =>
+      expect(api.getListings).toHaveBeenCalledWith("pool")
+    );
+    await user.click(
+      screen.getByRole("tab", { name: "全部合格" })
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "全部合格 1" })
+    ).toBeInTheDocument();
+    expect(screen.getByText("9 页")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /PZ-CURRENT.*¥1,888/ })
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      oldSources.resolve([
+        makeSourceStatus({
+          source: "jiaoyimao",
+          pagesScanned: 1,
+          itemCount: 1
+        })
+      ]);
+      oldListings.resolve([
+        makeListing({
+          key: "jiaoyimao:stale-pool",
+          source: "jiaoyimao",
+          sourceListingId: "JYM-STALE"
+        })
+      ]);
+    });
+
+    expect(
+      screen.getByRole("tab", { name: "全部合格" })
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.getByRole("heading", { name: "全部合格 1" })
+    ).toBeInTheDocument();
+    expect(screen.getByText("9 页")).toBeInTheDocument();
+    expect(screen.queryByText("1 页")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /PZ-CURRENT.*¥1,888/ })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /JYM-STALE.*¥1,888/ })
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the latest view loading when a stale request fails", async () => {
+    const oldListings = deferred<Listing[]>();
+    const currentListings = deferred<Listing[]>();
+    const currentListing = makeListing({
+      key: "panzhi:latest-loading",
+      source: "panzhi",
+      sourceListingId: "PZ-LATEST"
+    });
+    const api = makeApi({
+      getListings: async (view) =>
+        view === "pool" ? oldListings.promise : currentListings.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await waitFor(() =>
+      expect(api.getListings).toHaveBeenCalledWith("pool")
+    );
+    await user.click(
+      screen.getByRole("tab", { name: "全部合格" })
+    );
+    await waitFor(() =>
+      expect(api.getListings).toHaveBeenCalledWith("eligible")
+    );
+
+    await act(async () => {
+      oldListings.reject(new Error("旧请求失败"));
+    });
+
+    expect(
+      screen.getByText("正在读取当前视图快照…")
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "全部合格" })
+    ).toHaveAttribute("aria-selected", "true");
+
+    await act(async () => {
+      currentListings.resolve([currentListing]);
+    });
+
+    expect(
+      await screen.findByRole("heading", { name: "全部合格 1" })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /PZ-LATEST.*¥1,888/ })
+    ).toBeInTheDocument();
+  });
+
   it("shows the real pool size, source contributions, and account evidence", async () => {
     const listings = [
       ...makeViewListings(10, "jiaoyimao"),
@@ -255,6 +394,50 @@ describe("App shell", () => {
       screen.getByRole("button", { name: /PANZHI-0.*¥1,888/ })
     ).toBeInTheDocument();
     expect(api.getListings).toHaveBeenCalledTimes(1);
+  });
+
+  it("separates filtered-out results from a truly empty view", async () => {
+    const listing = makeListing({
+      key: "jiaoyimao:filter-reset",
+      source: "jiaoyimao",
+      sourceListingId: "JYM-FILTER"
+    });
+    const api = makeApi({
+      getListings: async () => [listing]
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    expect(
+      await screen.findByRole("button", {
+        name: /JYM-FILTER.*¥1,888/
+      })
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: /高级筛选/ })
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "来源" }),
+      "panzhi"
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "筛选后无结果" })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "推荐候选暂为空" })
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "清除筛选" })
+    );
+
+    expect(
+      screen.getByRole("button", { name: /JYM-FILTER.*¥1,888/ })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "筛选后无结果" })
+    ).not.toBeInTheDocument();
   });
 
   it("makes source completeness and retained snapshots explicit", async () => {
@@ -421,6 +604,29 @@ describe("App shell", () => {
         name: "已淘汰视图暂无记录"
       })
     ).toBeInTheDocument();
+  });
+
+  it("shows request errors without also claiming the view is empty", async () => {
+    const api = makeApi({
+      getListings: async () => {
+        throw new Error("读取候选失败");
+      }
+    });
+
+    render(<App api={api} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText("读取候选失败")).toBeInTheDocument();
+    expect(
+      within(alert).getByRole("button", { name: "重试" })
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("空候选")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "推荐候选暂为空" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("正在读取当前视图快照…")
+    ).not.toBeInTheDocument();
   });
 
   it("refreshes and reloads the default pool view", async () => {

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import type { Listing, SourceId } from "../domain/listing";
 import {
   httpScoutApi,
@@ -78,15 +84,19 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loadSequence = useRef(0);
+  const activeView = useRef<ListingView>(view);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (requestedView: ListingView) => {
+    const requestSequence = ++loadSequence.current;
     setLoading(true);
     setError(null);
     try {
       const [nextSources, nextListings] = await Promise.all([
         api.getSources(),
-        api.getListings(view)
+        api.getListings(requestedView)
       ]);
+      if (requestSequence !== loadSequence.current) return;
       setSources(nextSources);
       setListings(nextListings);
       setSelected((current) =>
@@ -96,17 +106,22 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           : null
       );
     } catch (cause) {
+      if (requestSequence !== loadSequence.current) return;
+      setListings([]);
+      setSelected(null);
       setError(
         cause instanceof Error ? cause.message : "无法读取本地候选数据"
       );
     } finally {
-      setLoading(false);
+      if (requestSequence === loadSequence.current) {
+        setLoading(false);
+      }
     }
-  }, [api, view]);
+  }, [api]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void load(view);
+  }, [load, view]);
 
   const visibleListings = useMemo(
     () => listings.filter((listing) => matchesFilters(listing, filters)),
@@ -128,6 +143,10 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   );
   const emptyState = EMPTY_STATES[view];
 
+  function clearFilters() {
+    setFilters(DEFAULT_FILTERS);
+  }
+
   async function selectListing(listing: Listing) {
     setSelected(listing);
     setDetailLoading(true);
@@ -145,8 +164,10 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     setError(null);
     try {
       await api.refresh();
-      await load();
+      await load(activeView.current);
     } catch (cause) {
+      setListings([]);
+      setSelected(null);
       setError(
         cause instanceof Error ? cause.message : "刷新失败，请稍后重试"
       );
@@ -213,26 +234,19 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         advancedOpen={advancedOpen}
         onViewChange={(nextView) => {
           if (nextView === view) return;
+          loadSequence.current += 1;
+          activeView.current = nextView;
           setView(nextView);
           setListings([]);
           setSelected(null);
+          setError(null);
           setLoading(true);
         }}
         onSortChange={setSort}
         onFiltersChange={setFilters}
         onToggleAdvanced={() => setAdvancedOpen((open) => !open)}
-        onReset={() => setFilters(DEFAULT_FILTERS)}
+        onReset={clearFilters}
       />
-
-      {error ? (
-        <div className="error-banner" role="alert">
-          <strong>数据链路异常</strong>
-          <span>{error}</span>
-          <button type="button" onClick={() => void load()}>
-            重试
-          </button>
-        </div>
-      ) : null}
 
       <div className="workspace">
         <div
@@ -248,6 +262,28 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               <i aria-hidden="true" />
               正在读取当前视图快照…
             </div>
+          ) : error ? (
+            <section className="error-state" role="alert">
+              <span aria-hidden="true">!</span>
+              <div>
+                <h2>数据链路异常</h2>
+                <p>{error}</p>
+              </div>
+              <button type="button" onClick={() => void load(view)}>
+                重试
+              </button>
+            </section>
+          ) : listings.length === 0 ? (
+            <section className="empty-state" aria-label="空候选">
+              <span aria-hidden="true">Ø</span>
+              <div>
+                <h2>{emptyState.title}</h2>
+                <p>{emptyState.description}</p>
+              </div>
+              <button type="button" onClick={() => void refresh()}>
+                立即刷新
+              </button>
+            </section>
           ) : visibleListings.length > 0 ? (
             <ListingTable
               listings={visibleListings}
@@ -260,14 +296,19 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               onSelect={(listing) => void selectListing(listing)}
             />
           ) : (
-            <section className="empty-state" aria-label="空候选">
-              <span aria-hidden="true">Ø</span>
+            <section
+              className="empty-state empty-state--filtered"
+              aria-label="筛选后无结果"
+            >
+              <span aria-hidden="true">≠</span>
               <div>
-                <h2>{emptyState.title}</h2>
-                <p>{emptyState.description}</p>
+                <h2>筛选后无结果</h2>
+                <p>
+                  当前视图已加载 {listings.length} 条记录，但没有账号满足高级筛选。
+                </p>
               </div>
-              <button type="button" onClick={() => void refresh()}>
-                立即刷新
+              <button type="button" onClick={clearFilters}>
+                清除筛选
               </button>
             </section>
           )}

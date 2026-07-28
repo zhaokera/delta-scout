@@ -498,6 +498,7 @@ input[type="search"] {
 .listing-panel,
 .detail-panel,
 .empty-state,
+.error-state,
 .loading-state {
   background: rgba(18, 21, 19, 0.94);
   border: 1px solid var(--line);
@@ -954,6 +955,7 @@ input[type="search"] {
 }
 
 .empty-state,
+.error-state,
 .loading-state {
   min-height: 330px;
   padding: 42px;
@@ -968,12 +970,23 @@ input[type="search"] {
   font: 800 70px var(--mono);
 }
 
-.empty-state h2 {
+.empty-state--filtered > span {
+  color: rgba(255, 189, 74, 0.3);
+}
+
+.error-state > span {
+  color: rgba(255, 110, 87, 0.35);
+  font: 800 70px var(--mono);
+}
+
+.empty-state h2,
+.error-state h2 {
   margin: 0 0 10px;
   font-size: 22px;
 }
 
-.empty-state p {
+.empty-state p,
+.error-state p {
   max-width: 570px;
   margin: 0;
   color: var(--muted);
@@ -981,7 +994,7 @@ input[type="search"] {
 }
 
 .empty-state button,
-.error-banner button {
+.error-state button {
   flex: none;
   padding: 10px 15px;
   border: 1px solid var(--line-bright);
@@ -1004,20 +1017,18 @@ input[type="search"] {
   animation: spin 0.8s linear infinite;
 }
 
-.error-banner {
-  margin-top: 12px;
-  padding: 12px 15px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  border: 1px solid rgba(255, 110, 87, 0.5);
+.error-state {
+  border-color: rgba(255, 110, 87, 0.5);
   background: rgba(255, 110, 87, 0.07);
-  color: #ffc0b5;
-  font-size: 12px;
 }
 
-.error-banner span {
-  flex: 1;
+.error-state h2 {
+  color: #ffc0b5;
+}
+
+.error-state button {
+  color: #ffc0b5;
+  border-color: rgba(255, 110, 87, 0.5);
 }
 
 .app-footer {
@@ -1203,6 +1214,7 @@ input[type="search"] {
   }
 
   .empty-state,
+  .error-state,
   .loading-state {
     min-height: 300px;
     padding: 28px 20px;
@@ -1210,13 +1222,9 @@ input[type="search"] {
     flex-direction: column;
   }
 
-  .empty-state > span {
+  .empty-state > span,
+  .error-state > span {
     font-size: 44px;
-  }
-
-  .error-banner {
-    align-items: flex-start;
-    flex-wrap: wrap;
   }
 
   .detail-grid {
