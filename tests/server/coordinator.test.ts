@@ -823,6 +823,41 @@ describe("CollectionCoordinator", () => {
     });
   });
 
+  it("scores a successful refresh when the injected clock moves backward", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const item = {
+      ...summary(),
+      embeddedDetail: listingDetail()
+    };
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items: [item] })
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+      ])
+    );
+    const times = [
+      new Date("2026-07-28T12:00:00.000Z"),
+      new Date("2026-07-28T11:59:00.000Z"),
+      new Date("2026-07-28T12:01:00.000Z")
+    ];
+    let timeIndex = 0;
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      now: () => times[Math.min(timeIndex++, times.length - 1)]
+    }).refreshAll();
+
+    expect(repository.getListings()[0]).toMatchObject({
+      capturedAt: "2026-07-28T12:00:00.000Z",
+      score: { total: expect.any(Number) }
+    });
+  });
+
   it("collects more than three pages and sixty unique summaries by default", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const pageItems = new Map(
@@ -915,6 +950,56 @@ describe("CollectionCoordinator", () => {
     expect(repository.getListings()[0]).toMatchObject({
       title: "第一页有效标题",
       priceCny: 1_888
+    });
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "success",
+      pagesScanned: 2,
+      stopReason: "no_new_items"
+    });
+  });
+
+  it("deduplicates one URL when a later page adds a stable ID", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const withoutId = {
+      ...summary(1),
+      sourceListingId: null,
+      url: "https://source.test/detail/shared",
+      title: "无 ID 的首条有效记录",
+      rawText: "QQ官服 普通账号"
+    };
+    const withId = {
+      ...withoutId,
+      sourceListingId: "stable-id",
+      title: "后页 ID 别名不应覆盖"
+    };
+    const adapter = fakeAdapter({
+      parseList: (html) => ({
+        kind: "ok",
+        items: html === "page-one" ? [withoutId] : [withId]
+      }),
+      nextPage: (html) =>
+        html === "page-one"
+          ? { url: "https://source.test/list/2" }
+          : null
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "page-one")],
+        ["https://source.test/list/2", ok("https://source.test/list/2", "page-two")]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(repository.getListings()).toHaveLength(1);
+    expect(repository.getListings()[0]).toMatchObject({
+      sourceListingId: null,
+      title: "无 ID 的首条有效记录"
     });
     expect(sourceStatus(repository)).toMatchObject({
       state: "success",

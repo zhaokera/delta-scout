@@ -27,4 +27,67 @@ describe("markPossibleDuplicates", () => {
       )
     ).toBe(true);
   });
+
+  it("bounds duplicate annotations for 6000 same-signature listings", () => {
+    const sources = ["jiaoyimao", "panzhi", "pxb7"] as const;
+    const listings = Array.from({ length: 6_000 }, (_, index) => {
+      const source = sources[index % sources.length];
+      return makeListing({
+        key: `${source}:${index}`,
+        source,
+        sourceListingId: String(index),
+        url: `https://${source}.test/item/${index}`,
+        totalAssetsM: 266,
+        hafCoins: 28_880_000,
+        possibleDuplicateKeys: []
+      });
+    });
+    const original = structuredClone(listings);
+
+    const results = markPossibleDuplicates(listings);
+
+    expect(results).toHaveLength(6_000);
+    expect(
+      results.every(
+        ({ possibleDuplicateKeys }) =>
+          possibleDuplicateKeys.length > 0 &&
+          possibleDuplicateKeys.length <= 2
+      )
+    ).toBe(true);
+    expect(
+      results.reduce(
+        (count, { possibleDuplicateKeys }) =>
+          count + possibleDuplicateKeys.length,
+        0
+      )
+    ).toBeLessThanOrEqual(12_000);
+    expect(listings).toEqual(original);
+  });
+
+  it("chooses duplicate representatives independently of input order", () => {
+    const listings = (
+      ["jiaoyimao", "panzhi", "pxb7"] as const
+    ).flatMap((source) =>
+      [1, 2].map((index) =>
+        makeListing({
+          key: `${source}:${index}`,
+          source,
+          sourceListingId: String(index),
+          url: `https://${source}.test/item/${index}`,
+          totalAssetsM: 266
+        })
+      )
+    );
+    const byKey = (results: ReturnType<typeof markPossibleDuplicates>) =>
+      Object.fromEntries(
+        results.map(({ key, possibleDuplicateKeys }) => [
+          key,
+          possibleDuplicateKeys
+        ])
+      );
+
+    expect(byKey(markPossibleDuplicates([...listings].reverse()))).toEqual(
+      byKey(markPossibleDuplicates(listings))
+    );
+  });
 });

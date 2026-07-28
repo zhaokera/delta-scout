@@ -14,7 +14,10 @@ import type {
   SourceId
 } from "../../domain/listing.js";
 import { scoreEligibleListings } from "../../domain/score.js";
-import { listingKey } from "../../domain/url.js";
+import {
+  listingKey,
+  normalizeListingUrl
+} from "../../domain/url.js";
 import type { ListingRepository } from "../repository.js";
 import type {
   ListingDetail,
@@ -88,6 +91,21 @@ function requestFingerprint(request: SourceRequest): string {
     canonicalRequestUrl(request.url),
     request.options?.body ?? ""
   ].join("\n");
+}
+
+function listingAliases(summary: ListingSummary): string[] {
+  let canonicalUrl = summary.url;
+  try {
+    canonicalUrl = normalizeListingUrl(summary.url);
+  } catch {
+    // A stable exact URL still prevents accidental empty-ID collisions.
+  }
+  return [
+    `${summary.source}\nurl\n${canonicalUrl}`,
+    ...(summary.sourceListingId === null
+      ? []
+      : [`${summary.source}\nid\n${summary.sourceListingId}`])
+  ];
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -284,7 +302,8 @@ export class CollectionCoordinator {
   }
 
   private async refreshSource(
-    adapter: SourceAdapter
+    adapter: SourceAdapter,
+    refreshStartedAt: Date
   ): Promise<RefreshSourceResult> {
     const entry = await this.fetcher.fetchPage(
       { url: adapter.entryUrl },
@@ -307,7 +326,7 @@ export class CollectionCoordinator {
     }
 
     const collected: CollectedSummary[] = [];
-    const seen = new Set<string>();
+    const seenAliases = new Set<string>();
     const seenRequests = new Set<string>();
     let listRequest: SourceRequest | null = discovery.request;
     let pages = 0;
@@ -386,22 +405,25 @@ export class CollectionCoordinator {
       }
 
       pages += 1;
-      const seenCountBeforePage = seen.size;
+      const seenCountBeforePage = seenAliases.size;
       let newItemCount = 0;
       let summaryLimitReached = false;
       let detailLimitReached = false;
       for (const item of parsed.items) {
-        const identity = listingKey(
-          item.source,
-          item.sourceListingId,
-          item.url
-        );
-        if (seen.has(identity)) continue;
+        const aliases = listingAliases(item);
+        if (aliases.some((alias) => seenAliases.has(alias))) {
+          for (const alias of aliases) {
+            seenAliases.add(alias);
+          }
+          continue;
+        }
         if (collected.length >= this.limits.maxSummaries) {
           summaryLimitReached = true;
           break;
         }
-        seen.add(identity);
+        for (const alias of aliases) {
+          seenAliases.add(alias);
+        }
         newItemCount += 1;
         const record: CollectedSummary = {
           summary: item,
@@ -502,7 +524,11 @@ export class CollectionCoordinator {
       listRequest = next;
     }
 
-    const capturedAt = this.now();
+    const observedCapturedAt = this.now();
+    const capturedAt =
+      observedCapturedAt.getTime() < refreshStartedAt.getTime()
+        ? new Date(refreshStartedAt.getTime())
+        : observedCapturedAt;
     const listings = collected.map((record) =>
       buildListing(record, capturedAt)
     );
@@ -525,7 +551,10 @@ export class CollectionCoordinator {
     const freshSources = new Set<SourceId>();
     for (const adapter of this.adapters) {
       try {
-        const result = await this.refreshSource(adapter);
+        const result = await this.refreshSource(
+          adapter,
+          refreshStartedAt
+        );
         if (result.fresh) {
           freshSources.add(result.source);
         }
