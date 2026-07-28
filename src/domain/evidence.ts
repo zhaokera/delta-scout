@@ -19,9 +19,9 @@ export interface EvidenceMatch<TStatus extends string> {
 
 const MAX_EVIDENCE_LENGTH = 2_000;
 const M7_PRISM_TARGET =
-  /M7\s*(?:战斗步枪\s*)?[-—–·•・_：:]?\s*棱镜攻势(?:\s*S2)?/i;
+  /(?<![A-Za-z0-9非])M7\s*(?:战斗步枪\s*)?[-—–·•・_：:]?\s*棱镜攻势(?:\s*S2)?/i;
 const M7_PRISM_NEGATED_TARGET =
-  /M7\s*(?:战斗步枪\s*)?[-—–·•・_：:]?\s*(?:无|未拥有)\s*棱镜攻势(?:\s*S2)?/i;
+  /(?<![A-Za-z0-9非])M7\s*(?:战斗步枪\s*)?[-—–·•・_：:]?\s*(?:无|未拥有)\s*棱镜攻势(?:\s*S2)?/i;
 const ADJACENT_M7_QUALITY =
   /^\s*(?:[：:]\s*)?(?:[（(【]\s*)?(非极品|极品|优品)\s*([SABC])?/i;
 
@@ -103,7 +103,7 @@ export function parseM7(
         | undefined;
       const denied =
         negatedTarget !== null ||
-        /(?:无|未拥有)\s*$/.test(text.slice(0, target.index)) ||
+        /(?:非|无|未拥有)\s*$/.test(text.slice(0, target.index)) ||
         qualityWord === "非极品";
       const immediateRegion = suffix.slice(0, 24);
       const peak = qualityWord === "极品";

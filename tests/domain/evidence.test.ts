@@ -96,6 +96,13 @@ describe("M7 棱镜攻势 evidence", () => {
       quality: "C"
     });
   });
+
+  it.each([
+    ["XM7战斗步枪-棱镜攻势S2(极品A)", "absent"],
+    ["非M7战斗步枪-棱镜攻势S2(极品A)", "absent"]
+  ] as const)("does not positively match a prefixed target: %s", (text, status) => {
+    expect(parseM7(toEvidenceRecords([text])).status).toBe(status);
+  });
 });
 
 describe("character red-skin evidence", () => {

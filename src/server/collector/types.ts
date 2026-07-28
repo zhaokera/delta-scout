@@ -30,17 +30,17 @@ export interface ListingDetail {
 }
 
 export interface PublicRequestOptions {
-  method?: "GET" | "POST";
-  accept?: string;
-  contentType?: string;
-  origin?: string;
-  referer?: string;
-  body?: string;
+  readonly method?: "GET" | "POST";
+  readonly accept?: string;
+  readonly contentType?: string;
+  readonly origin?: string;
+  readonly referer?: string;
+  readonly body?: string;
 }
 
 export interface SourceRequest {
-  url: string;
-  options?: PublicRequestOptions;
+  readonly url: string;
+  readonly options?: PublicRequestOptions;
 }
 
 export type DiscoveryResult =

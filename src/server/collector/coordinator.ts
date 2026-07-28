@@ -96,7 +96,9 @@ function buildListing(
   capturedAt: Date
 ): Listing {
   const { summary, detail, detailAttempted, warnings } = collected;
-  const summaryEvidence = toEvidenceRecords([summary.rawText]);
+  const summaryEvidence = toEvidenceRecords(
+    summary.rawText.split(/\r?\n+/)
+  );
   const evidence = [
     ...summaryEvidence,
     ...(detail?.evidence ?? [])
@@ -108,14 +110,12 @@ function buildListing(
   const m7 = parseM7(evidence);
   const redSkins = parseRedSkins(evidence);
   const julang = parseJulang(evidence);
-  const loginPlatform =
-    detail?.loginPlatform === "unknown" || !detail
-      ? inferLoginPlatform(combinedText)
-      : detail.loginPlatform;
-  const service =
-    detail?.service === "unknown" || !detail
-      ? inferService(combinedText)
-      : detail.service;
+  const loginPlatform = detail
+    ? detail.loginPlatform
+    : inferLoginPlatform(combinedText);
+  const service = detail
+    ? detail.service
+    : inferService(combinedText);
 
   const base: Listing = {
     key: listingKey(

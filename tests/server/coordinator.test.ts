@@ -86,6 +86,81 @@ function fakeAdapter(
 }
 
 describe("CollectionCoordinator", () => {
+  it("keeps explicit unknown embedded login authoritative", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const item = {
+      ...summary(),
+      rawText: "QQ官服\nM7棱镜攻势(极品A)",
+      embeddedDetail: {
+        ...listingDetail(),
+        evidence: [
+          { text: "M7棱镜攻势(极品A)", truncated: false },
+          { text: "QQ官服", truncated: false }
+        ],
+        loginPlatform: "unknown" as const,
+        service: "unknown" as const
+      }
+    };
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items: [item] })
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(repository.getListings()[0]).toMatchObject({
+      loginPlatform: "unknown",
+      service: "unknown",
+      eligibility: "needs_verification"
+    });
+  });
+
+  it("does not join a character name and red-skin claim across records", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const evidence = [
+      { text: "M7棱镜攻势(极品A)", truncated: false },
+      { text: "威龙 普通皮肤", truncated: false },
+      { text: "账号有红皮", truncated: false }
+    ];
+    const item = {
+      ...summary(),
+      rawText: evidence.map(({ text }) => text).join("\n"),
+      embeddedDetail: {
+        ...listingDetail(),
+        evidence
+      }
+    };
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items: [item] })
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(repository.getListings()[0]).toMatchObject({
+      redSkins: [],
+      redSkinUnnamed: true
+    });
+  });
+
   it("uses embedded detail without requesting the client product page", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const item = {
