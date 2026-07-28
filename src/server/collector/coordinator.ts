@@ -234,6 +234,7 @@ export class CollectionCoordinator {
 
     const collected: CollectedSummary[] = [];
     const seen = new Set<string>();
+    const seenRequests = new Set<string>();
     let listRequest: SourceRequest | null = discovery.request;
     let pages = 0;
     let detailCount = 0;
@@ -245,6 +246,13 @@ export class CollectionCoordinator {
       collected.length < MAX_SUMMARIES
     ) {
       const currentRequest = listRequest;
+      const requestFingerprint = [
+        currentRequest.options?.method ?? "GET",
+        currentRequest.url,
+        currentRequest.options?.body ?? ""
+      ].join("\n");
+      if (seenRequests.has(requestFingerprint)) break;
+      seenRequests.add(requestFingerprint);
       const page = await this.fetcher.fetchPage(
         currentRequest,
         adapter.source
@@ -286,13 +294,16 @@ export class CollectionCoordinator {
         seen.add(identity);
         const record: CollectedSummary = {
           summary: item,
-          detail: null,
-          detailAttempted: false,
+          detail: item.embeddedDetail ?? null,
+          detailAttempted: item.embeddedDetail !== undefined,
           warnings: []
         };
         collected.push(record);
 
-        if (shouldFetchDetail(item)) {
+        if (
+          item.embeddedDetail === undefined &&
+          shouldFetchDetail(item)
+        ) {
           if (detailCount >= MAX_DETAILS) {
             partial = true;
             record.warnings.push("达到详情采集上限，待人工核验");

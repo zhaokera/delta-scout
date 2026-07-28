@@ -4,6 +4,7 @@ import { createDatabase } from "../../src/server/db.js";
 import { CollectionCoordinator } from "../../src/server/collector/coordinator.js";
 import type {
   FetchResult,
+  ListingDetail,
   ListingSummary,
   PageFetcher,
   SourceAdapter,
@@ -44,6 +45,25 @@ function summary(index = 1): ListingSummary {
   };
 }
 
+function listingDetail(): ListingDetail {
+  return {
+    evidence: [
+      { text: "M7棱镜攻势(极品A)", truncated: false },
+      { text: "威龙 红皮", truncated: false },
+      { text: "巨浪(极品)", truncated: false }
+    ],
+    loginPlatform: "qq",
+    service: "official",
+    totalAssetsM: 268,
+    hafCoins: 28_880_000,
+    realNameStatus: "second_available",
+    secondRealNameAvailable: true,
+    recoveryCoverage: true,
+    verificationAt: "2026-07-27T10:00:00.000Z",
+    banNotes: []
+  };
+}
+
 function fakeAdapter(
   overrides: Partial<SourceAdapter> = {}
 ): SourceAdapter {
@@ -59,28 +79,132 @@ function fakeAdapter(
     detailRequest: (item) => ({ url: item.url }),
     parseDetail: () => ({
       kind: "ok",
-      detail: {
-        evidence: [
-          { text: "M7棱镜攻势(极品A)", truncated: false },
-          { text: "威龙 红皮", truncated: false },
-          { text: "巨浪(极品)", truncated: false }
-        ],
-        loginPlatform: "qq",
-        service: "official",
-        totalAssetsM: 268,
-        hafCoins: 28_880_000,
-        realNameStatus: "second_available",
-        secondRealNameAvailable: true,
-        recoveryCoverage: true,
-        verificationAt: "2026-07-27T10:00:00.000Z",
-        banNotes: []
-      }
+      detail: listingDetail()
     }),
     ...overrides
   };
 }
 
 describe("CollectionCoordinator", () => {
+  it("uses embedded detail without requesting the client product page", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const item = {
+      ...summary(),
+      embeddedDetail: listingDetail()
+    };
+    const detailRequest = vi.fn((candidate: ListingSummary) => ({
+      url: candidate.url
+    }));
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items: [item] }),
+      detailRequest
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(fetcher.calls).toEqual([
+      adapter.entryUrl,
+      "https://source.test/list/1"
+    ]);
+    expect(detailRequest).not.toHaveBeenCalled();
+    expect(repository.getListings("eligible")).toHaveLength(1);
+  });
+
+  it("stops before fetching the same request fingerprint twice", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const listRequest = { url: "https://source.test/list/1" };
+    const adapter = fakeAdapter({
+      parseList: () => ({
+        kind: "ok",
+        items: [
+          {
+            ...summary(),
+            rawText: "QQ官服 普通账号"
+          }
+        ]
+      }),
+      nextPage: () => listRequest
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        [listRequest.url, ok(listRequest.url, "list")]
+      ])
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(fetcher.calls).toEqual([adapter.entryUrl, listRequest.url]);
+    expect(
+      repository
+        .getSourceStatuses()
+        .find(({ source }) => source === "panzhi")
+    ).toMatchObject({ state: "success", itemCount: 1 });
+  });
+
+  it("keeps request fingerprints local to concurrent refreshes", async () => {
+    const item = {
+      ...summary(),
+      embeddedDetail: listingDetail()
+    };
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items: [item] })
+    });
+    const setupRun = () => {
+      const repository = new ListingRepository(createDatabase(":memory:"));
+      const fetcher = new MapFetcher(
+        new Map([
+          [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+          [
+            "https://source.test/list/1",
+            ok("https://source.test/list/1", "list")
+          ]
+        ])
+      );
+      return {
+        repository,
+        fetcher,
+        coordinator: new CollectionCoordinator({
+          adapters: [adapter],
+          fetcher,
+          repository
+        })
+      };
+    };
+    const first = setupRun();
+    const second = setupRun();
+
+    await Promise.all([
+      first.coordinator.refreshAll(),
+      second.coordinator.refreshAll()
+    ]);
+
+    expect(first.fetcher.calls).toEqual([
+      adapter.entryUrl,
+      "https://source.test/list/1"
+    ]);
+    expect(second.fetcher.calls).toEqual([
+      adapter.entryUrl,
+      "https://source.test/list/1"
+    ]);
+    expect(first.repository.getListings()).toHaveLength(1);
+    expect(second.repository.getListings()).toHaveLength(1);
+  });
+
   it("discovers, follows visible pagination, merges detail, and stores results", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const adapter = fakeAdapter({
