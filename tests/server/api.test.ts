@@ -116,14 +116,22 @@ describe("listing API", () => {
     const waiting = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
     const repository = new ListingRepository(createDatabase(":memory:"));
-    const coordinator = { refreshAll: vi.fn(() => waiting) };
+    const coordinator = {
+      refreshAll: vi.fn(() => {
+        markStarted();
+        return waiting;
+      })
+    };
     const app = createApp({ repository, coordinator });
 
     const first = request(app).post("/api/refresh").then((response) => response);
-    await vi.waitFor(() => {
-      expect(coordinator.refreshAll).toHaveBeenCalledTimes(1);
-    });
+    await started;
+    expect(coordinator.refreshAll).toHaveBeenCalledTimes(1);
     const second = await request(app).post("/api/refresh");
     expect(second.status).toBe(409);
     expect(second.body).toEqual({
