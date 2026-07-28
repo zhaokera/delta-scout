@@ -30,11 +30,11 @@ Delta Account Scout 每次刷新时，应尽量遍历交易猫、盼之代售和
 
 | 来源 | 现有快照 | 实际可访问分页 | 已验证唯一商品数 | 正确停止信号 |
 | --- | ---: | ---: | ---: | --- |
-| 交易猫 | 16 | 3 | 35 | 签名列表接口 `hasNextPage === "false"` |
+| 交易猫 | 16 | 约 26（随库存变化） | 宽化接口现场报告 `totalCnt=406` | 签名列表接口 `hasNextPage === "false"` |
 | 盼之代售 | 10 | 5 次请求 | 30 | 新页不再产生新商品 ID |
 | 螃蟹账号 | 32 | 2 | 32 | 响应不再返回新的 `pageToken` |
 
-交易猫的普通 `?page=2` URL 会重复第一页，真实网页通过公开前端代码调用 `mtop.com.jym.layout.pc.goodslist.getUnifiedGoodsList`。该接口使用匿名 H5 Token 签名握手；不需要用户登录态。现场以与页面相同的筛选条件验证返回 16、16、3 条商品，并在第三页明确结束。
+交易猫的普通 `?page=2` URL 会重复第一页，真实网页通过公开前端代码调用 `mtop.com.jym.layout.pc.goodslist.getUnifiedGoodsList`。该接口使用匿名 H5 Token 签名握手；不需要用户登录态。最初用户页面还额外选择了“可二次实名”和极品 S/A，现场验证该窄筛选为 3 页、35 条；二次实名不是硬条件，且领域模型允许极品 S/A/B/C，因此最终采集条件必须移除“可二次实名”并包含极品 S/A/B/C。宽化条件现场返回 `totalCnt=406`、第一页 16 个唯一商品和 `hasNextPage=true`，最终唯一数与页数以实现后的自然末页刷新为准。
 
 盼之当前接受 `/goodsList/391/6?page=N`。第 1–5 页分别产生 10、8、8、4、0 个新商品，累计 30 个唯一商品；第五页虽然仍能返回卡片，但全部与前面重复，因此“本页无新增 ID”是可靠的保守停止信号。
 
@@ -93,7 +93,7 @@ flowchart LR
 第一页和 MTop `Referer` 必须使用适配器的同一个固定 `entryUrl`。该值也是 fixture 和请求测试必须断言的绝对 URL：
 
 ```text
-https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?searchCondition=%7B%22is_second_real_name%22%3A%7B%22selectType%22%3A1%2C%22conditionList%22%3A%5B%2210071%22%5D%2C%22statConditionList%22%3A%5B%22%E5%8F%AF%E4%BA%8C%E6%AC%A1%E5%AE%9E%E5%90%8D%22%5D%2C%22conditionType%22%3A2%7D%2C%22attr_7393855783477590029%22%3A%7B%22selectType%22%3A2%2C%22multiSearchCondition%22%3Atrue%2C%22conditionList%22%3A%5B%5D%2C%22childCondition%22%3A%7B%22mp_7393855783922186253%22%3A%7B%22%E6%9E%81%E5%93%81%7CS%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CA%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%7D%7D%2C%22statConditionList%22%3A%5B%5D%2C%22conditionType%22%3A3%7D%7D&enforcePlat=2&newPage=true
+https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?searchCondition=%7B%22attr_7393855783477590029%22%3A%7B%22selectType%22%3A2%2C%22multiSearchCondition%22%3Atrue%2C%22conditionList%22%3A%5B%5D%2C%22childCondition%22%3A%7B%22mp_7393855783922186253%22%3A%7B%22%E6%9E%81%E5%93%81%7CS%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CA%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CB%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CC%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%7D%7D%2C%22statConditionList%22%3A%5B%5D%2C%22conditionType%22%3A3%7D%7D&enforcePlat=2&newPage=true
 ```
 
 第一页从该 URL 读取 SSR 商品卡，避免额外接口请求。若第一页有商品，下一页改为页面实际使用的公开只读 MTop 请求：
@@ -154,7 +154,7 @@ POST body 只有一个 `data` 表单字段。先构造下列对象，其中 `sea
 
 ```json
 {
-  "searchCondition": "{\"is_second_real_name\":{\"selectType\":1,\"conditionList\":[\"10071\"],\"statConditionList\":[\"可二次实名\"],\"conditionType\":2},\"attr_7393855783477590029\":{\"selectType\":2,\"multiSearchCondition\":true,\"conditionList\":[],\"childCondition\":{\"mp_7393855783922186253\":{\"极品|S\":[\"M7战斗步枪-棱镜攻势S2\"],\"极品|A\":[\"M7战斗步枪-棱镜攻势S2\"]}},\"statConditionList\":[],\"conditionType\":3}}",
+  "searchCondition": "{\"attr_7393855783477590029\":{\"selectType\":2,\"multiSearchCondition\":true,\"conditionList\":[],\"childCondition\":{\"mp_7393855783922186253\":{\"极品|S\":[\"M7战斗步枪-棱镜攻势S2\"],\"极品|A\":[\"M7战斗步枪-棱镜攻势S2\"],\"极品|B\":[\"M7战斗步枪-棱镜攻势S2\"],\"极品|C\":[\"M7战斗步枪-棱镜攻势S2\"]}},\"statConditionList\":[],\"conditionType\":3}}",
   "relateId": "10101",
   "pageSize": 16,
   "modelType": "h5",
@@ -168,7 +168,7 @@ POST body 只有一个 `data` 表单字段。先构造下列对象，其中 `sea
 }
 ```
 
-后续页只修改 `page` 字符串；筛选条件、游戏 ID、客户端 ID、平台 ID、分类 ID 和父分类 ID 不得改变。上述对象等价于网页的 `needFormatMtopDate` 行为：原始嵌套对象先各自 `JSON.stringify`，再序列化最外层 `data`。
+后续页只修改 `page` 字符串；筛选条件、游戏 ID、客户端 ID、平台 ID、分类 ID 和父分类 ID 不得改变。`searchCondition` 不得重新加入二次实名或其它评分项作为硬预筛选。上述对象等价于网页的 `needFormatMtopDate` 行为：原始嵌套对象先各自 `JSON.stringify`，再序列化最外层 `data`。
 
 MTop H5 签名使用网页自身的匿名握手：
 
@@ -308,7 +308,7 @@ SQLite 启动迁移使用幂等 `ALTER TABLE` 补充 `pages_scanned INTEGER NOT 
 
 实现完成后，以新的本地数据库或明确记录的刷新前后快照运行一次真实刷新，并保存以下可复核证据：
 
-1. 交易猫读取当前全部可访问页；现场基准为 3 页、35 条，库存变化时以 `hasNextPage` 和实际唯一数为准；
+1. 交易猫使用不含二次实名限制、包含极品 S/A/B/C 的宽化条件读取当前全部可访问页；现场接口曾报告 `totalCnt=406`，库存变化时以 `hasNextPage`、实际唯一数和自然末页为准；
 2. 盼之持续翻页直到空页或无新增 ID；现场基准为 30 条唯一商品；
 3. 螃蟹持续使用分页 Token 到末页；现场基准为 2 页、32 条；
 4. 每个平台状态显示实际页数、去重数量、合格数量、入选数量和完整性；
