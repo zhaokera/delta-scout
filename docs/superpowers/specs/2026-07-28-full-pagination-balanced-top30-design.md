@@ -18,6 +18,7 @@ Delta Account Scout 每次刷新时，应尽量遍历交易猫、盼之代售和
 - 用同一通用安全上限替换螃蟹设计中的“最多 3 页/48 条”；
 - 用“全部新鲜合格账号统一评分后，每平台 Top 10，合并为均衡 Top 30”替换旧设计中“默认展示全部 eligible”的行为；
 - 用本设计的来源状态、API 视图和实时验收契约补充旧设计。
+- 对旧设计“公开接口必须完全无需 Cookie”的规则增加一个仅适用于交易猫精确列表 API 的窄化例外：允许读取同一公开列表端点为匿名 H5 签名握手即时签发的 `_m_h5_tk` 和 `_m_h5_tk_enc`，只在当前来源刷新期间保存在内存并只回传给同一主机、同一 API；它们不得来自用户浏览器、登录会话或磁盘，也不得用于任何其它接口。
 
 旧设计的硬条件、证据解析、评分权重、请求限速、只读安全边界、失败隔离和螃蟹字段契约在未被上述条目明确替换时继续有效。实施计划和验收测试必须同时引用本设计与仍有效的旧规格条款，不能继续保留旧上限。
 
@@ -89,7 +90,13 @@ flowchart LR
 
 ### 交易猫
 
-第一页继续从用户确认过的公开筛选 URL 读取 SSR 商品卡，避免额外接口请求。若第一页有商品，下一页改为页面实际使用的公开只读 MTop 请求：
+第一页和 MTop `Referer` 必须使用适配器的同一个固定 `entryUrl`。该值也是 fixture 和请求测试必须断言的绝对 URL：
+
+```text
+https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?searchCondition=%7B%22is_second_real_name%22%3A%7B%22selectType%22%3A1%2C%22conditionList%22%3A%5B%2210071%22%5D%2C%22statConditionList%22%3A%5B%22%E5%8F%AF%E4%BA%8C%E6%AC%A1%E5%AE%9E%E5%90%8D%22%5D%2C%22conditionType%22%3A2%7D%2C%22attr_7393855783477590029%22%3A%7B%22selectType%22%3A2%2C%22multiSearchCondition%22%3Atrue%2C%22conditionList%22%3A%5B%5D%2C%22childCondition%22%3A%7B%22mp_7393855783922186253%22%3A%7B%22%E6%9E%81%E5%93%81%7CS%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CA%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%7D%7D%2C%22statConditionList%22%3A%5B%5D%2C%22conditionType%22%3A3%7D%7D&enforcePlat=2&newPage=true
+```
+
+第一页从该 URL 读取 SSR 商品卡，避免额外接口请求。若第一页有商品，下一页改为页面实际使用的公开只读 MTop 请求：
 
 - 方法与地址：`POST https://mtop.jiaoyimao.com/h5/mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist/1.0/`
 - API 名：`mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist`
@@ -118,7 +125,7 @@ POST 请求头固定为：
 Accept: application/json
 Content-Type: application/x-www-form-urlencoded
 Origin: https://www.jiaoyimao.com
-Referer: {完整的目标筛选 URL}
+Referer: {上述固定 entryUrl 的完整原值}
 User-Agent: DeltaAccountScout/0.1 (+local personal comparison tool)
 jym-meta-h5: {下述单行 JSON}
 x-ua: DeltaAccountScout/0.1 (+local personal comparison tool)
@@ -233,7 +240,7 @@ API 参数契约：
 数据库继续以现有 `source_status.state` 作为唯一持久化状态，允许值保持 `idle | success | partial | blocked | failed`，不新增第二个容易冲突的状态列。只新增并持久化：
 
 - `pagesScanned`：本轮成功解析的列表页数；
-- `itemCount`：本轮去重后的来源商品总数；
+- `itemCount`：数据库当前保留的最近有效来源快照商品数；本轮成功或部分成功替换快照时更新，入口即失败并保留旧 Listing 时保持旧值；
 - `stopReason`：例如 `end_of_pages`、`no_new_items`、`repeated_request`、`safety_limit`、`captcha_required` 或结构错误。
 
 API 的来源视图额外返回派生字段：
@@ -242,7 +249,7 @@ API 的来源视图额外返回派生字段：
 - `candidateCount`：当前进入均衡候选池的数量，范围 0–10；
 - `completion`：`state=success` 映射为 `complete`，`partial | blocked | failed` 保持同名，`idle` 映射为 `idle`。
 
-SQLite 启动迁移使用幂等 `ALTER TABLE` 补充 `pages_scanned INTEGER NOT NULL DEFAULT 0` 与可空 `stop_reason TEXT`，保留旧行的 `state`、`item_count` 和时间戳。旧行启动后 `pagesScanned=0`、`stopReason=null`；未扫描来源继续为 `idle`。入口失败时重置本轮 `pagesScanned=0`，但不删除旧 Listing。
+SQLite 启动迁移使用幂等 `ALTER TABLE` 补充 `pages_scanned INTEGER NOT NULL DEFAULT 0` 与可空 `stop_reason TEXT`，保留旧行的 `state`、`item_count` 和时间戳。旧行启动后 `pagesScanned=0`、`stopReason=null`；未扫描来源继续为 `idle`。入口失败时重置本轮 `pagesScanned=0`，但不删除旧 Listing，也不把 `itemCount` 伪装成当前尝试取得的数量。
 
 `eligibleCount` 和 `candidateCount` 不写入数据库，避免它们在统一评分前失真。每轮三来源尝试完成后，协调器先在一个派生更新事务中写回所有新鲜 Listing 的统一分数，再由 API/Repository 使用同一个 `selectBalancedCandidatePool` 结果动态计算两个数量；因此来源卡、候选 API 和全部合格 API 使用同一候选定义。
 
@@ -253,13 +260,14 @@ SQLite 启动迁移使用幂等 `ALTER TABLE` 补充 `pages_scanned INTEGER NOT 
 - `待人工核验`；
 - `已淘汰`。
 
-来源卡显示“页数 / 去重商品 / 合格 / 入选”及完整性。候选表标题显示实际总数与每平台贡献，例如“推荐候选 23 / 30 · 交易猫 10 · 盼之 3 · 螃蟹 10”。部分采集时给出醒目标记，不能把候选池描述为覆盖平台全部库存。
+来源卡在 `success/partial` 时显示“本轮页数 / 去重商品 / 合格 / 入选”及完整性；在入口即 `blocked/failed` 时明确显示“本轮 0 页 · 保留旧快照 N 条 · 不参与当前候选”，其中 N 为 `itemCount`。候选表标题显示实际总数与每平台贡献，例如“推荐候选 23 / 30 · 交易猫 10 · 盼之 3 · 螃蟹 10”。部分采集时给出醒目标记，不能把候选池描述为覆盖平台全部库存。
 
 ## 数据与安全边界
 
 - 只调用网页自身已公开使用且现场验证过的只读列表请求；
 - 不读取 Codex 浏览器 Cookie、localStorage、密码、实名资料或登录会话；
-- 交易猫匿名 MTop Token 和螃蟹分页 Token 只在内存中使用；
+- 交易猫匿名 MTop Token/Cookie 只允许由上述精确公开列表端点在当前刷新中签发，只在内存中使用并仅回传给同一端点；不得读取或复用用户浏览器 Cookie、登录会话或其它域 Cookie；
+- 螃蟹分页 Token 只在内存中使用；
 - 不保存请求 Cookie、签名、分页 Token 或响应中的跟踪字段；
 - 不绕过验证码、安全拦截、登录墙或频率限制；
 - 继续保持单来源至少 2 秒的列表/详情节流、15 秒超时、一次网络重试和 2 MB 响应限制；
