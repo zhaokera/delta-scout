@@ -8,7 +8,7 @@
 - 价格不超过 6000 元；
 - M7 战斗步枪「棱镜攻势 S2」且品质为极品；
 - 展示极品等级、角色红皮、巨浪、总资产、哈夫币和实名状态；
-- 每次刷新至少读取 3 页、最多 48 个螃蟹商品，库存足够时提供至少 20 个合格候选。
+- 在接口连续返回有效下一页标记时，每次刷新最多读取 3 页、48 个螃蟹商品，库存足够时提供至少 20 个合格候选。
 
 库存数量会随平台实时变化。软件不得伪造或重复商品来凑满 20 条；当真实合格库存不足时，应展示实际数量。
 
@@ -61,7 +61,7 @@ flowchart LR
 
 ### 螃蟹适配器
 
-螃蟹适配器先从公开首页确认《三角洲行动》目录存在，再把列表阶段切换到已观察到的公开接口：
+螃蟹公开首页当前包含可见的 `/buy/10371/1`《三角洲行动》链接。适配器先从首页确认该目录存在，再返回预注册的列表请求 URL；首页检查失败时不得调用接口。列表请求 URL 指向已从一方公开页面代码观察并验证为无需认证的只读接口：
 
 `POST https://api-pc.pxb7.com/api/search/product/v2/selectSearchPageList`
 
@@ -74,24 +74,92 @@ flowchart LR
 - `type`: `4`
 - `posType`: `1`
 
-第一页不传 `pageToken`；后续页只使用前一页响应中真实返回的 `pageToken`。最多读取 3 页，沿用协调器的页数上限。
+第一页不传 `pageToken`；后续页只使用前一页响应中 `data.properties.pageToken` 返回的非空字符串。最多读取 3 页，沿用协调器的页数上限。若 Token 缺失、与当前页相同或会生成已访问过的请求 URL，则成功停止分页，不能猜测下一页。
+
+公开接口是对总设计中“不得猜测或调用未公开内部 API”的窄化例外：只有同时满足“由一方公开页面代码直接调用、无需登录、无需 Cookie 或 Token、只读商品查询、请求形状已经现场验证”的接口才能预注册；不得据此尝试相邻路径或其它操作。
+
+### 类型契约
+
+为保持交易猫和盼之的 GET 行为不变，现有接口只增加可选字段：
+
+```ts
+interface PublicRequestOptions {
+  method: "GET" | "POST";
+  accept?: string;
+  contentType?: string;
+  origin?: string;
+  referer?: string;
+  body?: string;
+}
+
+interface PageFetcher {
+  fetchPage(
+    url: string,
+    source: SourceId,
+    request?: PublicRequestOptions
+  ): Promise<FetchResult>;
+}
+
+interface ListingSummary {
+  // 现有字段保持不变
+  embeddedDetail?: ListingDetail;
+}
+
+interface SourceAdapter {
+  // 现有方法保持不变
+  requestFor?(
+    phase: "entry" | "list" | "detail",
+    url: string,
+    summary?: ListingSummary
+  ): PublicRequestOptions | undefined;
+  nextPage(content: string, currentUrl?: string): string | null;
+}
+```
+
+`FetchResult.kind === "ok"` 继续用现有 `html` 字段承载响应文本，避免扩大无关重构；螃蟹 `parseList` 把它作为 JSON 解析。协调器在每个阶段把 `adapter.requestFor(...)` 的结果传给 Fetcher。没有 `requestFor` 的适配器继续执行原有 GET。
+
+螃蟹列表请求使用以下精确参数：
+
+```json
+{
+  "query": "M7战斗步枪-棱镜攻势S2 极品",
+  "gameId": "10371",
+  "pageIndex": 1,
+  "pageSize": 16,
+  "bizProd": 1,
+  "type": "4",
+  "posType": 1
+}
+```
+
+第二页和第三页只额外加入前一页返回的 `pageToken`，并递增 `pageIndex`。允许的固定请求头为：
+
+```text
+Accept: application/json, text/plain, */*
+Content-Type: application/json
+Origin: https://www.pxb7.com
+Referer: https://www.pxb7.com/
+```
+
+响应必须满足 `success === true`、`data` 为对象且 `data.list` 为数组。商品只读取以下已验证字段：`productId`、`bizProd`、`gameId`、`gameName`、`price`、`showTitle`、`productUniqueNo`、`guarantee` 和 `data.properties.pageToken`。无效 JSON、`success !== true` 或字段类型不符都返回 `blocked/structure_changed`，不得把它们当成空成功。
 
 适配器把每个 JSON 商品转换为统一摘要：
 
 - `productId` → 来源商品 ID；
 - `price / 100` → 人民币价格；
 - `showTitle` → 分段后的原始证据；
-- `/product/{productId}/{bizProd}` → 原平台链接；
-- `QQ登录` / `微信登录` → 登录平台；
-- QQ 登录按现有交易猫口径识别为官方服务；
+- `productId` 必须是纯数字字符串，`bizProd` 必须是字符串或数字 `1`，二者构造绝对链接 `https://www.pxb7.com/product/{productId}/1`；只允许同主机正常重定向；
+- 同一商品明确出现 `QQ登录` 时直接写入 `loginPlatform: "qq"` 和 `service: "official"`；明确出现 `微信登录` 时写入 `loginPlatform: "wechat"` 和 `service: "unknown"`；两者同时出现或都未出现时均为未知；
 - `总资产`、`哈夫币`、`可二次实名`等字段从证据解析；
 - `guarantee` 不能直接等同于找回包赔，除非文本明确写出包赔，否则保持未知。
 
-列表 JSON 已包含完成硬条件分类和用户所需展示的证据，因此适配器可提供嵌入式详情，避免再访问客户端商品详情页。
+列表 JSON 已包含完成硬条件分类和用户所需展示的证据，因此每个有效商品摘要必须携带 `embeddedDetail`。协调器收到嵌入式详情后直接合并并禁止再次请求商品详情页；没有嵌入式详情的其它来源保持原流程。
 
 ### 证据处理
 
 螃蟹的 `showTitle` 可能超过单条证据 2000 字限制。适配器必须按页面中的栏目边界拆成多条证据，再交给现有解析器，避免后半段的 M7、巨浪或资产信息被截断。
+
+M7 目标名称必须是同一条证据中的精确 `M7战斗步枪-棱镜攻势`，允许可选的 `S2` 后缀和中英文括号。紧随其后的品质包含 `极品` 才映射为 `peak`；包含 `优品` 映射为 `premium`。`M7棱镜幻影`、其它仅含“棱镜”的 M7 名称、其它武器的极品和跨证据拼接都不能成为 `peak`。搜索词中的 `S2` 只是目标皮肤在螃蟹当前数据中的名称变体，不新增独立硬条件。
 
 硬条件仍由领域层统一判断：
 
@@ -114,9 +182,10 @@ flowchart LR
 
 ## 错误处理
 
-- 非 2xx、超时、超出 2 MB 或 JSON 结构无效：标记该来源失败；
+- 非 2xx、超时或超出 2 MB：标记该来源失败；
 - 响应出现验证码或安全验证文本：标记 `blocked/captcha_required`；
-- 接口成功但无商品：保存成功的空快照，不伪报阻塞；
+- 无效 JSON、`success !== true` 或字段结构不符合已验证契约：标记 `blocked/structure_changed`；
+- 接口成功且 `data.list` 为空：保存成功的空快照，不伪报阻塞；
 - 第二页或第三页失败且已有商品：保存已获得数据并标记 `partial`；
 - 刷新失败时保留最近一次成功快照，其他来源继续工作；
 - `pageToken` 缺失时停止分页，不猜测下一页参数。
@@ -127,19 +196,22 @@ flowchart LR
 
 1. Fetcher 能按适配器请求描述发送 JSON POST，同时保留节流、超时、重试和大小限制。
 2. 螃蟹适配器能解析价格分、商品链接、QQ/微信、极品等级、红皮、巨浪、资产和实名字段。
-3. 分页只使用响应中的真实 `pageToken`，无 Token 时停止。
+3. 分页只使用响应中的真实 `pageToken`；无 Token、重复 Token 或重复请求 URL 时停止。
 4. 无效 JSON 或字段结构变化返回明确阻塞/失败状态。
 5. 协调器优先使用嵌入式详情，不再请求客户端商品详情页。
-6. 三页 48 条 fixture 中至少 20 条满足硬条件并进入 `eligible`。
-7. 完整单元测试、类型检查和生产构建通过。
+6. `QQ登录` 直接映射 QQ 官服；微信、双登录和未知登录不能进入合格候选。
+7. 只有精确 M7「棱镜攻势」极品进入 `peak`；其它“棱镜”名称、优品和跨字段品质为反例。
+8. 商品链接严格构造为 `https://www.pxb7.com/product/{纯数字 productId}/1`。
+9. 保存的三页验证 fixture 共 48 条，其中至少 20 条满足硬条件并进入 `eligible`。
+10. 完整单元测试、类型检查和生产构建通过。
 
 ## 验收
 
 以本地运行结果作为最终证据：
 
 - 螃蟹来源状态不再是 `unverified_structure`；
-- 一次刷新读取 3 页、最多 48 个不重复商品；
-- 在库存与 2026-07-28 验证样本相当时，合格候选不少于 20 条；
+- 当连续存在有效下一页 Token 时，一次刷新读取 3 页、最多 48 个不重复商品；库存提前结束时保存实际数量；
+- 离线三页验证 fixture 中合格候选不少于 20 条；实时库存只展示实际合格数量；
 - 每个合格候选都满足 QQ、价格不超过 6000、M7 棱镜攻势极品；
 - 详情面板展示 M7 品质、识别出的角色红皮、巨浪状态、资产和实名字段；
 - 点击原平台链接能打开正确的螃蟹商品页；
