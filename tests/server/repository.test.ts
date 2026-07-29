@@ -5,8 +5,46 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ListingRepository } from "../../src/server/repository.js";
-import { makeListing } from "../domain/listingFactory.js";
+import {
+  ListingRepository,
+  type SourceRefreshStatusUpdate
+} from "../../src/server/repository.js";
+import {
+  makeListing,
+  makeScore
+} from "../domain/listingFactory.js";
+
+const scanTime = new Date("2026-07-29T10:00:00.000Z");
+
+function successUpdate(
+  source: "jiaoyimao" | "panzhi" | "pxb7",
+  itemCount: number,
+  state: "success" | "partial" = "success"
+): SourceRefreshStatusUpdate {
+  return {
+    source,
+    state,
+    attemptedAt: scanTime,
+    itemCount,
+    metadata: {
+      pagesScanned: 1,
+      stopReason: state === "success" ? "end_of_pages" : "error",
+      error: state === "partial" ? "partial_fixture" : null
+    }
+  };
+}
+
+function failureUpdate(
+  source: "jiaoyimao" | "panzhi" | "pxb7",
+  state: "blocked" | "failed" = "failed"
+): SourceRefreshStatusUpdate {
+  return {
+    source,
+    state,
+    attemptedAt: scanTime,
+    error: `${source}_${state}`
+  };
+}
 
 describe("ListingRepository", () => {
   it("migrates legacy source statuses without destroying rows", () => {
@@ -229,5 +267,287 @@ describe("ListingRepository", () => {
     expect(repository.getListings().map(({ key }) => key)).toEqual([
       "panzhi:SA123"
     ]);
+  });
+
+  it("creates one hidden compatibility baseline for a legacy success snapshot", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sjz-scan-baseline-"));
+    const databasePath = join(directory, "legacy.sqlite");
+    const legacy = {
+      ...makeListing(),
+      score: {
+        total: 80,
+        parts: {
+          safety: 40,
+          price: 20,
+          assets: 10,
+          confidence: 10
+        },
+        reasons: []
+      }
+    } as Record<string, unknown>;
+    delete legacy.scanStability;
+    delete legacy.consecutiveUnchangedScans;
+    const legacyDatabase = new DatabaseSync(databasePath);
+    legacyDatabase.exec(`
+      CREATE TABLE listings (
+        listing_key TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        eligibility TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE TABLE source_status (
+        source TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        last_attempt_at TEXT,
+        last_success_at TEXT,
+        item_count INTEGER NOT NULL DEFAULT 0,
+        error TEXT
+      );
+    `);
+    legacyDatabase.prepare(`
+      INSERT INTO listings (listing_key, source, eligibility, payload)
+      VALUES (?, ?, ?, ?)
+    `).run("panzhi:SA123", "panzhi", "eligible", JSON.stringify(legacy));
+    legacyDatabase.prepare(`
+      INSERT INTO source_status (
+        source, state, last_attempt_at, last_success_at, item_count, error
+      ) VALUES (?, 'success', ?, ?, 1, NULL)
+    `).run(
+      "panzhi",
+      "2026-07-28T00:00:00.000Z",
+      "2026-07-28T00:00:00.000Z"
+    );
+    legacyDatabase.close();
+
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const database = createDatabase(databasePath);
+        try {
+          expect(
+            database.prepare(
+              "SELECT COUNT(*) AS count FROM scan_runs WHERE is_baseline = 1"
+            ).get()
+          ).toEqual({ count: 1 });
+          expect(
+            database.prepare(
+              "SELECT COUNT(*) AS count FROM listing_observations"
+            ).get()
+          ).toEqual({ count: 1 });
+          const repository = new ListingRepository(database);
+          expect(repository.getListings()[0]).toMatchObject({
+            score: null,
+            scanStability: "unknown",
+            consecutiveUnchangedScans: 0
+          });
+          expect(repository.getRefreshSnapshot()).toMatchObject({
+            latestRun: null,
+            lastSnapshotAt: "2026-07-28T00:00:00.000Z"
+          });
+        } finally {
+          database.close();
+        }
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("marks an interrupted running scan failed when reopening", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sjz-interrupted-scan-"));
+    const databasePath = join(directory, "scan.sqlite");
+    try {
+      const first = createDatabase(databasePath);
+      first.prepare(`
+        INSERT INTO scan_runs (started_at, state, is_baseline)
+        VALUES (?, 'running', 0)
+      `).run("2026-07-29T00:00:00.000Z");
+      first.close();
+
+      const reopened = createDatabase(databasePath);
+      try {
+        expect(
+          reopened.prepare(
+            "SELECT state, error FROM scan_runs WHERE is_baseline = 0"
+          ).get()
+        ).toEqual({
+          state: "failed",
+          error: "进程中断"
+        });
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("tracks new, stable, changed, absent, and partial observations", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const failedOthers = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7", "blocked")
+    ];
+    const original = makeListing({ score: makeScore(80) });
+
+    const firstRun = repository.startScan(scanTime);
+    expect(
+      repository.commitScanRefresh(
+        firstRun,
+        [original],
+        [successUpdate("panzhi", 1), ...failedOthers],
+        scanTime
+      )
+    ).toBe("partial");
+    expect(repository.getListing(original.key)).toMatchObject({
+      scanStability: "new",
+      consecutiveUnchangedScans: 1
+    });
+
+    const secondRun = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      secondRun,
+      [original],
+      [successUpdate("panzhi", 1), ...failedOthers],
+      scanTime
+    );
+    expect(repository.getListing(original.key)).toMatchObject({
+      scanStability: "stable",
+      consecutiveUnchangedScans: 2
+    });
+
+    const changed = { ...original, priceCny: 1999 };
+    const thirdRun = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      thirdRun,
+      [changed],
+      [successUpdate("panzhi", 1), ...failedOthers],
+      scanTime
+    );
+    expect(repository.getListing(original.key)).toMatchObject({
+      scanStability: "changed",
+      consecutiveUnchangedScans: 1
+    });
+
+    const absentRun = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      absentRun,
+      [],
+      [successUpdate("panzhi", 0), ...failedOthers],
+      scanTime
+    );
+    expect(repository.getListing(original.key)).toBeNull();
+
+    const reappearedRun = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      reappearedRun,
+      [changed],
+      [successUpdate("panzhi", 1), ...failedOthers],
+      scanTime
+    );
+    expect(repository.getListing(original.key)).toMatchObject({
+      scanStability: "new",
+      consecutiveUnchangedScans: 1
+    });
+
+    const partialRun = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      partialRun,
+      [changed],
+      [successUpdate("panzhi", 1, "partial"), ...failedOthers],
+      scanTime
+    );
+    expect(repository.getListing(original.key)).toMatchObject({
+      scanStability: "unknown",
+      consecutiveUnchangedScans: 0
+    });
+
+    const afterPartialRun = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      afterPartialRun,
+      [changed],
+      [successUpdate("panzhi", 1), ...failedOthers],
+      scanTime
+    );
+    expect(repository.getListing(original.key)).toMatchObject({
+      scanStability: "stable",
+      consecutiveUnchangedScans: 2
+    });
+  });
+
+  it("finalizes an all-failed scan without replacing retained listings", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const retained = makeListing({
+      score: makeScore(80),
+      scanStability: "stable",
+      consecutiveUnchangedScans: 2
+    });
+    repository.replaceSourceSnapshot("panzhi", [retained], "success", scanTime);
+    const runId = repository.startScan(scanTime);
+    const updates = [
+      failureUpdate("jiaoyimao", "blocked"),
+      failureUpdate("panzhi"),
+      failureUpdate("pxb7", "blocked")
+    ];
+
+    repository.finalizeFailedScan(
+      runId,
+      updates,
+      "没有来源取得新鲜数据",
+      scanTime
+    );
+
+    expect(repository.getListing(retained.key)).toEqual(retained);
+    expect(repository.getScanHistory(1)[0]).toMatchObject({
+      id: runId,
+      state: "failed",
+      sources: expect.arrayContaining([
+        expect.objectContaining({
+          source: "panzhi",
+          state: "failed",
+          observedItemCount: 0,
+          eligibleCount: 0,
+          balancedCandidateCount: 0,
+          globalCandidateCount: 0
+        })
+      ])
+    });
+    expect(repository.getSourceStatuses()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "panzhi", state: "failed" })
+      ])
+    );
+  });
+
+  it("keeps only fifty normal scan runs and timestamps an empty published snapshot", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    for (let index = 0; index < 51; index += 1) {
+      const when = new Date(scanTime.getTime() + index * 1_000);
+      const runId = repository.startScan(when);
+      repository.commitScanRefresh(
+        runId,
+        [],
+        [
+          successUpdate("jiaoyimao", 0),
+          successUpdate("panzhi", 0),
+          successUpdate("pxb7", 0)
+        ],
+        when
+      );
+    }
+
+    expect(
+      database.prepare(
+        "SELECT COUNT(*) AS count FROM scan_runs WHERE is_baseline = 0"
+      ).get()
+    ).toEqual({ count: 50 });
+    expect(repository.getScanHistory(50)).toHaveLength(50);
+    expect(repository.getRefreshSnapshot()).toMatchObject({
+      latestRun: expect.objectContaining({ state: "success" }),
+      lastSnapshotAt: new Date(
+        scanTime.getTime() + 50 * 1_000
+      ).toISOString()
+    });
   });
 });

@@ -1,4 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
+import { listingMaterialHash } from "../domain/listingFingerprint.js";
+import { parseStoredListing } from "./storedListing.js";
 
 export function createDatabase(path: string): DatabaseSync {
   const database = new DatabaseSync(path);
@@ -26,6 +28,61 @@ export function createDatabase(path: string): DatabaseSync {
       item_count INTEGER NOT NULL DEFAULT 0,
       error TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS scan_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      state TEXT NOT NULL
+        CHECK(state IN ('running', 'success', 'partial', 'failed')),
+      error TEXT,
+      is_baseline INTEGER NOT NULL DEFAULT 0
+        CHECK(is_baseline IN (0, 1))
+    );
+
+    CREATE TABLE IF NOT EXISTS scan_source_results (
+      run_id INTEGER NOT NULL,
+      source TEXT NOT NULL
+        CHECK(source IN ('jiaoyimao', 'panzhi', 'pxb7')),
+      state TEXT NOT NULL
+        CHECK(state IN ('success', 'partial', 'blocked', 'failed')),
+      pages_scanned INTEGER NOT NULL CHECK(pages_scanned >= 0),
+      observed_item_count INTEGER NOT NULL
+        CHECK(observed_item_count >= 0),
+      eligible_count INTEGER NOT NULL CHECK(eligible_count >= 0),
+      balanced_candidate_count INTEGER NOT NULL
+        CHECK(balanced_candidate_count >= 0),
+      global_candidate_count INTEGER NOT NULL
+        CHECK(global_candidate_count >= 0),
+      stop_reason TEXT,
+      error TEXT,
+      PRIMARY KEY (run_id, source),
+      FOREIGN KEY (run_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS listing_observations (
+      run_id INTEGER NOT NULL,
+      listing_key TEXT NOT NULL,
+      source TEXT NOT NULL
+        CHECK(source IN ('jiaoyimao', 'panzhi', 'pxb7')),
+      observed_at TEXT NOT NULL,
+      eligibility TEXT NOT NULL
+        CHECK(eligibility IN (
+          'eligible', 'needs_verification', 'rejected'
+        )),
+      material_hash TEXT NOT NULL,
+      stability TEXT NOT NULL
+        CHECK(stability IN ('unknown', 'new', 'changed', 'stable')),
+      consecutive_unchanged_scans INTEGER NOT NULL
+        CHECK(consecutive_unchanged_scans >= 0),
+      PRIMARY KEY (run_id, listing_key),
+      FOREIGN KEY (run_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS listing_observations_listing_run_idx
+      ON listing_observations (listing_key, run_id DESC);
+    CREATE INDEX IF NOT EXISTS listing_observations_source_run_idx
+      ON listing_observations (source, run_id DESC);
   `);
 
   const columns = new Set(
@@ -51,6 +108,113 @@ export function createDatabase(path: string): DatabaseSync {
   `);
   for (const source of ["jiaoyimao", "panzhi", "pxb7"]) {
     seed.run(source);
+  }
+
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    database
+      .prepare(`
+        UPDATE scan_runs
+        SET state = 'failed',
+            finished_at = COALESCE(finished_at, ?),
+            error = '进程中断'
+        WHERE state = 'running'
+      `)
+      .run(new Date().toISOString());
+
+    const runCount = database
+      .prepare("SELECT COUNT(*) AS count FROM scan_runs")
+      .get() as { count: number };
+    if (runCount.count === 0) {
+      const legacyRows = database
+        .prepare(`
+          SELECT l.payload, s.source, s.last_success_at,
+                 s.pages_scanned, s.stop_reason, s.error
+          FROM listings l
+          JOIN source_status s ON s.source = l.source
+          WHERE s.state = 'success'
+          ORDER BY l.listing_key
+        `)
+        .all() as unknown as Array<{
+          payload: string;
+          source: "jiaoyimao" | "panzhi" | "pxb7";
+          last_success_at: string | null;
+          pages_scanned: number;
+          stop_reason: string | null;
+          error: string | null;
+        }>;
+      if (legacyRows.length > 0) {
+        const timestamps = legacyRows
+          .map(({ last_success_at }) => last_success_at)
+          .filter((value): value is string => value !== null)
+          .sort();
+        const timestamp =
+          timestamps.at(-1) ?? new Date().toISOString();
+        const run = database
+          .prepare(`
+            INSERT INTO scan_runs (
+              started_at, finished_at, state, error, is_baseline
+            ) VALUES (?, ?, 'success', NULL, 1)
+          `)
+          .run(timestamp, timestamp);
+        const runId = Number(run.lastInsertRowid);
+        const listings = legacyRows.map((row) => ({
+          row,
+          listing: parseStoredListing(row.payload)
+        }));
+        const insertSource = database.prepare(`
+          INSERT INTO scan_source_results (
+            run_id, source, state, pages_scanned,
+            observed_item_count, eligible_count,
+            balanced_candidate_count, global_candidate_count,
+            stop_reason, error
+          ) VALUES (?, ?, 'success', ?, ?, ?, 0, 0, ?, ?)
+        `);
+        for (const source of ["jiaoyimao", "panzhi", "pxb7"] as const) {
+          const sourceListings = listings.filter(
+            ({ listing }) => listing.source === source
+          );
+          if (sourceListings.length === 0) continue;
+          const metadata = sourceListings[0].row;
+          insertSource.run(
+            runId,
+            source,
+            metadata.pages_scanned,
+            sourceListings.length,
+            sourceListings.filter(
+              ({ listing }) => listing.eligibility === "eligible"
+            ).length,
+            metadata.stop_reason,
+            metadata.error
+          );
+        }
+        const insertObservation = database.prepare(`
+          INSERT INTO listing_observations (
+            run_id, listing_key, source, observed_at, eligibility,
+            material_hash, stability, consecutive_unchanged_scans
+          ) VALUES (?, ?, ?, ?, ?, ?, 'unknown', 1)
+        `);
+        for (const { listing } of listings) {
+          insertObservation.run(
+            runId,
+            listing.key,
+            listing.source,
+            timestamp,
+            listing.eligibility,
+            listingMaterialHash(listing)
+          );
+        }
+      }
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Preserve the migration failure.
+    }
+    database.close();
+    throw error;
   }
 
   return database;
