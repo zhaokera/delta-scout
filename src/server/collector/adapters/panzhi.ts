@@ -16,6 +16,47 @@ import {
 } from "./shared.js";
 
 const BASE_URL = "https://www.pzds.com/";
+const CATALOG_PATH = "/goodsList/391/6";
+const SINGLE_SELECT_SEARCH_TERMS = [
+  "M7战斗步枪-棱镜攻势S2 极品 S",
+  "M7战斗步枪-棱镜攻势S2 极品 A",
+  "M7战斗步枪-棱镜攻势S2 极品 B",
+  "M7战斗步枪-棱镜攻势S2 极品 C",
+  "M7战斗步枪-棱镜攻势S2"
+] as const;
+
+function makePanzhiSearchRequest(index: number): { url: string } {
+  return {
+    url: new URL(
+      `${CATALOG_PATH}/headerSearch/${encodeURIComponent(
+        SINGLE_SELECT_SEARCH_TERMS[index]
+      )}`,
+      BASE_URL
+    ).toString()
+  };
+}
+
+function panzhiSearchIndex(requestUrl: string): number {
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    return -1;
+  }
+  if (
+    url.origin !== "https://www.pzds.com" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.search ||
+    url.hash
+  ) {
+    return -1;
+  }
+  return SINGLE_SELECT_SEARCH_TERMS.findIndex(
+    (_term, index) => url.toString() === makePanzhiSearchRequest(index).url
+  );
+}
 
 function parsePanzhiDetailLink(
   href: string
@@ -177,15 +218,32 @@ function parseDetail(
 export const panzhiAdapter: SourceAdapter = {
   source: "panzhi",
   entryUrl: BASE_URL,
+  allowPagesWithoutNewItems: true,
 
   discoverCatalog(html, query) {
     if (isBlockedHtml(html)) {
       return { kind: "blocked", reason: "captcha_required" };
     }
-    const url = findVisibleCatalogLink(html, BASE_URL, query);
-    return url
-      ? { kind: "ok", request: { url } }
-      : { kind: "blocked", reason: "catalog_not_found" };
+    const catalogUrl = findVisibleCatalogLink(html, BASE_URL, query);
+    if (!catalogUrl) {
+      return { kind: "blocked", reason: "catalog_not_found" };
+    }
+    let parsedCatalogUrl: URL;
+    try {
+      parsedCatalogUrl = new URL(catalogUrl);
+    } catch {
+      return { kind: "blocked", reason: "catalog_not_found" };
+    }
+    if (
+      parsedCatalogUrl.origin !== "https://www.pzds.com" ||
+      parsedCatalogUrl.username ||
+      parsedCatalogUrl.password ||
+      parsedCatalogUrl.port ||
+      parsedCatalogUrl.pathname !== CATALOG_PATH
+    ) {
+      return { kind: "blocked", reason: "catalog_not_found" };
+    }
+    return { kind: "ok", request: makePanzhiSearchRequest(0) };
   },
 
   parseList(html) {
@@ -237,33 +295,12 @@ export const panzhiAdapter: SourceAdapter = {
       return null;
     }
 
-    let currentUrl: URL;
-    try {
-      currentUrl = new URL(currentRequest.url);
-    } catch {
-      return null;
-    }
-    if (
-      currentUrl.origin !== "https://www.pzds.com" ||
-      currentUrl.username ||
-      currentUrl.password ||
-      currentUrl.port ||
-      currentUrl.pathname !== "/goodsList/391/6"
-    ) {
-      return null;
-    }
-
-    const pageValues = currentUrl.searchParams.getAll("page");
-    if (pageValues.length > 1) return null;
-    const pageText = pageValues[0] ?? "1";
-    if (!/^[1-9]\d*$/.test(pageText)) return null;
-    const page = Number(pageText);
-    if (!Number.isSafeInteger(page) || page === Number.MAX_SAFE_INTEGER) {
-      return null;
-    }
-
-    currentUrl.searchParams.set("page", String(page + 1));
-    return { url: currentUrl.toString() };
+    const currentIndex = panzhiSearchIndex(currentRequest.url);
+    const nextIndex = currentIndex + 1;
+    return currentIndex >= 0 &&
+      nextIndex < SINGLE_SELECT_SEARCH_TERMS.length
+      ? makePanzhiSearchRequest(nextIndex)
+      : null;
   },
 
   detailRequest(summary) {

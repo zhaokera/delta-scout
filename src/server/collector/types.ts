@@ -67,6 +67,7 @@ export interface SourceAdapter {
   source: SourceId;
   entryUrl: string;
   readonly strictPaginationProgress?: boolean;
+  readonly allowPagesWithoutNewItems?: boolean;
   discoverCatalog(html: string, query: string): DiscoveryResult;
   parseList(html: string): ListParseResult;
   nextPage(

@@ -55,8 +55,8 @@ class PxbFixtureFetcher implements PageFetcher {
   }
 }
 
-describe("PXB7 three-page collection", () => {
-  it("stores 48 products and at least 20 strict eligible candidates", async () => {
+describe("PXB7 single-select collection", () => {
+  it("runs every quality query even when later pages contain only duplicates", async () => {
     const fetcher = new PxbFixtureFetcher(
       await fixture("pxb7-home.html"),
       new Map([
@@ -80,12 +80,20 @@ describe("PXB7 three-page collection", () => {
     const listRequests = fetcher.requests.filter(
       ({ url }) => url.includes("selectSearchPageList")
     );
-    expect(listRequests).toHaveLength(3);
+    expect(listRequests).toHaveLength(12);
     expect(
-      listRequests.map(({ options }) =>
-        JSON.parse(options?.body ?? "{}").pageIndex
+      listRequests.map(({ options }) => {
+        const body = JSON.parse(options?.body ?? "{}");
+        return [body.query, body.pageIndex];
+      })
+    ).toEqual(
+      ["S", "A", "B", "C"].flatMap((quality) =>
+        [1, 2, 3].map((pageIndex) => [
+          `M7战斗步枪-棱镜攻势S2 极品 ${quality}`,
+          pageIndex
+        ])
       )
-    ).toEqual([1, 2, 3]);
+    );
     expect(listings).toHaveLength(48);
     expect(new Set(listings.map(({ key }) => key))).toHaveLength(48);
     expect(eligible).toHaveLength(24);

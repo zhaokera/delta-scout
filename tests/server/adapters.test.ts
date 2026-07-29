@@ -18,6 +18,8 @@ describe("pagination progress policy", () => {
     expect(jiaoyimaoAdapter.strictPaginationProgress).toBe(true);
     expect(panzhiAdapter.strictPaginationProgress).toBeUndefined();
     expect(pxb7Adapter.strictPaginationProgress).toBeUndefined();
+    expect(panzhiAdapter.allowPagesWithoutNewItems).toBe(true);
+    expect(pxb7Adapter.allowPagesWithoutNewItems).toBe(true);
   });
 });
 
@@ -29,7 +31,11 @@ describe("panzhi adapter", () => {
     );
     expect(result).toEqual({
       kind: "ok",
-      request: { url: "https://www.pzds.com/goodsList/391/6" }
+      request: {
+        url:
+          "https://www.pzds.com/goodsList/391/6/headerSearch/" +
+          "M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%20%E6%9E%81%E5%93%81%20S"
+      }
     });
   });
 
@@ -109,24 +115,26 @@ describe("panzhi adapter", () => {
     });
   });
 
-  it("increments deterministic Panzhi result URLs without changing filters", async () => {
+  it("cycles mutually exclusive Panzhi M7 searches one at a time", async () => {
     const html = await fixture("panzhi-list-page-2.html");
     expect(
       panzhiAdapter.nextPage(html, {
-        url: "https://www.pzds.com/goodsList/391/6"
+        url:
+          "https://www.pzds.com/goodsList/391/6/headerSearch/" +
+          "M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%20%E6%9E%81%E5%93%81%20S"
       })
     ).toEqual({
-      url: "https://www.pzds.com/goodsList/391/6?page=2"
+      url:
+        "https://www.pzds.com/goodsList/391/6/headerSearch/" +
+        "M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%20%E6%9E%81%E5%93%81%20A"
     });
     expect(
       panzhiAdapter.nextPage(html, {
         url:
-          "https://www.pzds.com/goodsList/391/6?page=2&sort=price&keyword=M7&game=391"
+          "https://www.pzds.com/goodsList/391/6/headerSearch/" +
+          "M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2"
       })
-    ).toEqual({
-      url:
-        "https://www.pzds.com/goodsList/391/6?page=3&sort=price&keyword=M7&game=391"
-    });
+    ).toBeNull();
   });
 
   it.each([
@@ -134,6 +142,7 @@ describe("panzhi adapter", () => {
     "https://www.pzds.com/goodsList/391/7?page=2",
     "https://user:pass@www.pzds.com/goodsList/391/6?page=2",
     "https://www.pzds.com:444/goodsList/391/6?page=2",
+    "https://www.pzds.com/goodsList/391/6",
     "https://www.pzds.com/goodsList/391/6?page=",
     "https://www.pzds.com/goodsList/391/6?page=next",
     "https://www.pzds.com/goodsList/391/6?page=0",
@@ -740,7 +749,7 @@ describe("pxb7 adapter", () => {
       }
     });
     expect(JSON.parse(result.request.options?.body ?? "")).toEqual({
-      query: "M7战斗步枪-棱镜攻势S2 极品",
+      query: "M7战斗步枪-棱镜攻势S2 极品 S",
       gameId: "10371",
       pageIndex: 1,
       pageSize: 16,
@@ -797,7 +806,7 @@ describe("pxb7 adapter", () => {
     );
     expect(next).not.toBeNull();
     expect(JSON.parse(next?.options?.body ?? "")).toEqual({
-      query: "M7战斗步枪-棱镜攻势S2 极品",
+      query: "M7战斗步枪-棱镜攻势S2 极品 S",
       gameId: "10371",
       pageIndex: 2,
       pageSize: 16,
@@ -806,27 +815,58 @@ describe("pxb7 adapter", () => {
       posType: 1,
       pageToken: "fixture-page-2"
     });
-    expect(
-      pxb7Adapter.nextPage(
-        await fixture("pxb7-list-page-3.json"),
-        next!
-      )
-    ).toBeNull();
+    const nextQuality = pxb7Adapter.nextPage(
+      await fixture("pxb7-list-page-3.json"),
+      next!
+    );
+    expect(JSON.parse(nextQuality?.options?.body ?? "")).toEqual({
+      query: "M7战斗步枪-棱镜攻势S2 极品 A",
+      gameId: "10371",
+      pageIndex: 1,
+      pageSize: 16,
+      bizProd: 1,
+      type: "4",
+      posType: 1
+    });
 
     const repeatedBody = {
       ...JSON.parse(next?.options?.body ?? ""),
       pageToken: "fixture-page-2"
     };
+    const afterRepeatedToken = pxb7Adapter.nextPage(
+      await fixture("pxb7-list-page-1.json"),
+      {
+        ...next!,
+        options: {
+          ...next!.options,
+          body: JSON.stringify(repeatedBody)
+        }
+      }
+    );
+    expect(JSON.parse(afterRepeatedToken?.options?.body ?? "")).toEqual({
+      query: "M7战斗步枪-棱镜攻势S2 极品 A",
+      gameId: "10371",
+      pageIndex: 1,
+      pageSize: 16,
+      bizProd: 1,
+      type: "4",
+      posType: 1
+    });
+
+    const finalQualityRequest = {
+      ...next!,
+      options: {
+        ...next!.options,
+        body: JSON.stringify({
+          ...JSON.parse(next?.options?.body ?? ""),
+          query: "M7战斗步枪-棱镜攻势S2 极品 C"
+        })
+      }
+    };
     expect(
       pxb7Adapter.nextPage(
-        await fixture("pxb7-list-page-1.json"),
-        {
-          ...next!,
-          options: {
-            ...next!.options,
-            body: JSON.stringify(repeatedBody)
-          }
-        }
+        await fixture("pxb7-list-page-3.json"),
+        finalQualityRequest
       )
     ).toBeNull();
   });

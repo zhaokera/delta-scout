@@ -690,7 +690,11 @@ export class CollectionCoordinator {
         }
         break;
       }
-      if (newItemCount === 0 && seenCountBeforePage > 0) {
+      if (
+        newItemCount === 0 &&
+        seenCountBeforePage > 0 &&
+        !adapter.allowPagesWithoutNewItems
+      ) {
         stopReason = "no_new_items";
         break;
       }
@@ -698,7 +702,10 @@ export class CollectionCoordinator {
         stopReason = "end_of_pages";
         break;
       }
-      if (newItemCount === 0) {
+      if (
+        newItemCount === 0 &&
+        !adapter.allowPagesWithoutNewItems
+      ) {
         stopReason = "no_new_items";
         break;
       }
