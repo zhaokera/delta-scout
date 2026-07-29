@@ -5,7 +5,10 @@ import { createDatabase } from "../../src/server/db.js";
 import {
   jiaoyimaoAdapter
 } from "../../src/server/collector/adapters/jiaoyimao.js";
-import { CollectionCoordinator } from "../../src/server/collector/coordinator.js";
+import {
+  CollectionCoordinator,
+  type RefreshProgressEvent
+} from "../../src/server/collector/coordinator.js";
 import {
   APPROVED_JIAOYIMAO_MTOP_ENDPOINT
 } from "../../src/server/collector/mtop.js";
@@ -343,6 +346,127 @@ async function collectStrictPaginationPages(
 }
 
 describe("CollectionCoordinator", () => {
+  it("publishes bounded progress events for a persisted scan", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapter = fakeAdapter();
+    const fetcher = new RoutingFetcher((request) =>
+      ok(request.url, "fixture")
+    );
+    const runId = repository.startScan(
+      new Date("2026-07-29T10:00:00.000Z")
+    );
+    const events: RefreshProgressEvent[] = [];
+
+    const state = await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      now: () => new Date("2026-07-29T10:00:00.000Z")
+    }).refreshAll(runId, (event) => events.push(event));
+
+    expect(state).toBe("success");
+    expect(events.map(({ type }) => type)).toEqual([
+      "source_start",
+      "list_page",
+      "detail_progress",
+      "source_complete",
+      "score",
+      "commit",
+      "complete"
+    ]);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "list_page",
+          source: "panzhi",
+          page: 1,
+          summaries: 1,
+          details: 0
+        }),
+        expect.objectContaining({
+          type: "detail_progress",
+          summaries: 1,
+          details: 1
+        }),
+        expect.objectContaining({
+          type: "complete",
+          roundState: "success"
+        })
+      ])
+    );
+    expect(JSON.stringify(events)).not.toMatch(
+      /cookie|token|https?:|棱镜攻势/i
+    );
+  });
+
+  it("persists failed source outcomes when no source is fresh", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [makeListing({ scanStability: "stable", consecutiveUnchangedScans: 2 })],
+      "success"
+    );
+    const runId = repository.startScan(
+      new Date("2026-07-29T10:00:00.000Z")
+    );
+
+    const state = await new CollectionCoordinator({
+      adapters: [fakeAdapter()],
+      fetcher: new RoutingFetcher((request) => ({
+        kind: "blocked",
+        url: request.url,
+        reason: "captcha_required"
+      })),
+      repository,
+      now: () => new Date("2026-07-29T10:00:00.000Z")
+    }).refreshAll(runId);
+
+    expect(state).toBe("failed");
+    expect(repository.getListings()).toHaveLength(1);
+    expect(repository.getScanHistory(1)[0]).toMatchObject({
+      state: "failed",
+      sources: [
+        expect.objectContaining({
+          source: "panzhi",
+          state: "blocked",
+          observedItemCount: 0
+        })
+      ]
+    });
+  });
+
+  it("marks the persisted run failed when snapshot commit throws", async () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    database.exec(`
+      CREATE TRIGGER fail_progress_commit
+      BEFORE UPDATE ON source_status
+      WHEN NEW.source = 'panzhi' AND NEW.state = 'success'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced progress commit failure');
+      END;
+    `);
+    const runId = repository.startScan(
+      new Date("2026-07-29T10:00:00.000Z")
+    );
+
+    await expect(
+      new CollectionCoordinator({
+        adapters: [freshSourceAdapter("panzhi", 1)],
+        fetcher: new RoutingFetcher((request) =>
+          ok(request.url, "fixture")
+        ),
+        repository,
+        now: () => new Date("2026-07-29T10:00:00.000Z")
+      }).refreshAll(runId)
+    ).rejects.toThrow("无法提交带历史的刷新快照");
+
+    expect(repository.getScanHistory(1)[0]).toMatchObject({
+      id: runId,
+      state: "failed",
+      error: "无法提交带历史的刷新快照"
+    });
+  });
   it.each([
     [
       "an early blocked return",

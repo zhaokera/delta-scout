@@ -20,6 +20,8 @@ import {
 } from "../../domain/url.js";
 import type {
   ListingRepository,
+  ScanState,
+  SourceState,
   SourceRefreshStatusUpdate
 } from "../repository.js";
 import type {
@@ -56,6 +58,66 @@ interface CollectedSummary {
   detailAttempted: boolean;
   warnings: string[];
 }
+
+export type RefreshProgressEvent =
+  | {
+      type: "source_start";
+      phase: "discover";
+      source: SourceId;
+      page: 0;
+      summaries: 0;
+      details: 0;
+      message: string;
+    }
+  | {
+      type: "list_page";
+      phase: "list";
+      source: SourceId;
+      page: number;
+      summaries: number;
+      details: number;
+      message: string;
+    }
+  | {
+      type: "detail_progress";
+      phase: "detail";
+      source: SourceId;
+      page: number;
+      summaries: number;
+      details: number;
+      message: string;
+    }
+  | {
+      type: "source_complete";
+      phase: "list";
+      source: SourceId;
+      page: number;
+      summaries: number;
+      details: number;
+      sourceState: Exclude<SourceState, "idle">;
+      message: string;
+    }
+  | {
+      type: "score" | "commit";
+      phase: "score" | "commit";
+      source: null;
+      page: number;
+      summaries: number;
+      details: number;
+      message: string;
+    }
+  | {
+      type: "complete";
+      phase: null;
+      source: null;
+      page: number;
+      summaries: number;
+      details: number;
+      roundState: ScanState;
+      message: string;
+    };
+
+type ProgressListener = (event: RefreshProgressEvent) => void;
 
 type RefreshSourceResult =
   | {
@@ -330,7 +392,8 @@ export class CollectionCoordinator {
 
   private async refreshSource(
     adapter: SourceAdapter,
-    refreshStartedAt: Date
+    refreshStartedAt: Date,
+    onProgress?: ProgressListener
   ): Promise<RefreshSourceResult> {
     const entry = await this.fetcher.fetchPage(
       { url: adapter.entryUrl },
@@ -438,6 +501,7 @@ export class CollectionCoordinator {
       let newItemCount = 0;
       let summaryLimitReached = false;
       let detailLimitReached = false;
+      const pageRecords: CollectedSummary[] = [];
       for (const item of parsed.items) {
         const aliases = listingAliases(item);
         if (aliases.some((alias) => seenAliases.has(alias))) {
@@ -461,7 +525,21 @@ export class CollectionCoordinator {
           warnings: []
         };
         collected.push(record);
+        pageRecords.push(record);
+      }
 
+      onProgress?.({
+        type: "list_page",
+        phase: "list",
+        source: adapter.source,
+        page: pages,
+        summaries: collected.length,
+        details: detailCount,
+        message: `已解析第 ${pages} 页`
+      });
+
+      for (const record of pageRecords) {
+        const item = record.summary;
         if (
           item.embeddedDetail === undefined &&
           shouldFetchDetail(item)
@@ -473,40 +551,54 @@ export class CollectionCoordinator {
           }
           detailCount += 1;
           record.detailAttempted = true;
-          let detailPage: Awaited<ReturnType<PageFetcher["fetchPage"]>>;
           try {
-            const detailRequest = adapter.detailRequest(item);
-            detailPage = await this.fetcher.fetchPage(
-              detailRequest,
-              adapter.source
-            );
-          } catch (error) {
-            record.warnings.push(
-              `详情获取失败：${errorMessage(error, "detail_fetch_failed")}`
-            );
-            continue;
-          }
-          if (detailPage.kind !== "ok") {
-            record.warnings.push(
-              detailPage.kind === "blocked"
-                ? `详情自动采集受阻：${detailPage.reason}`
-                : `详情获取失败：${detailPage.error}`
-            );
-            continue;
-          }
-          let detail: ReturnType<SourceAdapter["parseDetail"]>;
-          try {
-            detail = adapter.parseDetail(detailPage.html, item);
-          } catch (error) {
-            record.warnings.push(
-              `详情解析失败：${errorMessage(error, "detail_parse_failed")}`
-            );
-            continue;
-          }
-          if (detail.kind === "blocked") {
-            record.warnings.push(`详情解析受阻：${detail.reason}`);
-          } else {
-            record.detail = detail.detail;
+            let detailPage: Awaited<
+              ReturnType<PageFetcher["fetchPage"]>
+            >;
+            try {
+              const detailRequest = adapter.detailRequest(item);
+              detailPage = await this.fetcher.fetchPage(
+                detailRequest,
+                adapter.source
+              );
+            } catch (error) {
+              record.warnings.push(
+                `详情获取失败：${errorMessage(error, "detail_fetch_failed")}`
+              );
+              continue;
+            }
+            if (detailPage.kind !== "ok") {
+              record.warnings.push(
+                detailPage.kind === "blocked"
+                  ? `详情自动采集受阻：${detailPage.reason}`
+                  : `详情获取失败：${detailPage.error}`
+              );
+              continue;
+            }
+            let detail: ReturnType<SourceAdapter["parseDetail"]>;
+            try {
+              detail = adapter.parseDetail(detailPage.html, item);
+            } catch (error) {
+              record.warnings.push(
+                `详情解析失败：${errorMessage(error, "detail_parse_failed")}`
+              );
+              continue;
+            }
+            if (detail.kind === "blocked") {
+              record.warnings.push(`详情解析受阻：${detail.reason}`);
+            } else {
+              record.detail = detail.detail;
+            }
+          } finally {
+            onProgress?.({
+              type: "detail_progress",
+              phase: "detail",
+              source: adapter.source,
+              page: pages,
+              summaries: collected.length,
+              details: detailCount,
+              message: `已核验 ${detailCount} 条详情`
+            });
           }
         }
       }
@@ -592,29 +684,70 @@ export class CollectionCoordinator {
     };
   }
 
-  async refreshAll(): Promise<void> {
+  async refreshAll(): Promise<void>;
+  async refreshAll(
+    runId: number,
+    onProgress?: ProgressListener
+  ): Promise<ScanState>;
+  async refreshAll(
+    runId?: number,
+    onProgress?: ProgressListener
+  ): Promise<void | ScanState> {
     if (this.refreshInProgress) {
       throw new Error("refresh_already_running");
     }
     this.refreshInProgress = true;
     try {
-      await this.performRefreshAll();
+      const state = await this.performRefreshAll(runId, onProgress);
+      if (runId === undefined) return;
+      return state;
+    } catch (error) {
+      if (runId !== undefined) {
+        this.repository.failScan(
+          runId,
+          errorMessage(error, "刷新失败"),
+          this.now()
+        );
+      }
+      throw error;
     } finally {
       this.refreshInProgress = false;
     }
   }
 
-  private async performRefreshAll(): Promise<void> {
+  private async performRefreshAll(
+    runId?: number,
+    onProgress?: ProgressListener
+  ): Promise<ScanState> {
     const refreshStartedAt = this.now();
     const retainedListings = this.repository.getListings();
     const outcomes: RefreshSourceResult[] = [];
+    let totalPages = 0;
+    let totalSummaries = 0;
+    let totalDetails = 0;
     for (const adapter of this.adapters) {
       let result: RefreshSourceResult;
+      let sourceDetails = 0;
+      onProgress?.({
+        type: "source_start",
+        phase: "discover",
+        source: adapter.source,
+        page: 0,
+        summaries: 0,
+        details: 0,
+        message: "正在发现公开目录"
+      });
       try {
         await this.fetcher.beginSource?.(adapter.source);
         result = await this.refreshSource(
           adapter,
-          refreshStartedAt
+          refreshStartedAt,
+          (event) => {
+            if (event.type === "detail_progress") {
+              sourceDetails = event.details;
+            }
+            onProgress?.(event);
+          }
         );
       } catch (error) {
         result = this.failedSourceFromError(
@@ -634,6 +767,25 @@ export class CollectionCoordinator {
         }
       }
       outcomes.push(result);
+      const sourcePages =
+        "metadata" in result.statusUpdate
+          ? result.statusUpdate.metadata.pagesScanned
+          : 0;
+      const sourceSummaries =
+        result.kind === "fresh" ? result.listings.length : 0;
+      totalPages += sourcePages;
+      totalSummaries += sourceSummaries;
+      totalDetails += sourceDetails;
+      onProgress?.({
+        type: "source_complete",
+        phase: "list",
+        source: adapter.source,
+        page: sourcePages,
+        summaries: sourceSummaries,
+        details: sourceDetails,
+        sourceState: result.statusUpdate.state,
+        message: "来源扫描结束"
+      });
     }
 
     const freshOutcomes = outcomes.filter(
@@ -645,7 +797,45 @@ export class CollectionCoordinator {
     const freshListings = freshOutcomes.flatMap(
       ({ listings }) => listings
     );
+    const roundState: ScanState =
+      freshOutcomes.length === 0
+        ? "failed"
+        : outcomes.every(
+              ({ statusUpdate }) => statusUpdate.state === "success"
+            )
+          ? "success"
+          : "partial";
+
+    if (runId !== undefined && freshOutcomes.length === 0) {
+      this.repository.finalizeFailedScan(
+        runId,
+        outcomes.map(({ statusUpdate }) => statusUpdate),
+        "没有来源取得新鲜数据",
+        this.now()
+      );
+      onProgress?.({
+        type: "complete",
+        phase: null,
+        source: null,
+        page: totalPages,
+        summaries: 0,
+        details: totalDetails,
+        roundState: "failed",
+        message: "刷新失败"
+      });
+      return "failed";
+    }
+
     const freshWithDuplicates = markPossibleDuplicates(freshListings);
+    onProgress?.({
+      type: "score",
+      phase: "score",
+      source: null,
+      page: totalPages,
+      summaries: totalSummaries,
+      details: totalDetails,
+      message: "正在统一评分"
+    });
     const scored = scoreEligibleListings(freshWithDuplicates, this.now());
     const scores = new Map(scored.map((listing) => [listing.key, listing.score]));
     const freshDerived = freshWithDuplicates.map((listing) => ({
@@ -663,9 +853,42 @@ export class CollectionCoordinator {
         possibleDuplicateKeys: []
       }));
 
-    this.repository.commitRefresh(
-      [...retainedWithoutDerivedData, ...freshDerived],
-      outcomes.map(({ statusUpdate }) => statusUpdate)
-    );
+    const nextListings = [
+      ...retainedWithoutDerivedData,
+      ...freshDerived
+    ];
+    onProgress?.({
+      type: "commit",
+      phase: "commit",
+      source: null,
+      page: totalPages,
+      summaries: totalSummaries,
+      details: totalDetails,
+      message: "正在发布新快照"
+    });
+    if (runId === undefined) {
+      this.repository.commitRefresh(
+        nextListings,
+        outcomes.map(({ statusUpdate }) => statusUpdate)
+      );
+    } else {
+      this.repository.commitScanRefresh(
+        runId,
+        nextListings,
+        outcomes.map(({ statusUpdate }) => statusUpdate),
+        this.now()
+      );
+    }
+    onProgress?.({
+      type: "complete",
+      phase: null,
+      source: null,
+      page: totalPages,
+      summaries: totalSummaries,
+      details: totalDetails,
+      roundState,
+      message: roundState === "success" ? "刷新完成" : "部分来源异常"
+    });
+    return roundState;
   }
 }
