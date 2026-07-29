@@ -920,6 +920,62 @@ describe("CollectionCoordinator", () => {
     }
   );
 
+  it("retains the previous source snapshot after three consecutive blocked details", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      [
+        makeListing({
+          source: "jiaoyimao",
+          key: "jiaoyimao:old",
+          sourceListingId: "old"
+        })
+      ],
+      "success",
+      new Date("2026-07-28T12:00:00.000Z")
+    );
+    const items = Array.from({ length: 3 }, (_, index) =>
+      summaryForSource("jiaoyimao", index + 1, {
+        detailFetchHint: "m7_prism_query"
+      })
+    );
+    const adapter = fakeAdapter({
+      source: "jiaoyimao",
+      parseList: () => ({ kind: "ok", items })
+    });
+    const responses = new Map<string, FetchResult>([
+      [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+      ["https://source.test/list/1", ok("https://source.test/list/1", "list")],
+      ...items.map(
+        (item) =>
+          [
+            item.url,
+            {
+              kind: "blocked",
+              url: item.url,
+              reason: "captcha_required"
+            }
+          ] as const
+      )
+    ]);
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher: new MapFetcher(responses),
+      repository,
+      now: () => new Date("2026-07-29T12:00:00.000Z")
+    }).refreshAll();
+
+    expect(repository.getListings()).toHaveLength(1);
+    expect(repository.getListing("jiaoyimao:old")).not.toBeNull();
+    expect(sourceStatus(repository, "jiaoyimao")).toMatchObject({
+      state: "blocked",
+      error: "captcha_required",
+      itemCount: 1,
+      lastSuccessAt: "2026-07-28T12:00:00.000Z"
+    });
+  });
+
   it("keeps a truly unhinted summary without M7 evidence rejected", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const adapter = fakeAdapter({
@@ -1874,6 +1930,10 @@ describe("CollectionCoordinator", () => {
     expect(repository.getListings()[0]).toMatchObject({
       eligibility: "needs_verification",
       parseWarnings: ["详情获取失败：request_timeout"]
+    });
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "partial",
+      error: "request_timeout"
     });
   });
 });

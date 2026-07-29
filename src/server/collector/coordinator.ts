@@ -423,9 +423,33 @@ export class CollectionCoordinator {
     let listRequest: SourceRequest | null = discovery.request;
     let pages = 0;
     let detailCount = 0;
+    let consecutiveDetailFailures = 0;
+    let consecutiveDetailFailureState: "blocked" | "failed" = "blocked";
     let partial = false;
     let stopReason: StopReason | null = null;
     let sourceError: string | null = null;
+    const recordDetailFailure = (
+      state: "blocked" | "failed",
+      error: string
+    ): RefreshSourceResult | null => {
+      partial = true;
+      sourceError = error;
+      consecutiveDetailFailures += 1;
+      if (state === "failed") {
+        consecutiveDetailFailureState = "failed";
+      }
+      if (consecutiveDetailFailures < 3) return null;
+      return {
+        kind: "failed",
+        source: adapter.source,
+        statusUpdate: {
+          source: adapter.source,
+          state: consecutiveDetailFailureState,
+          attemptedAt: this.now(),
+          error
+        }
+      };
+    };
 
     while (listRequest) {
       const currentRequest = listRequest;
@@ -562,32 +586,50 @@ export class CollectionCoordinator {
                 adapter.source
               );
             } catch (error) {
-              record.warnings.push(
-                `详情获取失败：${errorMessage(error, "detail_fetch_failed")}`
-              );
+              const reason = errorMessage(error, "detail_fetch_failed");
+              record.warnings.push(`详情获取失败：${reason}`);
+              const failure = recordDetailFailure("failed", reason);
+              if (failure) return failure;
               continue;
             }
             if (detailPage.kind !== "ok") {
+              const reason =
+                detailPage.kind === "blocked"
+                  ? detailPage.reason
+                  : detailPage.error;
               record.warnings.push(
                 detailPage.kind === "blocked"
-                  ? `详情自动采集受阻：${detailPage.reason}`
-                  : `详情获取失败：${detailPage.error}`
+                  ? `详情自动采集受阻：${reason}`
+                  : `详情获取失败：${reason}`
               );
+              const failure = recordDetailFailure(
+                detailPage.kind === "blocked" ? "blocked" : "failed",
+                reason
+              );
+              if (failure) return failure;
               continue;
             }
             let detail: ReturnType<SourceAdapter["parseDetail"]>;
             try {
               detail = adapter.parseDetail(detailPage.html, item);
             } catch (error) {
-              record.warnings.push(
-                `详情解析失败：${errorMessage(error, "detail_parse_failed")}`
-              );
+              const reason = errorMessage(error, "detail_parse_failed");
+              record.warnings.push(`详情解析失败：${reason}`);
+              const failure = recordDetailFailure("failed", reason);
+              if (failure) return failure;
               continue;
             }
             if (detail.kind === "blocked") {
               record.warnings.push(`详情解析受阻：${detail.reason}`);
+              const failure = recordDetailFailure(
+                "blocked",
+                detail.reason
+              );
+              if (failure) return failure;
             } else {
               record.detail = detail.detail;
+              consecutiveDetailFailures = 0;
+              consecutiveDetailFailureState = "blocked";
             }
           } finally {
             onProgress?.({
