@@ -20,6 +20,7 @@ import {
   type AdvancedFilters,
   type SortKey
 } from "./components/FilterBar";
+import { DetailDrawer } from "./components/DetailDrawer";
 import { ListingDetail } from "./components/ListingDetail";
 import { ListingTable } from "./components/ListingTable";
 import { PoolModeToggle } from "./components/PoolModeToggle";
@@ -64,6 +65,25 @@ const EMPTY_STATES: Record<
   }
 };
 
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window.matchMedia === "function"
+      ? window.matchMedia(query).matches
+      : false
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mediaQuery = window.matchMedia(query);
+    const update = () => setMatches(mediaQuery.matches);
+    update();
+    mediaQuery.addEventListener?.("change", update);
+    return () => mediaQuery.removeEventListener?.("change", update);
+  }, [query]);
+
+  return matches;
+}
+
 export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [sources, setSources] = useState<SourceStatusView[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
@@ -74,6 +94,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     useState<AdvancedFilters>(DEFAULT_FILTERS);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selected, setSelected] = useState<Listing | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -92,6 +113,8 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const mounted = useRef(false);
   const activeView = useRef<ListingView>(view);
   const activePoolMode = useRef<PoolMode>(poolMode);
+  const narrowLayout = useMediaQuery("(max-width: 1100px)");
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
   const load = useCallback(
     async (
@@ -240,6 +263,10 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     };
   }, [api, load]);
 
+  useEffect(() => {
+    if (!narrowLayout) setDrawerOpen(false);
+  }, [narrowLayout]);
+
   const visibleListings = useMemo(
     () =>
       listings.filter((listing) =>
@@ -270,6 +297,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   async function selectListing(listing: Listing) {
     const requestSequence = ++detailSequence.current;
     setSelected(listing);
+    if (narrowLayout) setDrawerOpen(true);
     setDetailLoading(true);
     try {
       const detail = await api.getListing(listing.key);
@@ -415,6 +443,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           setPoolMode(nextMode);
           setListings([]);
           setSelected(null);
+          setDrawerOpen(false);
           setDetailLoading(false);
           setError(null);
           setLoading(true);
@@ -435,6 +464,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           setView(nextView);
           setListings([]);
           setSelected(null);
+          setDrawerOpen(false);
           setDetailLoading(false);
           setError(null);
           setLoading(true);
@@ -529,8 +559,18 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             </section>
           )}
         </div>
-        <ListingDetail listing={selected} loading={detailLoading} />
+        {!narrowLayout ? (
+          <ListingDetail listing={selected} loading={detailLoading} />
+        ) : null}
       </div>
+
+      {narrowLayout && selected && drawerOpen ? (
+        <DetailDrawer
+          listing={selected}
+          loading={detailLoading}
+          onClose={closeDrawer}
+        />
+      ) : null}
 
       <footer className="app-footer">
         <span>仅聚合公开商品信息 · 不自动下单 · 最终购买前必须人工验号</span>

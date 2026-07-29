@@ -47,10 +47,12 @@ function stabilityLabel(listing: Listing): string {
 
 export function ListingDetail({
   listing,
-  loading
+  loading,
+  onClose
 }: {
   listing: Listing | null;
   loading: boolean;
+  onClose?: () => void;
 }) {
   if (!listing) {
     return (
@@ -71,7 +73,9 @@ export function ListingDetail({
       <header className="detail-header">
         <div>
           <span className="section-index">03 / EVIDENCE</span>
-          <h2>{listing.sourceListingId ?? "候选详情"}</h2>
+          <h2 id="candidate-detail-title">
+            {listing.sourceListingId ?? "候选详情"}
+          </h2>
           <p>{SOURCE_LABELS[listing.source]} · 抓取证据快照</p>
           <span
             className={`stability-badge stability-badge--${listing.scanStability}`}
@@ -79,6 +83,17 @@ export function ListingDetail({
             {stabilityLabel(listing)}
           </span>
         </div>
+        {onClose ? (
+          <button
+            className="detail-close"
+            type="button"
+            aria-label="关闭候选详情"
+            data-detail-close
+            onClick={onClose}
+          >
+            ×
+          </button>
+        ) : null}
         <div className="detail-score">
           <strong>{listing.score?.total ?? "—"}</strong>
           <span>推荐分</span>

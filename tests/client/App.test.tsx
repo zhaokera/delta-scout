@@ -115,6 +115,31 @@ function makeRefreshStatus(
   };
 }
 
+function stubViewport(matches: boolean): () => void {
+  const original = window.matchMedia;
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: vi.fn((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true)
+    }))
+  });
+  return () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: original
+    });
+  };
+}
+
 describe("App shell", () => {
   it("shows the fixed account requirements", () => {
     render(<App api={makeApi()} />);
@@ -1325,6 +1350,89 @@ describe("App shell", () => {
       )).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("opens a mobile detail dialog and restores focus and body overflow on close", async () => {
+    const restoreViewport = stubViewport(true);
+    const listing = makeListing({ sourceListingId: "MOBILE-DRAWER" });
+    const user = userEvent.setup();
+    try {
+      render(<App api={makeApi({
+        getListings: async () => [listing],
+        getListing: async () => listing
+      })} />);
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      const row = await screen.findByRole("button", {
+        name: /MOBILE-DRAWER/
+      });
+      await user.click(row);
+
+      const dialog = screen.getByRole("dialog", {
+        name: "MOBILE-DRAWER"
+      });
+      expect(dialog).toHaveAttribute("aria-modal", "true");
+      expect(dialog).toHaveAttribute(
+        "aria-labelledby",
+        "candidate-detail-title"
+      );
+      expect(document.body.style.overflow).toBe("hidden");
+      const close = within(dialog).getByRole("button", {
+        name: "关闭候选详情"
+      });
+      expect(close).toHaveFocus();
+
+      await user.click(close);
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(document.body.style.overflow).toBe("");
+      expect(row).toHaveFocus();
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  it("closes the mobile detail dialog with Escape", async () => {
+    const restoreViewport = stubViewport(true);
+    const listing = makeListing({ sourceListingId: "ESCAPE-DRAWER" });
+    const user = userEvent.setup();
+    try {
+      render(<App api={makeApi({
+        getListings: async () => [listing]
+      })} />);
+      await user.click(
+        await screen.findByRole("button", { name: /ESCAPE-DRAWER/ })
+      );
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+      await user.keyboard("{Escape}");
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(document.body.style.overflow).toBe("");
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  it("keeps the desktop detail as a complementary panel", async () => {
+    const restoreViewport = stubViewport(false);
+    const listing = makeListing({ sourceListingId: "DESKTOP-PANEL" });
+    const user = userEvent.setup();
+    try {
+      render(<App api={makeApi({
+        getListings: async () => [listing]
+      })} />);
+      await user.click(
+        await screen.findByRole("button", { name: /DESKTOP-PANEL/ })
+      );
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.getByRole("complementary", {
+        name: "候选详情"
+      })).toBeInTheDocument();
+    } finally {
+      restoreViewport();
     }
   });
 });
