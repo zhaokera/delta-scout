@@ -10,6 +10,8 @@ import { matchesListingFilters } from "../domain/listingFilters";
 import {
   httpScoutApi,
   type ListingView,
+  type PoolMode,
+  type RefreshStatusView,
   type ScoutApi,
   type SourceStatusView
 } from "./api";
@@ -20,6 +22,8 @@ import {
 } from "./components/FilterBar";
 import { ListingDetail } from "./components/ListingDetail";
 import { ListingTable } from "./components/ListingTable";
+import { PoolModeToggle } from "./components/PoolModeToggle";
+import { RefreshProgress } from "./components/RefreshProgress";
 import { SourceStrip } from "./components/SourceStrip";
 
 const DEFAULT_FILTERS: AdvancedFilters = {
@@ -64,6 +68,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [sources, setSources] = useState<SourceStatusView[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
   const [view, setView] = useState<ListingView>("pool");
+  const [poolMode, setPoolMode] = useState<PoolMode>("balanced");
   const [sort, setSort] = useState<SortKey>("score");
   const [filters, setFilters] =
     useState<AdvancedFilters>(DEFAULT_FILTERS);
@@ -72,66 +77,168 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshStatus, setRefreshStatus] =
+    useState<RefreshStatusView | null>(null);
+  const [transportWarning, setTransportWarning] =
+    useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadSequence = useRef(0);
   const detailSequence = useRef(0);
   const refreshInFlight = useRef(false);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const pollSequenceRef = useRef(0);
   const mounted = useRef(false);
   const activeView = useRef<ListingView>(view);
+  const activePoolMode = useRef<PoolMode>(poolMode);
 
-  const load = useCallback(async (requestedView: ListingView) => {
-    if (!mounted.current) return;
-    const requestSequence = ++loadSequence.current;
-    detailSequence.current += 1;
-    setDetailLoading(false);
-    setLoading(true);
-    setError(null);
-    try {
-      const [nextSources, nextListings] = await Promise.all([
-        api.getSources(),
-        api.getListings(requestedView)
-      ]);
-      if (
-        !mounted.current ||
-        requestSequence !== loadSequence.current
-      ) return;
-      setSources(nextSources);
-      setListings(nextListings);
-      setSelected((current) => {
-        if (!current) return null;
-        return (
-          nextListings.find(({ key }) => key === current.key) ?? null
+  const load = useCallback(
+    async (
+      requestedView: ListingView,
+      requestedMode: PoolMode,
+      options: { preserveOnError?: boolean } = {}
+    ) => {
+      if (!mounted.current) return;
+      const requestSequence = ++loadSequence.current;
+      detailSequence.current += 1;
+      setDetailLoading(false);
+      if (!options.preserveOnError) setLoading(true);
+      setError(null);
+      try {
+        const [nextSources, nextListings] = await Promise.all([
+          api.getSources(requestedMode),
+          api.getListings(requestedView, requestedMode)
+        ]);
+        if (
+          !mounted.current ||
+          requestSequence !== loadSequence.current
+        ) return;
+        setSources(nextSources);
+        setListings(nextListings);
+        setSelected((current) => {
+          if (!current) return null;
+          return (
+            nextListings.find(({ key }) => key === current.key) ?? null
+          );
+        });
+      } catch (cause) {
+        if (
+          !mounted.current ||
+          requestSequence !== loadSequence.current
+        ) return;
+        if (!options.preserveOnError) {
+          setListings([]);
+          setSelected(null);
+        }
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "无法读取本地候选数据"
         );
-      });
-    } catch (cause) {
-      if (
-        !mounted.current ||
-        requestSequence !== loadSequence.current
-      ) return;
-      setListings([]);
-      setSelected(null);
-      setError(
-        cause instanceof Error ? cause.message : "无法读取本地候选数据"
-      );
-    } finally {
-      if (
-        mounted.current &&
-        requestSequence === loadSequence.current
-      ) {
-        setLoading(false);
+      } finally {
+        if (
+          mounted.current &&
+          requestSequence === loadSequence.current
+        ) {
+          setLoading(false);
+        }
       }
+    },
+    [api]
+  );
+
+  function clearPollTimer() {
+    if (pollTimerRef.current !== null) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
     }
-  }, [api]);
+  }
+
+  function stopPolling() {
+    clearPollTimer();
+    pollSequenceRef.current += 1;
+    refreshInFlight.current = false;
+    setRefreshing(false);
+  }
+
+  function schedulePoll(
+    sequence: number,
+    transportFailures: number,
+    delay: number
+  ) {
+    clearPollTimer();
+    pollTimerRef.current = setTimeout(() => {
+      void pollRefreshStatus(sequence, transportFailures);
+    }, delay);
+  }
+
+  async function pollRefreshStatus(
+    sequence: number,
+    transportFailures: number
+  ) {
+    if (!mounted.current || sequence !== pollSequenceRef.current) return;
+    try {
+      const status = await api.getRefreshStatus();
+      if (!mounted.current || sequence !== pollSequenceRef.current) return;
+      setRefreshStatus(status);
+      setTransportWarning(null);
+
+      if (status.state === "running" || status.state === "idle") {
+        schedulePoll(sequence, 0, 1_000);
+        return;
+      }
+
+      stopPolling();
+      if (status.state === "success" || status.state === "partial") {
+        await load(activeView.current, activePoolMode.current, {
+          preserveOnError: true
+        });
+      }
+    } catch (cause) {
+      if (!mounted.current || sequence !== pollSequenceRef.current) return;
+      const nextFailures = transportFailures + 1;
+      if (nextFailures > 3) {
+        setTransportWarning(
+          cause instanceof Error ? cause.message : "进度接口不可达"
+        );
+      }
+      schedulePoll(
+        sequence,
+        nextFailures,
+        nextFailures > 3 ? 5_000 : 1_000
+      );
+    }
+  }
+
+  function resumePolling(status: RefreshStatusView) {
+    clearPollTimer();
+    const sequence = ++pollSequenceRef.current;
+    refreshInFlight.current = true;
+    setRefreshing(true);
+    setRefreshStatus(status);
+    setTransportWarning(null);
+    schedulePoll(sequence, 0, 1_000);
+  }
 
   useEffect(() => {
     mounted.current = true;
-    void load(view);
+    void load("pool", "balanced");
+    void api.getRefreshStatus()
+      .then((status) => {
+        if (!mounted.current || status.state !== "running") return;
+        resumePolling(status);
+      })
+      .catch(() => undefined);
     return () => {
       mounted.current = false;
       loadSequence.current += 1;
       detailSequence.current += 1;
+      refreshInFlight.current = false;
+      pollSequenceRef.current += 1;
+      clearPollTimer();
     };
-  }, [load, view]);
+  }, [api, load]);
 
   const visibleListings = useMemo(
     () =>
@@ -196,22 +303,48 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     setRefreshing(true);
     setDetailLoading(false);
     setError(null);
+    setTransportWarning(null);
+    setRefreshStatus(null);
     try {
-      await api.refresh();
+      const started = await api.startRefresh();
       if (!mounted.current) return;
-      await load(activeView.current);
+      const sequence = ++pollSequenceRef.current;
+      setRefreshStatus({
+        runId: started.runId,
+        state: "running",
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        source: null,
+        phase: null,
+        page: 0,
+        summaries: 0,
+        details: 0,
+        message: "刷新任务已启动",
+        error: null,
+        lastSnapshotAt: refreshStatus?.lastSnapshotAt ?? null
+      });
+      void pollRefreshStatus(sequence, 0);
     } catch (cause) {
       if (!mounted.current) return;
-      setListings([]);
-      setSelected(null);
-      setError(
-        cause instanceof Error ? cause.message : "刷新失败，请稍后重试"
-      );
-    } finally {
       refreshInFlight.current = false;
-      if (mounted.current) {
-        setRefreshing(false);
-      }
+      setRefreshing(false);
+      setRefreshStatus({
+        runId: null,
+        state: "failed",
+        startedAt: null,
+        finishedAt: new Date().toISOString(),
+        source: null,
+        phase: null,
+        page: 0,
+        summaries: 0,
+        details: 0,
+        message: null,
+        error:
+          cause instanceof Error
+            ? cause.message
+            : "刷新失败，请稍后重试",
+        lastSnapshotAt: refreshStatus?.lastSnapshotAt ?? null
+      });
     }
   }
 
@@ -242,6 +375,11 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         </div>
       </header>
 
+      <RefreshProgress
+        status={refreshStatus}
+        transportWarning={transportWarning}
+      />
+
       <section className="mission-brief" aria-label="固定筛选条件">
         <div className="mission-brief__label">
           <span>01 / HARD FILTER</span>
@@ -267,6 +405,23 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
 
       <SourceStrip statuses={sources} />
 
+      <PoolModeToggle
+        mode={poolMode}
+        onChange={(nextMode) => {
+          if (nextMode === poolMode) return;
+          loadSequence.current += 1;
+          detailSequence.current += 1;
+          activePoolMode.current = nextMode;
+          setPoolMode(nextMode);
+          setListings([]);
+          setSelected(null);
+          setDetailLoading(false);
+          setError(null);
+          setLoading(true);
+          void load(activeView.current, nextMode);
+        }}
+      />
+
       <FilterBar
         view={view}
         sort={sort}
@@ -283,12 +438,20 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           setDetailLoading(false);
           setError(null);
           setLoading(true);
+          void load(nextView, activePoolMode.current);
         }}
         onSortChange={setSort}
         onFiltersChange={setFilters}
         onToggleAdvanced={() => setAdvancedOpen((open) => !open)}
         onReset={clearFilters}
       />
+
+      {error && listings.length > 0 ? (
+        <section className="snapshot-warning" role="alert">
+          <strong>无法读取最新快照，继续展示现有候选</strong>
+          <span>{error}</span>
+        </section>
+      ) : null}
 
       <div className="workspace">
         <div
@@ -304,14 +467,19 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               <i aria-hidden="true" />
               正在读取当前视图快照…
             </div>
-          ) : error ? (
+          ) : error && listings.length === 0 ? (
             <section className="error-state" role="alert">
               <span aria-hidden="true">!</span>
               <div>
                 <h2>数据链路异常</h2>
                 <p>{error}</p>
               </div>
-              <button type="button" onClick={() => void load(view)}>
+              <button
+                type="button"
+                onClick={() =>
+                  void load(activeView.current, activePoolMode.current)
+                }
+              >
                 重试
               </button>
             </section>
@@ -337,6 +505,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               selectedKey={selected?.key ?? null}
               sort={sort}
               view={view}
+              poolMode={poolMode}
               totalCount={listings.length}
               sourceContributions={sourceContributions}
               onSortChange={setSort}

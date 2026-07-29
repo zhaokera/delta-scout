@@ -56,4 +56,18 @@ describe("ListingDetail", () => {
     expect(screen.getByText("资产 9 / 10")).toBeInTheDocument();
     expect(screen.getByText("置信度 8 / 10")).toBeInTheDocument();
   });
+
+  it("shows the listing scan stability and unchanged run count", () => {
+    render(
+      <ListingDetail
+        listing={makeListing({
+          scanStability: "stable",
+          consecutiveUnchangedScans: 4
+        })}
+        loading={false}
+      />
+    );
+
+    expect(screen.getByText("连续稳定 · 4 轮")).toBeInTheDocument();
+  });
 });

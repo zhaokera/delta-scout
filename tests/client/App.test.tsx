@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { App } from "../../src/client/App";
 import type {
+  RefreshStatusView,
   ScoutApi,
   SourceStatusView
 } from "../../src/client/api";
@@ -43,13 +44,17 @@ function makeApi({
   getSources = async () => sources,
   getListings = async () => [],
   getListing,
-  refresh = async () => undefined
+  startRefresh = async () => ({ runId: 1, state: "running" as const }),
+  getRefreshStatus = async () => makeRefreshStatus(),
+  getScanHistory = async () => ({ runs: [] })
 }: {
   sources?: SourceStatusView[];
   getSources?: ScoutApi["getSources"];
   getListings?: ScoutApi["getListings"];
   getListing?: ScoutApi["getListing"];
-  refresh?: ScoutApi["refresh"];
+  startRefresh?: ScoutApi["startRefresh"];
+  getRefreshStatus?: ScoutApi["getRefreshStatus"];
+  getScanHistory?: ScoutApi["getScanHistory"];
 } = {}): ScoutApi {
   const resolveListing =
     getListing ??
@@ -64,7 +69,9 @@ function makeApi({
     getSources: vi.fn(getSources),
     getListings: vi.fn(getListings),
     getListing: vi.fn(resolveListing),
-    refresh: vi.fn(refresh)
+    startRefresh: vi.fn(startRefresh),
+    getRefreshStatus: vi.fn(getRefreshStatus),
+    getScanHistory: vi.fn(getScanHistory)
   };
 }
 
@@ -86,6 +93,26 @@ function makeViewListings(count: number, source: SourceId): Listing[] {
       sourceListingId: `${source.toUpperCase()}-${index}`
     })
   );
+}
+
+function makeRefreshStatus(
+  overrides: Partial<RefreshStatusView> = {}
+): RefreshStatusView {
+  return {
+    runId: null,
+    state: "idle",
+    startedAt: null,
+    finishedAt: null,
+    source: null,
+    phase: null,
+    page: 0,
+    summaries: 0,
+    details: 0,
+    message: null,
+    error: null,
+    lastSnapshotAt: "2026-07-28T10:00:00.000Z",
+    ...overrides
+  };
 }
 
 describe("App shell", () => {
@@ -116,9 +143,9 @@ describe("App shell", () => {
       await httpScoutApi.getListings("eligible");
       await httpScoutApi.getListings("needs_verification");
       await httpScoutApi.getListings("rejected");
-      await httpScoutApi.startRefresh?.();
-      await httpScoutApi.getRefreshStatus?.();
-      await httpScoutApi.getScanHistory?.(5);
+      await httpScoutApi.startRefresh();
+      await httpScoutApi.getRefreshStatus();
+      await httpScoutApi.getScanHistory(5);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -153,7 +180,7 @@ describe("App shell", () => {
     render(<App api={api} />);
 
     await waitFor(() =>
-      expect(api.getListings).toHaveBeenCalledWith("pool")
+      expect(api.getListings).toHaveBeenCalledWith("pool", "balanced")
     );
     expect(
       screen.getByRole("heading", { name: "推荐候选 1 / 30" })
@@ -167,7 +194,10 @@ describe("App shell", () => {
 
     await user.click(eligibleTab);
     await waitFor(() =>
-      expect(api.getListings).toHaveBeenCalledWith("eligible")
+      expect(api.getListings).toHaveBeenCalledWith(
+        "eligible",
+        "balanced"
+      )
     );
     expect(
       screen.getByRole("heading", { name: "全部合格 2" })
@@ -175,7 +205,10 @@ describe("App shell", () => {
 
     await user.click(needsTab);
     await waitFor(() =>
-      expect(api.getListings).toHaveBeenCalledWith("needs_verification")
+      expect(api.getListings).toHaveBeenCalledWith(
+        "needs_verification",
+        "balanced"
+      )
     );
     expect(
       screen.getByRole("heading", { name: "待人工核验 3" })
@@ -183,7 +216,10 @@ describe("App shell", () => {
 
     await user.click(rejectedTab);
     await waitFor(() =>
-      expect(api.getListings).toHaveBeenCalledWith("rejected")
+      expect(api.getListings).toHaveBeenCalledWith(
+        "rejected",
+        "balanced"
+      )
     );
     expect(
       screen.getByRole("heading", { name: "已淘汰 4" })
@@ -199,6 +235,37 @@ describe("App shell", () => {
       "aria-controls",
       "listing-view-panel"
     );
+  });
+
+  it("uses the balanced pool by default and reloads both endpoints for global mode", async () => {
+    const listing = makeListing({
+      sourceListingId: "MODE-CANDIDATE"
+    });
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "panzhi" })],
+      getListings: async () => [listing]
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("button", {
+      name: /MODE-CANDIDATE/
+    })).toBeInTheDocument();
+    expect(api.getSources).toHaveBeenCalledWith("balanced");
+    expect(api.getListings).toHaveBeenCalledWith("pool", "balanced");
+
+    await user.click(
+      screen.getByRole("button", { name: "全局 Top 30" })
+    );
+
+    await waitFor(() => {
+      expect(api.getSources).toHaveBeenLastCalledWith("global");
+      expect(api.getListings).toHaveBeenLastCalledWith("pool", "global");
+    });
+    expect(
+      screen.getByRole("heading", { name: "全局 Top 30 1 / 30" })
+    ).toBeInTheDocument();
   });
 
   it("ignores source and listing data from a stale view request", async () => {
@@ -230,7 +297,7 @@ describe("App shell", () => {
 
     render(<App api={api} />);
     await waitFor(() =>
-      expect(api.getListings).toHaveBeenCalledWith("pool")
+      expect(api.getListings).toHaveBeenCalledWith("pool", "balanced")
     );
     await user.click(
       screen.getByRole("tab", { name: "全部合格" })
@@ -293,13 +360,16 @@ describe("App shell", () => {
 
     render(<App api={api} />);
     await waitFor(() =>
-      expect(api.getListings).toHaveBeenCalledWith("pool")
+      expect(api.getListings).toHaveBeenCalledWith("pool", "balanced")
     );
     await user.click(
       screen.getByRole("tab", { name: "全部合格" })
     );
     await waitFor(() =>
-      expect(api.getListings).toHaveBeenCalledWith("eligible")
+      expect(api.getListings).toHaveBeenCalledWith(
+        "eligible",
+        "balanced"
+      )
     );
 
     await act(async () => {
@@ -522,6 +592,7 @@ describe("App shell", () => {
     });
     const staleDetail = deferred<Listing>();
     let listingRequestCount = 0;
+    let refreshStatusCount = 0;
     const api = makeApi({
       getListings: async () => {
         listingRequestCount += 1;
@@ -529,7 +600,17 @@ describe("App shell", () => {
           ? [oldListing]
           : [freshListing];
       },
-      getListing: async () => staleDetail.promise
+      getListing: async () => staleDetail.promise,
+      getRefreshStatus: async () => {
+        refreshStatusCount += 1;
+        return refreshStatusCount === 1
+          ? makeRefreshStatus()
+          : makeRefreshStatus({
+              runId: 3,
+              state: "success",
+              finishedAt: "2026-07-29T10:00:00.000Z"
+            });
+      }
     });
     const user = userEvent.setup();
 
@@ -948,7 +1029,12 @@ describe("App shell", () => {
       ]),
       getListings: vi.fn(async () => [listing]),
       getListing: vi.fn(async () => listing),
-      refresh: vi.fn(async () => undefined)
+      startRefresh: vi.fn(async () => ({
+        runId: 1,
+        state: "running" as const
+      })),
+      getRefreshStatus: vi.fn(async () => makeRefreshStatus()),
+      getScanHistory: vi.fn(async () => ({ runs: [] }))
     };
 
     render(<App api={api} />);
@@ -1020,91 +1106,225 @@ describe("App shell", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("refreshes and reloads the default pool view", async () => {
-    const api: ScoutApi = {
-      getSources: vi.fn(async () => []),
-      getListings: vi.fn(async () => []),
-      getListing: vi.fn(async () => {
-        throw new Error("not used");
-      }),
-      refresh: vi.fn(async () => undefined)
-    };
-    render(<App api={api} />);
-    const button = await screen.findByRole("button", {
-      name: "刷新公开数据"
+  it("resumes a running refresh on startup and displays live progress", async () => {
+    const api = makeApi({
+      getRefreshStatus: async () =>
+        makeRefreshStatus({
+          runId: 7,
+          state: "running",
+          source: "jiaoyimao",
+          phase: "detail",
+          page: 2,
+          summaries: 10,
+          details: 6,
+          message: "正在读取商品详情"
+        })
     });
-    await userEvent.click(button);
 
-    expect(api.refresh).toHaveBeenCalledTimes(1);
-    expect(api.getListings).toHaveBeenLastCalledWith("pool");
-    expect(api.getSources).toHaveBeenCalledTimes(2);
+    render(<App api={api} />);
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("交易猫");
+    expect(status).toHaveTextContent("详情");
+    expect(status).toHaveTextContent("第 2 页");
+    expect(status).toHaveTextContent("10 商品");
+    expect(status).toHaveTextContent("6 详情");
+    expect(
+      screen.getAllByRole("button", { name: /正在刷新/ })[0]
+    ).toBeDisabled();
   });
 
-  it("shares one busy lock across both refresh buttons", async () => {
-    const refreshRequest = deferred<void>();
-    const api = makeApi({
-      refresh: async () => refreshRequest.promise
-    });
-    const user = userEvent.setup();
+  it("starts a background refresh, reloads on success, and clears progress", async () => {
+    vi.useFakeTimers();
+    try {
+      let statusCall = 0;
+      const api = makeApi({
+        getRefreshStatus: async () => {
+          statusCall += 1;
+          if (statusCall === 1) return makeRefreshStatus();
+          if (statusCall === 2) {
+            return makeRefreshStatus({
+              runId: 8,
+              state: "running",
+              source: "panzhi",
+              phase: "list",
+              page: 3,
+              summaries: 20
+            });
+          }
+          return makeRefreshStatus({
+            runId: 8,
+            state: "success",
+            finishedAt: "2026-07-29T10:00:00.000Z"
+          });
+        }
+      });
 
-    render(<App api={api} />);
-    const emptyState = await screen.findByLabelText("空候选");
-    const primaryButton = screen.getByRole("button", {
-      name: "刷新公开数据"
-    });
-    const emptyButton = within(emptyState).getByRole("button", {
-      name: "立即刷新"
-    });
+      render(<App api={api} />);
+      await act(async () => undefined);
+      fireEvent.click(
+        screen.getByRole("button", { name: "刷新公开数据" })
+      );
+      await act(async () => undefined);
 
-    await user.click(primaryButton);
+      expect(api.startRefresh).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("status")).toHaveTextContent("盼之代售");
+      expect(screen.getByRole("status")).toHaveTextContent("第 3 页");
 
-    expect(api.refresh).toHaveBeenCalledTimes(1);
-    expect(primaryButton).toBeDisabled();
-    expect(primaryButton).toHaveAttribute("aria-busy", "true");
-    expect(emptyButton).toBeDisabled();
-    expect(emptyButton).toHaveAttribute("aria-busy", "true");
-    expect(emptyButton).toHaveTextContent("正在刷新…");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
 
-    fireEvent.click(emptyButton);
-    fireEvent.click(primaryButton);
-    expect(api.refresh).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      refreshRequest.resolve();
-    });
-
-    await waitFor(() => expect(primaryButton).toBeEnabled());
-    expect(primaryButton).toHaveAttribute("aria-busy", "false");
-    const restoredEmptyButton = within(
-      await screen.findByLabelText("空候选")
-    ).getByRole("button", { name: "立即刷新" });
-    expect(restoredEmptyButton).toBeEnabled();
-    expect(restoredEmptyButton).toHaveAttribute("aria-busy", "false");
-    expect(restoredEmptyButton).toHaveTextContent("立即刷新");
+      expect(api.getSources).toHaveBeenCalledTimes(2);
+      expect(api.getListings).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "刷新公开数据" })
+      ).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("restores refresh controls after a refresh error", async () => {
-    const refreshRequest = deferred<void>();
+  it("reloads after a partial refresh and reports incomplete sources", async () => {
+    let statusCall = 0;
     const api = makeApi({
-      refresh: async () => refreshRequest.promise
+      getRefreshStatus: async () => {
+        statusCall += 1;
+        return statusCall === 1
+          ? makeRefreshStatus()
+          : makeRefreshStatus({
+              runId: 9,
+              state: "partial",
+              error: "螃蟹列表结构待核验",
+              finishedAt: "2026-07-29T10:00:00.000Z"
+            });
+      }
     });
-    const user = userEvent.setup();
 
     render(<App api={api} />);
-    const primaryButton = await screen.findByRole("button", {
-      name: "刷新公开数据"
-    });
-    await user.click(primaryButton);
-
-    await act(async () => {
-      refreshRequest.reject(new Error("刷新服务异常"));
-    });
+    await screen.findByRole("button", { name: "刷新公开数据" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "刷新公开数据" })
+    );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "刷新服务异常"
+      "部分来源未完整刷新"
     );
-    expect(primaryButton).toBeEnabled();
-    expect(primaryButton).toHaveAttribute("aria-busy", "false");
-    expect(primaryButton).toHaveTextContent("刷新公开数据");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "螃蟹列表结构待核验"
+    );
+    await waitFor(() =>
+      expect(api.getListings).toHaveBeenCalledTimes(2)
+    );
+  });
+
+  it("stops on failed status while preserving candidates and selected detail", async () => {
+    const listing = makeListing({
+      sourceListingId: "PRESERVED",
+      totalAssetsM: 777
+    });
+    let statusCall = 0;
+    const api = makeApi({
+      getListings: async () => [listing],
+      getListing: async () => listing,
+      getRefreshStatus: async () => {
+        statusCall += 1;
+        return statusCall === 1
+          ? makeRefreshStatus()
+          : makeRefreshStatus({
+              runId: 10,
+              state: "failed",
+              error: "统一评分失败",
+              finishedAt: "2026-07-29T10:00:00.000Z"
+            });
+      }
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    const row = await screen.findByRole("button", { name: /PRESERVED/ });
+    await user.click(row);
+    expect(
+      within(screen.getByRole("complementary", {
+        name: "候选详情"
+      })).getByText("777M")
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "刷新公开数据" })
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "刷新失败，正在展示上次有效快照"
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("统一评分失败");
+    expect(screen.getByRole("button", { name: /PRESERVED/ }))
+      .toBeInTheDocument();
+    expect(
+      within(screen.getByRole("complementary", {
+        name: "候选详情"
+      })).getByText("777M")
+    ).toBeInTheDocument();
+    expect(api.getListings).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off status transport failures without clearing old data", async () => {
+    vi.useFakeTimers();
+    try {
+      const listing = makeListing({ sourceListingId: "STILL-HERE" });
+      let statusCall = 0;
+      const api = makeApi({
+        getListings: async () => [listing],
+        getRefreshStatus: async () => {
+          statusCall += 1;
+          if (statusCall === 1) return makeRefreshStatus();
+          if (statusCall <= 5) throw new Error("进度接口不可达");
+          return makeRefreshStatus({
+            runId: 11,
+            state: "success",
+            finishedAt: "2026-07-29T10:00:00.000Z"
+          });
+        }
+      });
+
+      render(<App api={api} />);
+      await act(async () => undefined);
+      expect(screen.getByRole("button", {
+        name: /STILL-HERE/
+      })).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole("button", { name: "刷新公开数据" })
+      );
+      await act(async () => undefined);
+
+      for (let index = 0; index < 3; index += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000);
+        });
+      }
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "无法读取刷新进度，任务可能仍在后台运行"
+      );
+      expect(screen.getByRole("button", { name: /STILL-HERE/ }))
+        .toBeInTheDocument();
+      const callsAtBackoff = vi.mocked(api.getRefreshStatus).mock.calls.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_999);
+      });
+      expect(api.getRefreshStatus).toHaveBeenCalledTimes(callsAtBackoff);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+
+      expect(api.getListings).toHaveBeenCalledTimes(2);
+      expect(screen.queryByText(
+        "无法读取刷新进度，任务可能仍在后台运行"
+      )).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

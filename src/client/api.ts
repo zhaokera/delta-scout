@@ -94,10 +94,9 @@ export interface ScoutApi {
   getSources(mode?: PoolMode): Promise<SourceStatusView[]>;
   getListings(view: ListingView, mode?: PoolMode): Promise<Listing[]>;
   getListing(key: string): Promise<Listing>;
-  refresh(): Promise<void>;
-  startRefresh?(): Promise<{ runId: number; state: "running" }>;
-  getRefreshStatus?(): Promise<RefreshStatusView>;
-  getScanHistory?(limit?: number): Promise<ScanHistoryResponse>;
+  startRefresh(): Promise<{ runId: number; state: "running" }>;
+  getRefreshStatus(): Promise<RefreshStatusView>;
+  getScanHistory(limit?: number): Promise<ScanHistoryResponse>;
 }
 
 const LISTING_QUERIES: Record<ListingView, string> = {
@@ -143,18 +142,5 @@ export const httpScoutApi: ScoutApi = {
   getScanHistory: (limit = 10) =>
     requestJson<ScanHistoryResponse>(
       `/api/scan-history?limit=${limit}`
-    ),
-  refresh: async () => {
-    await httpScoutApi.startRefresh?.();
-    while (true) {
-      const status = await httpScoutApi.getRefreshStatus?.();
-      if (!status || status.state === "success" || status.state === "partial") {
-        return;
-      }
-      if (status.state === "failed") {
-        throw new Error(status.error ?? "刷新失败，请稍后重试");
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
+    )
 };

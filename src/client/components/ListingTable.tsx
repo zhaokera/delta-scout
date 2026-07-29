@@ -1,5 +1,5 @@
 import type { Listing, SourceId } from "../../domain/listing";
-import type { ListingView } from "../api";
+import type { ListingView, PoolMode } from "../api";
 import type { SortKey } from "./FilterBar";
 
 const SOURCE_LABELS = {
@@ -65,11 +65,21 @@ function m7Label(listing: Listing): string {
   return "M7 · 待核验";
 }
 
+function stabilityLabel(listing: Listing): string {
+  if (listing.scanStability === "stable") {
+    return `连续稳定 · ${listing.consecutiveUnchangedScans} 轮`;
+  }
+  if (listing.scanStability === "new") return "首次发现";
+  if (listing.scanStability === "changed") return "本轮有变化";
+  return "稳定性待观测";
+}
+
 export interface ListingTableProps {
   listings: Listing[];
   selectedKey: string | null;
   sort: SortKey;
   view?: ListingView;
+  poolMode?: PoolMode;
   totalCount?: number;
   sourceContributions?: Record<SourceId, number>;
   onSortChange(sort: SortKey): void;
@@ -81,6 +91,7 @@ export function ListingTable({
   selectedKey,
   sort,
   view = "pool",
+  poolMode = "balanced",
   totalCount,
   sourceContributions = EMPTY_CONTRIBUTIONS,
   onSelect
@@ -90,19 +101,27 @@ export function ListingTable({
   const filtered = sorted.length !== loadedCount;
   const heading =
     view === "pool"
-      ? `推荐候选 ${loadedCount} / 30`
+      ? poolMode === "global"
+        ? `全局 Top 30 ${loadedCount} / 30`
+        : `推荐候选 ${loadedCount} / 30`
       : `${VIEW_LABELS[view]} ${loadedCount}`;
   return (
     <section className="listing-panel" aria-label="账号候选列表">
       <div className="listing-panel__heading">
         <div className="listing-panel__heading-main">
           <span className="section-index">
-            {view === "pool" ? "02 / BALANCED POOL" : "02 / LISTING VIEW"}
+            {view === "pool"
+              ? poolMode === "global"
+                ? "02 / GLOBAL POOL"
+                : "02 / BALANCED POOL"
+              : "02 / LISTING VIEW"}
           </span>
           <h2>{heading}</h2>
           {view === "pool" ? (
             <p className="listing-panel__dek">
-              每平台最多 10 · 跨平台统一评分 Top 30
+              {poolMode === "global"
+                ? "不设平台配额 · 跨平台总榜 Top 30"
+                : "每平台最多 10 · 跨平台统一评分 Top 30"}
             </p>
           ) : (
             <p className="listing-panel__dek">
@@ -168,6 +187,11 @@ export function ListingTable({
               </span>
               <span>{m7Label(listing)}</span>
               <span>{julangLabel(listing)}</span>
+              <span
+                className={`stability-badge stability-badge--${listing.scanStability}`}
+              >
+                {stabilityLabel(listing)}
+              </span>
             </span>
             <span className="listing-row__safety">
               <span

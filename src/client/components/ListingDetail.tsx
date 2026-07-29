@@ -36,6 +36,15 @@ function scorePart(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
+function stabilityLabel(listing: Listing): string {
+  if (listing.scanStability === "stable") {
+    return `连续稳定 · ${listing.consecutiveUnchangedScans} 轮`;
+  }
+  if (listing.scanStability === "new") return "首次发现";
+  if (listing.scanStability === "changed") return "本轮有变化";
+  return "稳定性待观测";
+}
+
 export function ListingDetail({
   listing,
   loading
@@ -64,6 +73,11 @@ export function ListingDetail({
           <span className="section-index">03 / EVIDENCE</span>
           <h2>{listing.sourceListingId ?? "候选详情"}</h2>
           <p>{SOURCE_LABELS[listing.source]} · 抓取证据快照</p>
+          <span
+            className={`stability-badge stability-badge--${listing.scanStability}`}
+          >
+            {stabilityLabel(listing)}
+          </span>
         </div>
         <div className="detail-score">
           <strong>{listing.score?.total ?? "—"}</strong>

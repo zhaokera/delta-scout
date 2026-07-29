@@ -44,4 +44,49 @@ describe("ListingTable", () => {
     );
     expect(onSelect).toHaveBeenCalledWith(listings[0]);
   });
+
+  it("labels the global pool and shows scan stability", () => {
+    render(
+      <ListingTable
+        listings={[
+          makeListing({
+            scanStability: "stable",
+            consecutiveUnchangedScans: 3
+          })
+        ]}
+        selectedKey={null}
+        sort="score"
+        view="pool"
+        poolMode="global"
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "全局 Top 30 1 / 30" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("不设平台配额 · 跨平台总榜 Top 30")
+    ).toBeInTheDocument();
+    expect(screen.getByText("连续稳定 · 3 轮")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["new", "首次发现"],
+    ["changed", "本轮有变化"],
+    ["unknown", "稳定性待观测"]
+  ] as const)("labels %s scan stability", (scanStability, label) => {
+    render(
+      <ListingTable
+        listings={[makeListing({ scanStability })]}
+        selectedKey={null}
+        sort="score"
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
 });
