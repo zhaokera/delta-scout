@@ -15,7 +15,7 @@ import type {
 } from "../../src/client/api";
 import { httpScoutApi } from "../../src/client/api";
 import type { Listing, SourceId } from "../../src/domain/listing";
-import { makeListing } from "../domain/listingFactory";
+import { makeListing, makeScore } from "../domain/listingFactory";
 
 function makeSourceStatus(
   overrides: Partial<SourceStatusView> & { source: SourceId }
@@ -481,8 +481,13 @@ describe("App shell", () => {
       priceCny: 1888,
       totalAssetsM: 100,
       score: {
-        total: 50,
-        parts: { safety: 20, price: 10, assets: 10, confidence: 10 },
+        ...makeScore(50, {
+          safety: 20,
+          skinValue: 10,
+          price: 10,
+          assets: 5,
+          confidence: 5
+        }),
         reasons: ["旧快照"]
       }
     });
@@ -491,8 +496,13 @@ describe("App shell", () => {
       priceCny: 2999,
       totalAssetsM: 999,
       score: {
-        total: 95,
-        parts: { safety: 38, price: 23, assets: 19, confidence: 15 },
+        ...makeScore(95, {
+          safety: 30,
+          skinValue: 30,
+          price: 18,
+          assets: 9,
+          confidence: 8
+        }),
         reasons: ["新快照"]
       }
     });
@@ -774,9 +784,14 @@ describe("App shell", () => {
       julangQuality: "极品",
       recoveryCoverage: false,
       score: {
-        total: 87,
-        parts: { safety: 32, price: 21, assets: 19, confidence: 15 },
-        reasons: ["安全信息 32.0/40", "价格合理性 21.0/25"]
+        ...makeScore(87, {
+          safety: 28,
+          skinValue: 28,
+          price: 16,
+          assets: 8,
+          confidence: 7
+        }),
+        reasons: ["安全信息 28.0/30", "价格合理性 16.0/20"]
       }
     });
     const api: ScoutApi = {

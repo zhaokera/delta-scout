@@ -31,7 +31,9 @@ const validListing = {
   confidence: 100,
   eligibility: "eligible",
   score: null,
-  possibleDuplicateKeys: []
+  possibleDuplicateKeys: [],
+  scanStability: "stable",
+  consecutiveUnchangedScans: 3
 };
 
 describe("ListingSchema", () => {
@@ -56,5 +58,35 @@ describe("ListingSchema", () => {
     delete (legacy as Partial<typeof validListing>).m7PrismQuality;
 
     expect(ListingSchema.parse(legacy).m7PrismQuality).toBeNull();
+  });
+
+  it("defaults legacy snapshots without scan stability", () => {
+    const legacy = { ...validListing } as Partial<typeof validListing>;
+    delete legacy.scanStability;
+    delete legacy.consecutiveUnchangedScans;
+
+    expect(ListingSchema.parse(legacy)).toMatchObject({
+      scanStability: "unknown",
+      consecutiveUnchangedScans: 0
+    });
+  });
+
+  it("accepts the five-part recommendation score", () => {
+    expect(
+      ListingSchema.parse({
+        ...validListing,
+        score: {
+          total: 70,
+          parts: {
+            safety: 20,
+            skinValue: 25,
+            price: 10,
+            assets: 5,
+            confidence: 10
+          },
+          reasons: []
+        }
+      }).score
+    ).not.toBeNull();
   });
 });

@@ -1,4 +1,22 @@
-import type { Listing } from "../../src/domain/listing.js";
+import type { Listing, Score } from "../../src/domain/listing.js";
+
+export function makeScore(
+  total: number,
+  parts: Partial<Score["parts"]> = {}
+): Score {
+  return {
+    total,
+    parts: {
+      safety: 0,
+      skinValue: 0,
+      price: 0,
+      assets: 0,
+      confidence: 0,
+      ...parts
+    },
+    reasons: []
+  };
+}
 
 export function makeListing(overrides: Partial<Listing> = {}): Listing {
   return {
@@ -37,6 +55,8 @@ export function makeListing(overrides: Partial<Listing> = {}): Listing {
     eligibility: "eligible",
     score: null,
     possibleDuplicateKeys: [],
+    scanStability: "unknown",
+    consecutiveUnchangedScans: 0,
     ...overrides
   };
 }

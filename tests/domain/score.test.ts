@@ -2,33 +2,29 @@ import {
   compareRecommendations,
   scoreEligibleListings
 } from "../../src/domain/score";
-import type { Score } from "../../src/domain/listing";
-import { makeListing } from "./listingFactory";
+import { makeListing, makeScore } from "./listingFactory";
 
 const now = new Date("2026-07-28T12:00:00+08:00");
-const tiedScore: Score = {
-  total: 80,
-  parts: { safety: 0, price: 0, assets: 0, confidence: 0 },
-  reasons: []
-};
+const tiedScore = makeScore(80);
 
 describe("scoreEligibleListings", () => {
   it("uses neutral set-relative values for a single candidate", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 79,
+      total: 75,
       parts: {
-        safety: 40,
-        price: 12.5,
-        assets: 11.5,
-        confidence: 15
+        safety: 30,
+        skinValue: 19.5,
+        price: 10,
+        assets: 5.5,
+        confidence: 10
       },
       reasons: expect.any(Array)
     });
   });
 
-  it("normalizes price and assets across eligible candidates", () => {
+  it("uses robust ranks for price and assets across eligible candidates", () => {
     const cheap = makeListing({
       key: "panzhi:cheap",
       sourceListingId: "cheap",
@@ -49,10 +45,60 @@ describe("scoreEligibleListings", () => {
     const cheapResult = results.find(({ key }) => key === cheap.key)!;
     const richResult = results.find(({ key }) => key === rich.key)!;
 
-    expect(cheapResult.score?.parts.price).toBe(25);
+    expect(cheapResult.score?.parts.price).toBe(20);
     expect(richResult.score?.parts.price).toBe(0);
-    expect(cheapResult.score?.parts.assets).toBe(3);
-    expect(richResult.score?.parts.assets).toBe(20);
+    expect(cheapResult.score?.parts.assets).toBe(1);
+    expect(richResult.score?.parts.assets).toBe(10);
+  });
+
+  it.each([
+    ["S", 14],
+    ["A", 11],
+    ["B", 8],
+    ["C", 5],
+    [null, 0]
+  ] as const)("scores M7 quality %s explicitly", (quality, expected) => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        m7PrismQuality: quality,
+        redSkins: [],
+        redSkinCount: 0,
+        julangStatus: "absent",
+        julangQuality: null
+      })
+    ], now);
+
+    expect(result.score?.parts.skinValue).toBe(expected);
+    if (quality === null) {
+      expect(result.score?.reasons.join(" ")).toContain("极品品质待核验");
+    }
+  });
+
+  it("caps red-skin value at four and includes Julang", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        m7PrismQuality: "C",
+        redSkins: ["威龙", "红狼", "骇爪", "蜂医", "牧羊人"],
+        redSkinCount: 5,
+        julangStatus: "owned"
+      })
+    ], now);
+
+    expect(result.score?.parts.skinValue).toBe(21);
+    expect(result.score?.reasons.join(" ")).toContain("5 个已识别角色红皮");
+    expect(result.score?.reasons.join(" ")).toContain("巨浪已拥有");
+  });
+
+  it("does not reward known negative safety values", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        secondRealNameAvailable: false,
+        recoveryCoverage: false,
+        verificationAt: null
+      })
+    ], now);
+
+    expect(result.score?.parts.safety).toBe(0);
   });
 
   it("sorts ties by confidence, price, capture time, then URL", () => {
@@ -108,7 +154,7 @@ describe("scoreEligibleListings", () => {
   it("ranks a zero score above a missing score", () => {
     const zeroScore = makeListing({
       key: "panzhi:zero-score",
-      score: { ...tiedScore, total: 0 },
+      score: makeScore(0),
       confidence: 0,
       priceCny: 9_999
     });

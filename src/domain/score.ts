@@ -1,64 +1,42 @@
 import type { Listing, Score } from "./listing.js";
-
-interface NormalizationRange {
-  minimum: number;
-  maximum: number;
-}
+import { buildMidrankPercentiles } from "./percentile.js";
 
 interface NormalizationStats {
-  prices: NormalizationRange | null;
-  totalAssets: NormalizationRange | null;
-  hafCoins: NormalizationRange | null;
-}
-
-function includeValue(
-  range: NormalizationRange | null,
-  value: number | null
-): NormalizationRange | null {
-  if (value === null) return range;
-  if (range === null) {
-    return { minimum: value, maximum: value };
-  }
-  if (value < range.minimum) range.minimum = value;
-  if (value > range.maximum) range.maximum = value;
-  return range;
+  prices: Map<number, number>;
+  totalAssets: Map<number, number>;
+  hafCoins: Map<number, number>;
 }
 
 function buildNormalizationStats(
   candidates: Listing[]
 ): NormalizationStats {
-  let prices: NormalizationRange | null = null;
-  let totalAssets: NormalizationRange | null = null;
-  let hafCoins: NormalizationRange | null = null;
-  for (const listing of candidates) {
-    prices = includeValue(prices, listing.priceCny);
-    totalAssets = includeValue(totalAssets, listing.totalAssetsM);
-    hafCoins = includeValue(hafCoins, listing.hafCoins);
-  }
-  return { prices, totalAssets, hafCoins };
+  return {
+    prices: buildMidrankPercentiles(
+      candidates.map(({ priceCny }) => priceCny)
+    ),
+    totalAssets: buildMidrankPercentiles(
+      candidates.map(({ totalAssetsM }) => totalAssetsM)
+    ),
+    hafCoins: buildMidrankPercentiles(
+      candidates.map(({ hafCoins }) => hafCoins)
+    )
+  };
 }
 
-function normalize(
+function percentile(
   value: number | null,
-  range: NormalizationRange | null
+  percentiles: Map<number, number>
 ): number {
-  if (value === null || range === null) {
-    return 0;
-  }
-  const { minimum, maximum } = range;
-  if (minimum === maximum) {
-    return 0.5;
-  }
-  return (value - minimum) / (maximum - minimum);
+  return value === null ? 0 : (percentiles.get(value) ?? 0);
 }
 
 function safetyScore(listing: Listing, now: Date): number {
   let score = 0;
   if (listing.secondRealNameAvailable === true) {
-    score += 15;
+    score += 12;
   }
   if (listing.recoveryCoverage === true) {
-    score += 10;
+    score += 8;
   }
   if (listing.verificationAt !== null) {
     const ageDays = Math.max(
@@ -67,14 +45,40 @@ function safetyScore(listing: Listing, now: Date): number {
     );
     score += ageDays <= 7 ? 10 : ageDays <= 30 ? 6 : 2;
   }
-  if (
-    listing.secondRealNameAvailable !== null &&
-    listing.recoveryCoverage !== null &&
-    listing.verificationAt !== null
-  ) {
-    score += 5;
-  }
   return score;
+}
+
+const QUALITY_POINTS = {
+  S: 14,
+  A: 11,
+  B: 8,
+  C: 5
+} as const;
+
+function skinValueScore(listing: Listing): number {
+  const scoredRedSkinCount =
+    listing.redSkins.length > 4 ? 4 : listing.redSkins.length;
+  return (
+    (listing.m7PrismQuality === null
+      ? 0
+      : QUALITY_POINTS[listing.m7PrismQuality]) +
+    scoredRedSkinCount * 2.5 +
+    (listing.julangStatus === "owned" ? 6 : 0)
+  );
+}
+
+function skinValueReason(listing: Listing): string {
+  const quality =
+    listing.m7PrismQuality === null
+      ? "极品品质待核验"
+      : `M7 极品${listing.m7PrismQuality}`;
+  const julang =
+    listing.julangStatus === "owned"
+      ? "巨浪已拥有"
+      : listing.julangStatus === "absent"
+        ? "巨浪明确没有"
+        : "巨浪待核验";
+  return `${quality}；${listing.redSkins.length} 个已识别角色红皮；${julang}`;
 }
 
 function scoreOne(
@@ -85,25 +89,29 @@ function scoreOne(
   const price =
     listing.priceCny === null
       ? 0
-      : (1 - normalize(listing.priceCny, stats.prices)) * 25;
+      : (1 - percentile(listing.priceCny, stats.prices)) * 20;
   const hasAssets =
     listing.totalAssetsM !== null || listing.hafCoins !== null;
   const assets =
-    normalize(listing.totalAssetsM, stats.totalAssets) * 12 +
-    normalize(listing.hafCoins, stats.hafCoins) * 5 +
-    (hasAssets ? 3 : 0);
+    percentile(listing.totalAssetsM, stats.totalAssets) * 6 +
+    percentile(listing.hafCoins, stats.hafCoins) * 3 +
+    (hasAssets ? 1 : 0);
   const safety = safetyScore(listing, now);
-  const confidence = (listing.confidence / 100) * 15;
-  const total = Math.round(safety + price + assets + confidence);
+  const skinValue = skinValueScore(listing);
+  const confidence = (listing.confidence / 100) * 10;
+  const total = Math.round(
+    safety + skinValue + price + assets + confidence
+  );
 
   return {
     total,
-    parts: { safety, price, assets, confidence },
+    parts: { safety, skinValue, price, assets, confidence },
     reasons: [
-      `安全信息 ${safety.toFixed(1)}/40`,
-      `价格合理性 ${price.toFixed(1)}/25`,
-      `可核验资产 ${assets.toFixed(1)}/20`,
-      `数据置信度 ${confidence.toFixed(1)}/15`
+      `安全信息 ${safety.toFixed(1)}/30`,
+      `皮肤价值 ${skinValue.toFixed(1)}/30（${skinValueReason(listing)}）`,
+      `价格合理性 ${price.toFixed(1)}/20`,
+      `可核验资产 ${assets.toFixed(1)}/10`,
+      `数据置信度 ${confidence.toFixed(1)}/10`
     ]
   };
 }

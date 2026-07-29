@@ -1,14 +1,6 @@
-import type { Listing, Score } from "../../src/domain/listing";
+import type { Listing } from "../../src/domain/listing";
 import { selectBalancedCandidatePool } from "../../src/domain/candidatePool";
-import { makeListing } from "./listingFactory";
-
-function makeScore(total: number): Score {
-  return {
-    total,
-    parts: { safety: 0, price: 0, assets: 0, confidence: 0 },
-    reasons: []
-  };
-}
+import { makeListing, makeScore } from "./listingFactory";
 
 function scoredListing(
   source: Listing["source"],

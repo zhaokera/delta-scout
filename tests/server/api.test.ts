@@ -4,13 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   Eligibility,
   Listing,
-  Score,
   SourceId
 } from "../../src/domain/listing.js";
 import { createApp } from "../../src/server/app.js";
 import { createDatabase } from "../../src/server/db.js";
 import { ListingRepository } from "../../src/server/repository.js";
-import { makeListing } from "../domain/listingFactory.js";
+import { makeListing, makeScore } from "../domain/listingFactory.js";
 
 function setup() {
   const repository = new ListingRepository(createDatabase(":memory:"));
@@ -19,14 +18,6 @@ function setup() {
     repository,
     coordinator,
     app: createApp({ repository, coordinator })
-  };
-}
-
-function makeScore(total: number): Score {
-  return {
-    total,
-    parts: { safety: 0, price: 0, assets: 0, confidence: 0 },
-    reasons: []
   };
 }
 
@@ -441,8 +432,13 @@ describe("listing API", () => {
           key: "panzhi:low",
           sourceListingId: "low",
           score: {
-            total: 61,
-            parts: { safety: 20, price: 15, assets: 12, confidence: 14 },
+            ...makeScore(61, {
+              safety: 20,
+              skinValue: 10,
+              price: 15,
+              assets: 8,
+              confidence: 8
+            }),
             reasons: ["较低"]
           }
         }),
@@ -450,8 +446,13 @@ describe("listing API", () => {
           key: "panzhi:high",
           sourceListingId: "high",
           score: {
-            total: 88,
-            parts: { safety: 35, price: 20, assets: 18, confidence: 15 },
+            ...makeScore(88, {
+              safety: 28,
+              skinValue: 28,
+              price: 18,
+              assets: 8,
+              confidence: 6
+            }),
             reasons: ["较高"]
           }
         }),

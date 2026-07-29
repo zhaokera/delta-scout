@@ -18,7 +18,7 @@ import type {
   SourceRequest
 } from "../../src/server/collector/types.js";
 import { ListingRepository } from "../../src/server/repository.js";
-import { makeListing } from "../domain/listingFactory.js";
+import { makeListing, makeScore } from "../domain/listingFactory.js";
 
 async function fixture(name: string): Promise<string> {
   return readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
@@ -1176,13 +1176,13 @@ describe("CollectionCoordinator", () => {
           key: "panzhi:old",
           sourceListingId: "old",
           score: {
-            total: 90,
-            parts: {
-              safety: 40,
-              price: 20,
-              assets: 15,
-              confidence: 15
-            },
+            ...makeScore(90, {
+              safety: 30,
+              skinValue: 30,
+              price: 15,
+              assets: 8,
+              confidence: 7
+            }),
             reasons: ["old"]
           }
         })
@@ -1242,13 +1242,13 @@ describe("CollectionCoordinator", () => {
   it("keeps failed old payloads unscored while scoring other fresh sources", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const oldScore = {
-      total: 99,
-      parts: {
-        safety: 40,
-        price: 25,
-        assets: 20,
-        confidence: 14
-      },
+      ...makeScore(99, {
+        safety: 30,
+        skinValue: 30,
+        price: 20,
+        assets: 10,
+        confidence: 9
+      }),
       reasons: ["stale"]
     };
     repository.replaceSourceSnapshot(
@@ -1316,8 +1316,8 @@ describe("CollectionCoordinator", () => {
       repository.getListings().find(({ source }) => source === "panzhi")
         ?.score?.parts
     ).toMatchObject({
-      price: 12.5,
-      assets: 11.5
+      price: 10,
+      assets: 5.5
     });
   });
 
@@ -1604,9 +1604,9 @@ describe("CollectionCoordinator", () => {
 
     const listings = repository.getListings();
     expect(listings.find(({ source }) => source === "panzhi")?.score?.parts)
-      .toMatchObject({ price: 25, assets: 3 });
+      .toMatchObject({ price: 20, assets: 1 });
     expect(listings.find(({ source }) => source === "pxb7")?.score?.parts)
-      .toMatchObject({ price: 0, assets: 20 });
+      .toMatchObject({ price: 0, assets: 10 });
   });
 
   it("stops at an injected page safety limit deterministically", async () => {

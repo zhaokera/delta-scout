@@ -249,7 +249,9 @@ function buildListing(
     confidence: 0,
     eligibility: "needs_verification",
     score: null,
-    possibleDuplicateKeys: []
+    possibleDuplicateKeys: [],
+    scanStability: "unknown",
+    consecutiveUnchangedScans: 0
   };
 
   const confidence = calculateConfidence(base);

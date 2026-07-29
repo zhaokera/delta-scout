@@ -65,6 +65,12 @@ export function ListingDetail({
       <section className="evidence-block evidence-block--m7">
         <span className="evidence-label">硬条件 / M7</span>
         <strong>M7 棱镜攻势 · {m7StatusLabel(listing)}</strong>
+        {listing.m7PrismStatus === "peak" &&
+        listing.m7PrismQuality === null ? (
+          <p className="evidence-warning" role="alert">
+            极品品质待核验
+          </p>
+        ) : null}
         <blockquote>
           {listing.m7Evidence[0]?.text ?? "待人工核验"}
         </blockquote>

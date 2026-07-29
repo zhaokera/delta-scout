@@ -31,10 +31,11 @@ export const EvidenceRecordSchema = z.object({
 export const ScoreSchema = z.object({
   total: z.number().int().min(0).max(100),
   parts: z.object({
-    safety: z.number().min(0).max(40),
-    price: z.number().min(0).max(25),
-    assets: z.number().min(0).max(20),
-    confidence: z.number().min(0).max(15)
+    safety: z.number().min(0).max(30),
+    skinValue: z.number().min(0).max(30),
+    price: z.number().min(0).max(20),
+    assets: z.number().min(0).max(10),
+    confidence: z.number().min(0).max(10)
   }),
   reasons: z.array(z.string())
 });
@@ -80,7 +81,15 @@ export const ListingSchema = z.object({
   confidence: z.number().int().min(0).max(100),
   eligibility: EligibilitySchema,
   score: ScoreSchema.nullable(),
-  possibleDuplicateKeys: z.array(z.string())
+  possibleDuplicateKeys: z.array(z.string()),
+  scanStability: z
+    .enum(["unknown", "new", "changed", "stable"])
+    .default("unknown"),
+  consecutiveUnchangedScans: z
+    .number()
+    .int()
+    .nonnegative()
+    .default(0)
 });
 
 export type SourceId = z.infer<typeof SourceIdSchema>;
