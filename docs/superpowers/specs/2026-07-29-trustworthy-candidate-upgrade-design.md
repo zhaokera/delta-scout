@@ -19,7 +19,6 @@ Scout 更适合做最终购买筛选：
 - `2026-07-28-delta-account-scout-design.md`
 - `2026-07-28-full-pagination-balanced-top30-design.md`
 - `2026-07-28-pxb7-public-api-collector-design.md`
-- `2026-07-29-jiaoyimao-source-session-prime.md`
 
 现有只读边界、反验证码边界、请求限速、硬条件分类、全部分页、来源失败隔离和
 SQLite 原子快照规则继续有效。
@@ -71,10 +70,17 @@ SQLite 原子快照规则继续有效。
 加 12 分，不能因为它是一个已知值再加安全分。证据完整度通过置信度、独立筛选和
 “待核验”文案表达。
 
-价格、总资产和哈夫币改用稳定的秩百分位，不再使用最小值—最大值归一化。单个极端
-价格或极端资产不会压扁其它账号的分差。只有一个非空值时取中性百分位 0.5；缺失值
-为 0。相同值取得相同百分位，排序继续使用推荐总分、置信度、价格、抓取时间和 URL
-作为确定性并列规则。
+价格、总资产和哈夫币改用稳定的秩百分位，不再使用最小值—最大值归一化。对每个
+指标只收集非空有限值，按升序排列为下标 `0..n-1`；相同值取其所有下标的平均值，
+百分位为 `平均下标 / (n - 1)`。因此最低值为 0、最高值为 1，并列值取得完全相同的
+中位秩。`n === 1` 时固定为 0.5，缺失值没有百分位且该分项得 0。价格分使用
+`(1 - percentile) * 20`，资产分使用正向百分位。单个极端价格或极端资产不会像
+最小值—最大值归一化那样按绝对距离压扁其它账号的分差。排序继续使用推荐总分、
+置信度、价格、抓取时间和 URL 作为确定性并列规则。
+
+如果一个 `eligible` 账号意外出现 `m7PrismQuality === null`，M7 品质项得 0，并在
+评分原因中显示“极品品质待核验”；不能擅自按 C 级计分。该记录仍遵循既有分类结果，
+但会被“关键字段完整”筛选排除并在详情中突出复核提示。
 
 `Score.parts` 改为：
 
@@ -116,8 +122,20 @@ API 增加 `mode`：
 - `mode` 只能和 `view=pool&status=eligible` 组合；
 - 非法组合返回 HTTP 400 和 `invalid_listing_view`。
 
+参数先按既有默认规则解析 `view/status`，再校验 `mode`。因此
+`?mode=global`、`?status=eligible&mode=global` 都会解析为 pool + eligible，
+属于合法请求；`?view=all&mode=global`、`?status=rejected&mode=global` 非法。
+
+`GET /api/sources` 同样接受可选 `mode=balanced|global`，省略时为 balanced。每个
+来源状态同时返回 `balancedCandidateCount`、`globalCandidateCount`，兼容字段
+`candidateCount` 则根据本次 `mode` 返回对应数量。非法 mode 返回 HTTP 400
+`invalid_pool_mode`。两个数量都从当前新鲜合格列表实时派生，不写入
+`source_status`。
+
 前端在“推荐候选”页显示“均衡 / 全局”分段切换。切换会重新读取服务端结果，不在
-浏览器中从已截断候选池推算。其它状态页不显示此切换。
+浏览器中从已截断候选池推算，并用同一 mode 重新读取 `/api/sources`，所以来源卡的
+贡献数和当前候选池一致。其它状态页不显示此切换；离开候选页时保留用户最后选择的
+mode，但只在返回候选页后重新生效。
 
 ## 扫描历史和稳定性
 
@@ -127,15 +145,21 @@ SQLite 幂等增加三张表：
 
 ```text
 scan_runs
-  id, started_at, finished_at, state, error
+  id INTEGER PRIMARY KEY AUTOINCREMENT
+  started_at, finished_at, state, error
 
 scan_source_results
-  run_id, source, state, pages_scanned, item_count,
-  eligible_count, candidate_count, stop_reason, error
+  PRIMARY KEY (run_id, source)
+  run_id REFERENCES scan_runs(id) ON DELETE CASCADE
+  source, state, pages_scanned, observed_item_count,
+  eligible_count, balanced_candidate_count, global_candidate_count,
+  stop_reason, error
 
 listing_observations
-  run_id, listing_key, source, observed_at, eligibility,
-  material_hash, payload
+  PRIMARY KEY (run_id, listing_key)
+  run_id REFERENCES scan_runs(id) ON DELETE CASCADE
+  listing_key, source, observed_at, eligibility, material_hash,
+  stability, consecutive_unchanged_scans
 ```
 
 每次刷新开始先创建 `scan_runs` 行；每个来源完成后保留结果；统一评分、重复标记和
@@ -143,8 +167,11 @@ listing_observations
 扫描标记为 `success` 或 `partial`。全局异常必须把扫描标记为 `failed`，但不能覆盖
 上一份 `listings` 快照。
 
-只保留最近 50 次扫描及其来源结果和观察记录，提交成功后在同一维护步骤中删除更老
-记录，防止本地数据库无限增长。
+`scan_source_results` 对 `(run_id, source)` 唯一，`listing_observations` 对
+`(run_id, listing_key)` 唯一，并为 `(listing_key, run_id DESC)` 和
+`(source, run_id DESC)` 建索引。`state`、`source` 和计数列使用数据库 CHECK 约束；
+计数非负。只保留最近 50 次扫描及其来源结果和观察记录，提交成功后删除更老
+`scan_runs`，子表通过级联删除，防止本地数据库无限增长。
 
 ### 物质变化指纹
 
@@ -166,13 +193,23 @@ scanStability: "unknown" | "new" | "changed" | "stable";
 consecutiveUnchangedScans: number;
 ```
 
-规则：
+只有 `source state === "success"` 的完整来源扫描才能建立或推进连续稳定性。
+`partial` 扫描仍保存观察记录用于审计，但本轮该来源的所有 Listing 标为
+`unknown / 0`，不推进、不重置之前的连续序列；`blocked` 和 `failed` 不写观察
+记录。
 
-- 没有上次成功观察：`new`，连续次数为 1；
-- 有上次观察但物质指纹不同：`changed`，连续次数重置为 1；
-- 指纹相同且连续次数达到 2：`stable`；
-- 旧数据库尚无历史：`unknown`；
-- 某来源本轮失败并保留旧快照时，不制造新的观察，也不增加连续次数。
+完整扫描的规则：
+
+- 查找该来源紧邻的上一次完整成功扫描，而不是任意 partial 扫描；
+- 如果没有任何历史成功扫描且当前数据库没有该来源旧快照：`new / 1`；
+- 如果没有历史表记录，但迁移前数据库存在状态为 success 的该来源旧快照，把旧
+  快照视为一次兼容基线：同指纹为 `stable / 2`，不同为 `changed / 1`；
+- 如果上一次完整成功扫描没有该 listing key，本轮再次出现时为 `new / 1`，此前
+  更早的连续次数不继承；
+- 如果上次完整成功扫描存在该 key 但指纹不同：`changed / 1`；
+- 如果指纹相同：连续次数为上次次数加 1；次数达到 2 时为 `stable`；
+- 某来源本轮 blocked/failed 并保留旧快照时，不制造观察、不改变旧 Listing
+  payload 内已有稳定性字段。
 
 这相当于用两个独立扫描周期做二次核验。新出现或变化账号仍可进入候选池，但界面
 明确提示“首次发现”或“本轮有变化”；只有连续两次一致才显示“连续稳定”。购买前
@@ -184,8 +221,43 @@ API 增加：
 GET /api/scan-history?limit=10
 ```
 
-`limit` 范围 1–50，默认 10。响应包含扫描时间、总状态、三平台页数/商品数/合格数/
-候选数和错误摘要，不返回完整历史商品正文。
+`limit` 范围 1–50，默认 10；无效值返回 HTTP 400 `invalid_history_limit`。响应：
+
+```ts
+{
+  runs: Array<{
+    id: number;
+    startedAt: string;
+    finishedAt: string | null;
+    state: "running" | "success" | "partial" | "failed";
+    error: string | null;
+    sources: Array<{
+      source: SourceId;
+      state: SourceState;
+      pagesScanned: number;
+      observedItemCount: number;
+      eligibleCount: number;
+      balancedCandidateCount: number;
+      globalCandidateCount: number;
+      stopReason: string | null;
+      error: string | null;
+    }>;
+  }>;
+}
+```
+
+`observedItemCount` 是本轮实际取得的商品数；blocked/failed 为 0，即使当前
+`source_status.itemCount` 仍保留旧快照数量也不能写入历史。两个候选数都只统计
+本轮新鲜来源在当轮统一评分后进入对应候选池的数量，失败来源均为 0。历史 API
+不返回完整商品正文。
+
+整轮状态映射固定为：
+
+- 三个来源全部 `success`：`success`；
+- 至少一个来源产生 fresh 数据（`success` 或 `partial`），且任一来源不是
+  `success`：`partial`；
+- 三个来源均为 `blocked` 或 `failed`，没有 fresh 数据可发布：`failed`；
+- 统一评分、稳定性计算或 SQLite 提交抛错：`failed`，当前 listings 快照不变。
 
 ## 异步刷新与进度
 
@@ -216,21 +288,44 @@ GET /api/refresh-status
   details: number;
   message: string | null;
   error: string | null;
+  lastSnapshotAt: string | null;
 }
 ```
+
+`POST` 先在数据库同步创建 `scan_runs(state=running)` 并取得真实自增 `runId`，
+再把同一 ID 交给内存 tracker 和协调器；创建失败时返回 500 且不进入 running。
+后台 Promise 必须安装成功和失败处理器。协调器完成原子提交后，数据库和 tracker
+使用同一个整轮状态进入 `success` 或 `partial`；任何未提交异常先把数据库 run 标为
+`failed`，再把 tracker 标为 failed。
+
+状态机只允许：
+
+```text
+idle -> running -> success | partial | failed
+```
+
+一次运行达到终态后不能再回到 running。下一次 POST 创建新的 runId。服务启动时把
+数据库里遗留的 `running` 扫描标记为 `failed / 进程中断`；内存 tracker 从数据库
+最近一轮终态初始化。`lastSnapshotAt` 取当前 `listings.capturedAt` 的最大值；没有
+任何有效快照时为 null。
 
 协调器通过可选进度回调发布来源开始、列表页完成、详情完成、统一评分、提交和结束
 事件。它不写 Cookie、Token、原文或 URL 到进度信息。
 
-前端启动刷新后每秒轮询状态，显示当前平台、阶段、页数、商品数和详情数。达到终态
-后重新读取来源和列表。若轮询或刷新失败：
+前端首次加载先读取 `/api/refresh-status`；如果已有内存任务为 running，立即恢复
+轮询，同时正常加载并展示当前快照。用户启动刷新后每秒轮询状态，显示当前平台、
+阶段、页数、商品数和详情数。达到 `success` 后重新读取来源和列表并清除刷新警告；
+达到 `partial` 后同样重新读取，但显示“部分来源未完整刷新”和来源错误；达到
+`failed` 后不替换当前前端数据，显示旧快照警告。若 POST 或轮询传输失败：
 
 - 保留当前 `listings` 和已选详情；
 - 在页面顶部显示“刷新失败，正在展示上次有效快照”；
 - 显示上次成功时间和可重试按钮；
 - 不再执行 `setListings([])` 或清空选择。
 
-初次启动且从未加载过数据时才使用空状态。
+轮询连续失败时不把服务端任务误判为 failed；前三次继续每秒重试，之后显示“无法
+读取刷新进度，任务可能仍在后台运行”，并以 5 秒间隔继续轮询，直到取得服务端终态
+或组件卸载。初次启动且从未加载过数据时才使用空状态。
 
 ## 前端筛选与证据
 
