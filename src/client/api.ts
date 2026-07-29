@@ -41,11 +41,63 @@ export interface SourceStatusView {
   stale: boolean;
 }
 
+export type RefreshState =
+  | "idle"
+  | "running"
+  | "success"
+  | "partial"
+  | "failed";
+
+export interface RefreshStatusView {
+  runId: number | null;
+  state: RefreshState;
+  startedAt: string | null;
+  finishedAt: string | null;
+  source: SourceId | null;
+  phase:
+    | "discover"
+    | "list"
+    | "detail"
+    | "score"
+    | "commit"
+    | null;
+  page: number;
+  summaries: number;
+  details: number;
+  message: string | null;
+  error: string | null;
+  lastSnapshotAt: string | null;
+}
+
+export interface ScanHistoryResponse {
+  runs: Array<{
+    id: number;
+    startedAt: string;
+    finishedAt: string | null;
+    state: "running" | "success" | "partial" | "failed";
+    error: string | null;
+    sources: Array<{
+      source: SourceId;
+      state: Exclude<SourceState, "idle">;
+      pagesScanned: number;
+      observedItemCount: number;
+      eligibleCount: number;
+      balancedCandidateCount: number;
+      globalCandidateCount: number;
+      stopReason: string | null;
+      error: string | null;
+    }>;
+  }>;
+}
+
 export interface ScoutApi {
   getSources(mode?: PoolMode): Promise<SourceStatusView[]>;
   getListings(view: ListingView, mode?: PoolMode): Promise<Listing[]>;
   getListing(key: string): Promise<Listing>;
   refresh(): Promise<void>;
+  startRefresh?(): Promise<{ runId: number; state: "running" }>;
+  getRefreshStatus?(): Promise<RefreshStatusView>;
+  getScanHistory?(limit?: number): Promise<ScanHistoryResponse>;
 }
 
 const LISTING_QUERIES: Record<ListingView, string> = {
@@ -82,7 +134,27 @@ export const httpScoutApi: ScoutApi = {
     requestJson<Listing>(
       `/api/listings/${encodeURIComponent(key)}`
     ),
+  startRefresh: () =>
+    requestJson<{ runId: number; state: "running" }>("/api/refresh", {
+      method: "POST"
+    }),
+  getRefreshStatus: () =>
+    requestJson<RefreshStatusView>("/api/refresh-status"),
+  getScanHistory: (limit = 10) =>
+    requestJson<ScanHistoryResponse>(
+      `/api/scan-history?limit=${limit}`
+    ),
   refresh: async () => {
-    await requestJson("/api/refresh", { method: "POST" });
+    await httpScoutApi.startRefresh?.();
+    while (true) {
+      const status = await httpScoutApi.getRefreshStatus?.();
+      if (!status || status.state === "success" || status.state === "partial") {
+        return;
+      }
+      if (status.state === "failed") {
+        throw new Error(status.error ?? "刷新失败，请稍后重试");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }
 };

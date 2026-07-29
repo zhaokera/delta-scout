@@ -101,7 +101,10 @@ describe("App shell", () => {
   });
 
   it("maps every listing view to an explicit API query", async () => {
-    const fetchMock = vi.fn(async (_input: string) => ({
+    const fetchMock = vi.fn(async (
+      _input: string,
+      _init?: RequestInit
+    ) => ({
       ok: true,
       json: async () => []
     }));
@@ -113,6 +116,9 @@ describe("App shell", () => {
       await httpScoutApi.getListings("eligible");
       await httpScoutApi.getListings("needs_verification");
       await httpScoutApi.getListings("rejected");
+      await httpScoutApi.startRefresh?.();
+      await httpScoutApi.getRefreshStatus?.();
+      await httpScoutApi.getScanHistory?.(5);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -124,8 +130,12 @@ describe("App shell", () => {
       "/api/listings?view=pool&status=eligible&mode=global",
       "/api/listings?view=all&status=eligible",
       "/api/listings?view=all&status=needs_verification",
-      "/api/listings?view=all&status=rejected"
+      "/api/listings?view=all&status=rejected",
+      "/api/refresh",
+      "/api/refresh-status",
+      "/api/scan-history?limit=5"
     ]);
+    expect(fetchMock.mock.calls[5]?.[1]).toMatchObject({ method: "POST" });
   });
 
   it("loads the pool first and switches among four isolated views", async () => {

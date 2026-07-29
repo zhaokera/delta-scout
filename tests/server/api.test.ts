@@ -8,16 +8,35 @@ import type {
 } from "../../src/domain/listing.js";
 import { createApp } from "../../src/server/app.js";
 import { createDatabase } from "../../src/server/db.js";
+import { RefreshTracker } from "../../src/server/refreshTracker.js";
 import { ListingRepository } from "../../src/server/repository.js";
 import { makeListing, makeScore } from "../domain/listingFactory.js";
 
 function setup() {
   const repository = new ListingRepository(createDatabase(":memory:"));
-  const coordinator = { refreshAll: vi.fn(async () => undefined) };
+  const coordinator = {
+    refreshAll: vi.fn(async () => "success" as const)
+  };
+  const tracker = new RefreshTracker(repository.getRefreshSnapshot());
   return {
     repository,
     coordinator,
-    app: createApp({ repository, coordinator })
+    tracker,
+    app: createApp({ repository, coordinator, tracker })
+  };
+}
+
+function successUpdateForApi(source: SourceId) {
+  return {
+    source,
+    state: "success" as const,
+    attemptedAt: new Date("2026-07-29T10:00:00.000Z"),
+    itemCount: 0,
+    metadata: {
+      pagesScanned: 1,
+      stopReason: "end_of_pages",
+      error: null
+    }
   };
 }
 
@@ -648,9 +667,11 @@ describe("listing API", () => {
         );
         markBlocked();
         await waiting;
+        return "partial" as const;
       })
     };
-    const app = createApp({ repository, coordinator });
+    const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+    const app = createApp({ repository, coordinator, tracker });
 
     const refresh = request(app).post("/api/refresh");
     const pendingRefresh = refresh.then((response) => response);
@@ -703,29 +724,49 @@ describe("listing API", () => {
     expect(allRejected.body.map(({ key }: Listing) => key)).toEqual([
       "jiaoyimao:3"
     ]);
-    expect(refreshResponse.status).toBe(200);
+    expect(refreshResponse.status).toBe(202);
   });
 
   it("returns 409 while a refresh is already running", async () => {
-    let release!: () => void;
-    const waiting = new Promise<void>((resolve) => {
+    let release!: (state: "partial") => void;
+    const waiting = new Promise<"partial">((resolve) => {
       release = resolve;
-    });
-    let markStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
     });
     const repository = new ListingRepository(createDatabase(":memory:"));
     const coordinator = {
-      refreshAll: vi.fn(() => {
-        markStarted();
+      refreshAll: vi.fn((
+        _runId: number,
+        onProgress?: (event: {
+          type: "list_page";
+          phase: "list";
+          source: "panzhi";
+          page: number;
+          summaries: number;
+          details: number;
+          message: string;
+        }) => void
+      ) => {
+        onProgress?.({
+          type: "list_page",
+          phase: "list",
+          source: "panzhi",
+          page: 2,
+          summaries: 18,
+          details: 4,
+          message: "已解析第 2 页"
+        });
         return waiting;
       })
     };
-    const app = createApp({ repository, coordinator });
+    const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+    const app = createApp({ repository, coordinator, tracker });
 
-    const first = request(app).post("/api/refresh").then((response) => response);
-    await started;
+    const first = await request(app).post("/api/refresh");
+    expect(first.status).toBe(202);
+    expect(first.body).toEqual({
+      runId: expect.any(Number),
+      state: "running"
+    });
     expect(coordinator.refreshAll).toHaveBeenCalledTimes(1);
     const second = await request(app).post("/api/refresh");
     expect(second.status).toBe(409);
@@ -734,37 +775,96 @@ describe("listing API", () => {
       message: "刷新任务正在进行"
     });
 
-    release();
-    const completed = await first;
-    expect(completed.status).toBe(200);
-    expect(completed.body.sources).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          completion: "idle",
-          eligibleCount: 0,
-          candidateCount: 0
-        })
-      ])
-    );
+    const running = await request(app).get("/api/refresh-status");
+    expect(running.body).toMatchObject({
+      runId: first.body.runId,
+      state: "running",
+      source: "panzhi",
+      phase: "list",
+      page: 2,
+      summaries: 18,
+      details: 4
+    });
+
+    release("partial");
+    await vi.waitFor(() => {
+      expect(tracker.snapshot().state).toBe("partial");
+    });
+    expect((await request(app).get("/api/refresh-status")).body).toMatchObject({
+      state: "partial",
+      source: null,
+      phase: null
+    });
   });
 
-  it("returns an actionable error when refresh fails", async () => {
+  it("records a background refresh rejection without exposing internals", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const coordinator = {
       refreshAll: vi.fn(async () => {
         throw new Error("database unavailable");
       })
     };
-    const app = createApp({ repository, coordinator });
+    const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+    const app = createApp({ repository, coordinator, tracker });
 
     const response = await request(app).post("/api/refresh");
-    expect(response.status).toBe(500);
-    expect(response.body).toEqual({
-      error: "refresh_failed",
-      message: "刷新失败，请查看来源状态后重试"
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => {
+      expect(tracker.snapshot().state).toBe("failed");
     });
-    expect(JSON.stringify(response.body)).not.toContain(
-      "database unavailable"
+    const status = await request(app).get("/api/refresh-status");
+    expect(status.body).toMatchObject({
+      runId: response.body.runId,
+      state: "failed",
+      error: "刷新失败"
+    });
+    expect(JSON.stringify(status.body)).not.toContain("database unavailable");
+    expect(repository.getScanHistory(1)[0]).toMatchObject({
+      id: response.body.runId,
+      state: "failed",
+      error: "刷新失败"
+    });
+  });
+
+  it("returns bounded scan history and rejects invalid limits", async () => {
+    const { app, repository } = setup();
+    const runId = repository.startScan(
+      new Date("2026-07-29T10:00:00.000Z")
     );
+    repository.commitScanRefresh(
+      runId,
+      [],
+      [
+        successUpdateForApi("jiaoyimao"),
+        successUpdateForApi("panzhi"),
+        successUpdateForApi("pxb7")
+      ],
+      new Date("2026-07-29T10:01:00.000Z")
+    );
+
+    const response = await request(app).get("/api/scan-history?limit=1");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      runs: [
+        expect.objectContaining({
+          id: runId,
+          state: "success",
+          sources: expect.arrayContaining([
+            expect.objectContaining({
+              source: "panzhi",
+              observedItemCount: 0
+            })
+          ])
+        })
+      ]
+    });
+    for (const limit of ["0", "51", "abc", "1&limit=2"]) {
+      const invalid = await request(app).get(
+        `/api/scan-history?limit=${limit}`
+      );
+      expect(invalid.status).toBe(400);
+      expect(invalid.body.error).toBe("invalid_history_limit");
+    }
   });
 });

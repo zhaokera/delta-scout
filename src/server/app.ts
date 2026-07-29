@@ -12,20 +12,30 @@ import {
 import { compareRecommendations } from "../domain/score.js";
 import type {
   ListingRepository,
+  ScanState,
   SourceStatus
 } from "./repository.js";
+import type {
+  RefreshProgressEvent
+} from "./collector/coordinator.js";
+import type { RefreshTracker } from "./refreshTracker.js";
 
 interface RefreshCoordinator {
-  refreshAll(): Promise<void>;
+  refreshAll(
+    runId: number,
+    onProgress?: (event: RefreshProgressEvent) => void
+  ): Promise<ScanState>;
 }
 
 interface AppDependencies {
   repository: ListingRepository;
   coordinator: RefreshCoordinator;
+  tracker: RefreshTracker;
 }
 
 const ListingViewSchema = z.enum(["pool", "all"]);
 const PoolModeSchema = z.enum(["balanced", "global"]);
+const HistoryLimitSchema = z.coerce.number().int().min(1).max(50);
 type PoolMode = z.infer<typeof PoolModeSchema>;
 
 interface CurrentListingSnapshot {
@@ -125,8 +135,7 @@ export function createApp(dependencies?: AppDependencies): Express {
 
   if (!dependencies) return app;
 
-  const { repository, coordinator } = dependencies;
-  let refreshing = false;
+  const { repository, coordinator, tracker } = dependencies;
 
   app.get("/api/sources", (request, response) => {
     const parsedMode =
@@ -208,30 +217,73 @@ export function createApp(dependencies?: AppDependencies): Express {
     response.json(listing);
   });
 
-  app.post("/api/refresh", async (_request, response) => {
-    if (refreshing) {
+  app.get("/api/refresh-status", (_request, response) => {
+    response.json(tracker.snapshot());
+  });
+
+  app.get("/api/scan-history", (request, response) => {
+    const parsedLimit = HistoryLimitSchema.safeParse(
+      request.query.limit ?? 10
+    );
+    if (!parsedLimit.success) {
+      response.status(400).json({
+        error: "invalid_history_limit",
+        message: "扫描历史数量参数无效"
+      });
+      return;
+    }
+    response.json({
+      runs: repository.getScanHistory(parsedLimit.data)
+    });
+  });
+
+  app.post("/api/refresh", (_request, response) => {
+    if (tracker.isRunning()) {
       response.status(409).json({
         error: "refresh_in_progress",
         message: "刷新任务正在进行"
       });
       return;
     }
-    refreshing = true;
+
+    const startedAt = new Date();
+    let runId: number;
     try {
-      await coordinator.refreshAll();
-      const snapshot = readCurrentListingSnapshot(repository);
-      response.json({
-        ok: true,
-        sources: derivedSourceStatuses(snapshot, "balanced")
-      });
+      runId = repository.startScan(startedAt);
+      tracker.start(runId, startedAt);
     } catch {
       response.status(500).json({
         error: "refresh_failed",
         message: "刷新失败，请查看来源状态后重试"
       });
-    } finally {
-      refreshing = false;
+      return;
     }
+
+    void Promise.resolve()
+      .then(() =>
+        coordinator.refreshAll(
+          runId,
+          (event) => tracker.update(runId, event)
+        )
+      )
+      .then((state) => {
+        tracker.finish(runId, state, new Date());
+      })
+      .catch(() => {
+        const finishedAt = new Date();
+        repository.failScan(runId, "刷新失败", finishedAt);
+        tracker.finish(
+          runId,
+          "failed",
+          finishedAt,
+          "刷新失败"
+        );
+      });
+
+    response.status(202).json({
+      runId,
+      state: "running"
+    });
   });
 
   return app;

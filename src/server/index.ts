@@ -6,6 +6,7 @@ import { PublicPageFetcher } from "./collector/fetcher.js";
 import { sourceAdapters } from "./collector/sources.js";
 import { createDatabase } from "./db.js";
 import { ListingRepository } from "./repository.js";
+import { RefreshTracker } from "./refreshTracker.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4310", 10);
 const host = "127.0.0.1";
@@ -14,12 +15,13 @@ const databasePath = resolve(
 );
 mkdirSync(dirname(databasePath), { recursive: true });
 const repository = new ListingRepository(createDatabase(databasePath));
+const tracker = new RefreshTracker(repository.getRefreshSnapshot());
 const coordinator = new CollectionCoordinator({
   adapters: sourceAdapters,
   fetcher: new PublicPageFetcher(),
   repository
 });
 
-createApp({ repository, coordinator }).listen(port, host, () => {
+createApp({ repository, coordinator, tracker }).listen(port, host, () => {
   console.log(`Delta Account Scout API listening on http://${host}:${port}`);
 });
