@@ -28,6 +28,8 @@ function makeSourceStatus(
     itemCount: 30,
     eligibleCount: 3,
     candidateCount: 3,
+    balancedCandidateCount: 3,
+    globalCandidateCount: 3,
     stopReason: "end_of_pages",
     completion: "complete",
     error: null,
@@ -107,6 +109,7 @@ describe("App shell", () => {
 
     try {
       await httpScoutApi.getListings("pool");
+      await httpScoutApi.getListings("pool", "global");
       await httpScoutApi.getListings("eligible");
       await httpScoutApi.getListings("needs_verification");
       await httpScoutApi.getListings("rejected");
@@ -118,6 +121,7 @@ describe("App shell", () => {
       fetchMock.mock.calls.map(([input]) => input)
     ).toEqual([
       "/api/listings?view=pool&status=eligible",
+      "/api/listings?view=pool&status=eligible&mode=global",
       "/api/listings?view=all&status=eligible",
       "/api/listings?view=all&status=needs_verification",
       "/api/listings?view=all&status=rejected"

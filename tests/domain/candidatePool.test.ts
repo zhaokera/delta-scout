@@ -1,5 +1,8 @@
 import type { Listing } from "../../src/domain/listing";
-import { selectBalancedCandidatePool } from "../../src/domain/candidatePool";
+import {
+  selectBalancedCandidatePool,
+  selectGlobalCandidatePool
+} from "../../src/domain/candidatePool";
 import { makeListing, makeScore } from "./listingFactory";
 
 function scoredListing(
@@ -105,5 +108,42 @@ describe("selectBalancedCandidatePool", () => {
       "pxb7:2",
       "panzhi:1"
     ]);
+  });
+});
+
+describe("selectGlobalCandidatePool", () => {
+  it("keeps the real top thirty without source quotas", () => {
+    const jiaoyimao = Array.from({ length: 35 }, (_, index) =>
+      scoredListing("jiaoyimao", index)
+    );
+    const lowerRanked = [
+      ...Array.from({ length: 3 }, (_, index) =>
+        scoredListing("panzhi", 100 + index, {
+          score: makeScore(20 - index)
+        })
+      ),
+      scoredListing("pxb7", 200, {
+        eligibility: "rejected",
+        score: makeScore(100)
+      }),
+      scoredListing("pxb7", 201, { score: null })
+    ];
+    const duplicate = scoredListing("jiaoyimao", 0, {
+      score: makeScore(1),
+      url: "https://example.test/duplicate"
+    });
+
+    const result = selectGlobalCandidatePool([
+      ...lowerRanked,
+      duplicate,
+      ...jiaoyimao.reverse()
+    ]);
+
+    expect(result).toHaveLength(30);
+    expect(result.every(({ source }) => source === "jiaoyimao")).toBe(true);
+    expect(result.map(({ key }) => key)).toEqual(
+      Array.from({ length: 30 }, (_, index) => `jiaoyimao:${index}`)
+    );
+    expect(new Set(result.map(({ key }) => key)).size).toBe(30);
   });
 });

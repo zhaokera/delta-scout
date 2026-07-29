@@ -1,6 +1,9 @@
 import express, { type Express } from "express";
 import { z } from "zod";
-import { selectBalancedCandidatePool } from "../domain/candidatePool.js";
+import {
+  selectBalancedCandidatePool,
+  selectGlobalCandidatePool
+} from "../domain/candidatePool.js";
 import {
   EligibilitySchema,
   type Listing,
@@ -22,12 +25,15 @@ interface AppDependencies {
 }
 
 const ListingViewSchema = z.enum(["pool", "all"]);
+const PoolModeSchema = z.enum(["balanced", "global"]);
+type PoolMode = z.infer<typeof PoolModeSchema>;
 
 interface CurrentListingSnapshot {
   statuses: SourceStatus[];
   listings: Listing[];
   activeEligibleListings: Listing[];
-  pool: Listing[];
+  balancedPool: Listing[];
+  globalPool: Listing[];
 }
 
 function readCurrentListingSnapshot(
@@ -52,13 +58,38 @@ function readCurrentListingSnapshot(
     statuses,
     listings,
     activeEligibleListings,
-    pool: selectBalancedCandidatePool(activeEligibleListings)
+    balancedPool: selectBalancedCandidatePool(activeEligibleListings),
+    globalPool: selectGlobalCandidatePool(activeEligibleListings)
   };
 }
 
-function derivedSourceStatuses(snapshot: CurrentListingSnapshot) {
+function candidatePool(
+  snapshot: CurrentListingSnapshot,
+  mode: PoolMode
+): Listing[] {
+  return mode === "balanced"
+    ? snapshot.balancedPool
+    : snapshot.globalPool;
+}
+
+function candidateCounts(listings: Listing[]): Map<SourceId, number> {
+  const counts = new Map<SourceId, number>();
+  for (const listing of listings) {
+    counts.set(
+      listing.source,
+      (counts.get(listing.source) ?? 0) + 1
+    );
+  }
+  return counts;
+}
+
+function derivedSourceStatuses(
+  snapshot: CurrentListingSnapshot,
+  mode: PoolMode
+) {
   const eligibleCounts = new Map<SourceId, number>();
-  const candidateCounts = new Map<SourceId, number>();
+  const balancedCounts = candidateCounts(snapshot.balancedPool);
+  const globalCounts = candidateCounts(snapshot.globalPool);
 
   for (const listing of snapshot.activeEligibleListings) {
     if (listing.score !== null) {
@@ -68,17 +99,15 @@ function derivedSourceStatuses(snapshot: CurrentListingSnapshot) {
       );
     }
   }
-  for (const listing of snapshot.pool) {
-    candidateCounts.set(
-      listing.source,
-      (candidateCounts.get(listing.source) ?? 0) + 1
-    );
-  }
-
   return snapshot.statuses.map((status) => ({
     ...status,
     eligibleCount: eligibleCounts.get(status.source) ?? 0,
-    candidateCount: candidateCounts.get(status.source) ?? 0,
+    candidateCount:
+      (mode === "balanced" ? balancedCounts : globalCounts).get(
+        status.source
+      ) ?? 0,
+    balancedCandidateCount: balancedCounts.get(status.source) ?? 0,
+    globalCandidateCount: globalCounts.get(status.source) ?? 0,
     completion: status.state === "success" ? "complete" : status.state
   }));
 }
@@ -99,22 +128,40 @@ export function createApp(dependencies?: AppDependencies): Express {
   const { repository, coordinator } = dependencies;
   let refreshing = false;
 
-  app.get("/api/sources", (_request, response) => {
+  app.get("/api/sources", (request, response) => {
+    const parsedMode =
+      request.query.mode === undefined
+        ? null
+        : PoolModeSchema.safeParse(request.query.mode);
+    if (parsedMode !== null && !parsedMode.success) {
+      response.status(400).json({
+        error: "invalid_pool_mode",
+        message: "候选池模式无效"
+      });
+      return;
+    }
     response.json(
-      derivedSourceStatuses(readCurrentListingSnapshot(repository))
+      derivedSourceStatuses(
+        readCurrentListingSnapshot(repository),
+        parsedMode?.data ?? "balanced"
+      )
     );
   });
 
   app.get("/api/listings", (request, response) => {
     const rawView = request.query.view;
     const rawStatus = request.query.status;
+    const rawMode = request.query.mode;
     const parsedView =
       rawView === undefined ? null : ListingViewSchema.safeParse(rawView);
     const parsedStatus =
       rawStatus === undefined ? null : EligibilitySchema.safeParse(rawStatus);
+    const parsedMode =
+      rawMode === undefined ? null : PoolModeSchema.safeParse(rawMode);
     if (
       (parsedView !== null && !parsedView.success) ||
-      (parsedStatus !== null && !parsedStatus.success)
+      (parsedStatus !== null && !parsedStatus.success) ||
+      (parsedMode !== null && !parsedMode.success)
     ) {
       response.status(400).json({
         error: "invalid_listing_view",
@@ -125,7 +172,12 @@ export function createApp(dependencies?: AppDependencies): Express {
     const status = parsedStatus?.data ?? "eligible";
     const view =
       parsedView?.data ?? (status === "eligible" ? "pool" : "all");
-    if (view === "pool" && status !== "eligible") {
+    const mode = parsedMode?.data ?? "balanced";
+    if (
+      (view === "pool" && status !== "eligible") ||
+      (rawMode !== undefined &&
+        (view !== "pool" || status !== "eligible"))
+    ) {
       response.status(400).json({
         error: "invalid_listing_view",
         message: "候选视图参数无效"
@@ -139,7 +191,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     );
     response.json(
       view === "pool"
-        ? snapshot.pool
+        ? candidatePool(snapshot, mode)
         : listings.sort(compareRecommendations)
     );
   });
@@ -170,7 +222,7 @@ export function createApp(dependencies?: AppDependencies): Express {
       const snapshot = readCurrentListingSnapshot(repository);
       response.json({
         ok: true,
-        sources: derivedSourceStatuses(snapshot)
+        sources: derivedSourceStatuses(snapshot, "balanced")
       });
     } catch {
       response.status(500).json({

@@ -43,3 +43,24 @@ export function selectBalancedCandidatePool(
 
   return selected;
 }
+
+export function selectGlobalCandidatePool(
+  listings: Listing[],
+  limit = 30
+): Listing[] {
+  const seenKeys = new Set<string>();
+  const selected: Listing[] = [];
+  for (const listing of listings
+    .filter(
+      (candidate) =>
+        candidate.eligibility === "eligible" &&
+        candidate.score !== null
+    )
+    .sort(compareRecommendations)) {
+    if (seenKeys.has(listing.key)) continue;
+    seenKeys.add(listing.key);
+    selected.push(listing);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}

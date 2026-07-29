@@ -8,6 +8,7 @@ export type ListingView =
   | "eligible"
   | "needs_verification"
   | "rejected";
+export type PoolMode = "balanced" | "global";
 
 export type SourceState =
   | "idle"
@@ -32,6 +33,8 @@ export interface SourceStatusView {
   itemCount: number;
   eligibleCount: number;
   candidateCount: number;
+  balancedCandidateCount: number;
+  globalCandidateCount: number;
   stopReason: string | null;
   completion: SourceCompletion;
   error: string | null;
@@ -39,8 +42,8 @@ export interface SourceStatusView {
 }
 
 export interface ScoutApi {
-  getSources(): Promise<SourceStatusView[]>;
-  getListings(view: ListingView): Promise<Listing[]>;
+  getSources(mode?: PoolMode): Promise<SourceStatusView[]>;
+  getListings(view: ListingView, mode?: PoolMode): Promise<Listing[]>;
   getListing(key: string): Promise<Listing>;
   refresh(): Promise<void>;
 }
@@ -67,9 +70,14 @@ async function requestJson<T>(
 }
 
 export const httpScoutApi: ScoutApi = {
-  getSources: () => requestJson<SourceStatusView[]>("/api/sources"),
-  getListings: (view) =>
-    requestJson<Listing[]>(`/api/listings?${LISTING_QUERIES[view]}`),
+  getSources: (mode = "balanced") =>
+    requestJson<SourceStatusView[]>(`/api/sources?mode=${mode}`),
+  getListings: (view, mode = "balanced") =>
+    requestJson<Listing[]>(
+      `/api/listings?${LISTING_QUERIES[view]}${
+        view === "pool" && mode === "global" ? "&mode=global" : ""
+      }`
+    ),
   getListing: (key) =>
     requestJson<Listing>(
       `/api/listings/${encodeURIComponent(key)}`

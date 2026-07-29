@@ -100,6 +100,40 @@ describe("listing API", () => {
   });
 
   it.each([
+    "/api/listings?mode=global",
+    "/api/listings?status=eligible&mode=global",
+    "/api/listings?view=pool&status=eligible&mode=global"
+  ])("returns the real global top thirty for %s", async (path) => {
+    const { app, repository } = setup();
+    repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      Array.from({ length: 35 }, (_, index) =>
+        listingFor("jiaoyimao", index, {
+          score: makeScore(100 - index)
+        })
+      ),
+      "success"
+    );
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      Array.from({ length: 3 }, (_, index) =>
+        listingFor("panzhi", index, {
+          score: makeScore(20 - index)
+        })
+      ),
+      "success"
+    );
+
+    const response = await request(app).get(path);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveLength(30);
+    expect(
+      response.body.every(({ source }: Listing) => source === "jiaoyimao")
+    ).toBe(true);
+  });
+
+  it.each([
     {
       query: "view=all",
       status: "eligible",
@@ -165,7 +199,13 @@ describe("listing API", () => {
     "view=all&view=pool",
     "status=eligible&status=rejected",
     "view=pool&view=pool",
-    "status=eligible&status=eligible"
+    "status=eligible&status=eligible",
+    "mode=surprise",
+    "view=all&mode=balanced",
+    "view=all&mode=global",
+    "status=rejected&mode=balanced",
+    "status=rejected&mode=global",
+    "mode=balanced&mode=global"
   ])("rejects invalid listing view parameters for %s", async (query) => {
     const { app } = setup();
 
@@ -336,7 +376,9 @@ describe("listing API", () => {
         stopReason: "end_of_pages",
         completion: "complete",
         eligibleCount: 12,
-        candidateCount: 10
+        candidateCount: 10,
+        balancedCandidateCount: 10,
+        globalCandidateCount: 12
       }),
       expect.objectContaining({
         source: "panzhi",
@@ -345,7 +387,9 @@ describe("listing API", () => {
         stopReason: "error",
         completion: "partial",
         eligibleCount: 3,
-        candidateCount: 3
+        candidateCount: 3,
+        balancedCandidateCount: 3,
+        globalCandidateCount: 3
       }),
       expect.objectContaining({
         source: "pxb7",
@@ -377,6 +421,66 @@ describe("listing API", () => {
       eligibleResponse.body.filter(({ score }: Listing) => score !== null)
         .length
     );
+  });
+
+  it("derives source contributions from the requested pool mode", async () => {
+    const { app, repository } = setup();
+    repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      Array.from({ length: 35 }, (_, index) =>
+        listingFor("jiaoyimao", index, {
+          score: makeScore(100 - index)
+        })
+      ),
+      "success"
+    );
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      Array.from({ length: 3 }, (_, index) =>
+        listingFor("panzhi", index, {
+          score: makeScore(20 - index)
+        })
+      ),
+      "success"
+    );
+
+    const [balanced, global] = await Promise.all([
+      request(app).get("/api/sources?mode=balanced"),
+      request(app).get("/api/sources?mode=global")
+    ]);
+
+    expect(balanced.status).toBe(200);
+    expect(global.status).toBe(200);
+    expect(
+      balanced.body.find(
+        ({ source }: { source: SourceId }) => source === "jiaoyimao"
+      )
+    ).toMatchObject({
+      candidateCount: 10,
+      balancedCandidateCount: 10,
+      globalCandidateCount: 30
+    });
+    expect(
+      global.body.find(
+        ({ source }: { source: SourceId }) => source === "jiaoyimao"
+      )
+    ).toMatchObject({
+      candidateCount: 30,
+      balancedCandidateCount: 10,
+      globalCandidateCount: 30
+    });
+  });
+
+  it("rejects an invalid source pool mode", async () => {
+    const { app } = setup();
+
+    const response = await request(app).get("/api/sources?mode=surprise");
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: "invalid_pool_mode",
+      message: "候选池模式无效"
+    });
   });
 
   it("maps blocked and idle source states to API completion values", async () => {
