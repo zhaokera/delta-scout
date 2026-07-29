@@ -43,6 +43,7 @@ const DEFAULT_LIMITS: CollectionLimits = {
   maxSummaries: 2_000,
   maxDetails: 500
 };
+const MIN_SUCCESSFUL_DETAILS_FOR_PARTIAL_CIRCUIT = 20;
 
 interface CoordinatorOptions {
   adapters: SourceAdapter[];
@@ -423,8 +424,10 @@ export class CollectionCoordinator {
     let listRequest: SourceRequest | null = discovery.request;
     let pages = 0;
     let detailCount = 0;
+    let successfulDetailCount = 0;
     let consecutiveDetailFailures = 0;
     let consecutiveDetailFailureState: "blocked" | "failed" = "blocked";
+    let detailCircuitOpen = false;
     let partial = false;
     let stopReason: StopReason | null = null;
     let sourceError: string | null = null;
@@ -439,6 +442,13 @@ export class CollectionCoordinator {
         consecutiveDetailFailureState = "failed";
       }
       if (consecutiveDetailFailures < 3) return null;
+      if (
+        successfulDetailCount >=
+        MIN_SUCCESSFUL_DETAILS_FOR_PARTIAL_CIRCUIT
+      ) {
+        detailCircuitOpen = true;
+        return null;
+      }
       return {
         kind: "failed",
         source: adapter.source,
@@ -568,6 +578,12 @@ export class CollectionCoordinator {
           item.embeddedDetail === undefined &&
           shouldFetchDetail(item)
         ) {
+          if (detailCircuitOpen) {
+            record.warnings.push(
+              "详情连续受阻，本轮停止后续详情请求"
+            );
+            continue;
+          }
           if (detailCount >= this.limits.maxDetails) {
             detailLimitReached = true;
             record.warnings.push("达到详情采集上限，待人工核验");
@@ -628,6 +644,7 @@ export class CollectionCoordinator {
               if (failure) return failure;
             } else {
               record.detail = detail.detail;
+              successfulDetailCount += 1;
               consecutiveDetailFailures = 0;
               consecutiveDetailFailureState = "blocked";
             }
@@ -908,13 +925,14 @@ export class CollectionCoordinator {
       details: totalDetails,
       message: "正在发布新快照"
     });
+    let publishedState = roundState;
     if (runId === undefined) {
       this.repository.commitRefresh(
         nextListings,
         outcomes.map(({ statusUpdate }) => statusUpdate)
       );
     } else {
-      this.repository.commitScanRefresh(
+      publishedState = this.repository.commitScanRefresh(
         runId,
         nextListings,
         outcomes.map(({ statusUpdate }) => statusUpdate),
@@ -928,9 +946,10 @@ export class CollectionCoordinator {
       page: totalPages,
       summaries: totalSummaries,
       details: totalDetails,
-      roundState,
-      message: roundState === "success" ? "刷新完成" : "部分来源异常"
+      roundState: publishedState,
+      message:
+        publishedState === "success" ? "刷新完成" : "部分来源异常"
     });
-    return roundState;
+    return publishedState;
   }
 }

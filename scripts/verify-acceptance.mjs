@@ -35,6 +35,33 @@ function assertCandidate(candidate, poolName) {
     "peak",
     `${poolName}: candidate lacks peak M7 evidence`
   );
+  assert.ok(candidate.score, `${poolName}: candidate is missing a score`);
+  for (const field of ["total", "value", "safety", "dataQuality"]) {
+    assert.equal(
+      typeof candidate.score[field],
+      "number",
+      `${poolName}: score.${field} is missing`
+    );
+    assert.ok(
+      candidate.score[field] >= 0 && candidate.score[field] <= 100,
+      `${poolName}: score.${field} is outside 0..100`
+    );
+  }
+  assert.ok(
+    ["low", "medium", "high", "unknown"].includes(
+      candidate.score.riskLevel
+    ),
+    `${poolName}: invalid risk level`
+  );
+  assert.equal(
+    candidate.score.total,
+    Math.round(
+      candidate.score.value * 0.55 +
+        candidate.score.safety * 0.35 +
+        candidate.score.dataQuality * 0.1
+    ),
+    `${poolName}: overall score formula mismatch`
+  );
 }
 
 function assertUniqueKeys(listings, poolName) {
@@ -62,6 +89,11 @@ function assertSourceCounts(statuses, listings, mode) {
   const contributions = contributionBySource(listings);
   assert.equal(statuses.length, 3, `${mode}: expected three source statuses`);
   for (const status of statuses) {
+    assert.ok(
+      status.anomaly &&
+        ["clear", "suspect"].includes(status.anomaly.state),
+      `${mode}: ${status.source} anomaly status is missing`
+    );
     assert.equal(
       status.candidateCount,
       contributions.get(status.source) ?? 0,
@@ -127,6 +159,39 @@ assert.equal(
   refreshStatus.state,
   "history and refresh status disagree"
 );
+for (const source of currentRun.sources) {
+  assert.equal(
+    typeof source.published,
+    "boolean",
+    `${source.source}: scan history published flag is missing`
+  );
+  assert.equal(
+    typeof source.anomalyState,
+    "string",
+    `${source.source}: scan history anomaly state is missing`
+  );
+}
+
+const historyCandidate = global[0] ?? balanced[0] ?? null;
+let listingHistory = null;
+if (historyCandidate) {
+  listingHistory = await getJson(
+    `/api/listings/${encodeURIComponent(historyCandidate.key)}/history?limit=20`
+  );
+  assert.equal(
+    listingHistory.key,
+    historyCandidate.key,
+    "listing history key mismatch"
+  );
+  assert.ok(
+    ["active", "removed", "unknown"].includes(listingHistory.availability),
+    "listing history availability is invalid"
+  );
+  assert.ok(
+    Array.isArray(listingHistory.observations),
+    "listing history observations must be an array"
+  );
+}
 
 console.log(
   JSON.stringify(
@@ -141,8 +206,23 @@ console.log(
       },
       run: {
         id: currentRun.id,
-        state: currentRun.state
-      }
+        state: currentRun.state,
+        sources: currentRun.sources.map((source) => ({
+          source: source.source,
+          state: source.state,
+          observed: source.observedItemCount,
+          pages: source.pagesScanned,
+          anomaly: source.anomalyState,
+          published: source.published
+        }))
+      },
+      history: listingHistory
+        ? {
+            key: listingHistory.key,
+            availability: listingHistory.availability,
+            observations: listingHistory.observations.length
+          }
+        : null
     },
     null,
     2

@@ -976,6 +976,51 @@ describe("CollectionCoordinator", () => {
     });
   });
 
+  it("keeps substantial fresh data as partial after a late detail circuit break", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const items = Array.from({ length: 23 }, (_, index) =>
+      summaryForSource("jiaoyimao", index + 1, {
+        detailFetchHint: "m7_prism_query"
+      })
+    );
+    const adapter = fakeAdapter({
+      source: "jiaoyimao",
+      parseList: () => ({ kind: "ok", items }),
+      parseDetail: (html) =>
+        html === "detail-ok"
+          ? { kind: "ok", detail: listingDetail() }
+          : { kind: "blocked", reason: "structure_changed" }
+    });
+    const responses = new Map<string, FetchResult>([
+      [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+      ["https://source.test/list/1", ok("https://source.test/list/1", "list")],
+      ...items.map(
+        (item, index) =>
+          [
+            item.url,
+            ok(item.url, index < 20 ? "detail-ok" : "detail-blocked")
+          ] as const
+      )
+    ]);
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher: new MapFetcher(responses),
+      repository,
+      now: () => new Date("2026-07-29T12:00:00.000Z")
+    }).refreshAll();
+
+    expect(repository.getListings()).toHaveLength(23);
+    expect(repository.getListings("eligible")).toHaveLength(20);
+    expect(repository.getListings("needs_verification")).toHaveLength(3);
+    expect(sourceStatus(repository, "jiaoyimao")).toMatchObject({
+      state: "partial",
+      itemCount: 23,
+      pagesScanned: 1,
+      error: "structure_changed"
+    });
+  });
+
   it("keeps a truly unhinted summary without M7 evidence rejected", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const adapter = fakeAdapter({
@@ -1357,11 +1402,14 @@ describe("CollectionCoordinator", () => {
           sourceListingId: "old",
           score: {
             ...makeScore(90, {
-              safety: 30,
-              skinValue: 30,
+              m7: 30,
+              redSkins: 15,
+              julang: 15,
               price: 15,
               assets: 8,
-              confidence: 7
+              secondRealName: 40,
+              recovery: 35,
+              verification: 25
             }),
             reasons: ["old"]
           }
@@ -1423,11 +1471,14 @@ describe("CollectionCoordinator", () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const oldScore = {
       ...makeScore(99, {
-        safety: 30,
-        skinValue: 30,
+        m7: 35,
+        redSkins: 20,
+        julang: 15,
         price: 20,
         assets: 10,
-        confidence: 9
+        secondRealName: 40,
+        recovery: 35,
+        verification: 25
       }),
       reasons: ["stale"]
     };
@@ -1934,6 +1985,43 @@ describe("CollectionCoordinator", () => {
     expect(sourceStatus(repository)).toMatchObject({
       state: "partial",
       error: "request_timeout"
+    });
+  });
+
+  it("returns the repository partial state when a complete source is quarantined", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const trusted = Array.from({ length: 44 }, (_, index) =>
+      makeListing({
+        key: `panzhi:trusted-${index}`,
+        sourceListingId: `trusted-${index}`,
+        url: `https://example.test/trusted/${index}`
+      })
+    );
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      trusted,
+      "success",
+      new Date("2026-07-29T09:00:00.000Z"),
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+    const adapter = freshSourceAdapter("panzhi", 1);
+    const coordinator = new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher: new RoutingFetcher((request) =>
+        ok(request.url, "fixture")
+      ),
+      repository,
+      now: () => new Date("2026-07-29T10:00:00.000Z")
+    });
+    const runId = repository.startScan(
+      new Date("2026-07-29T10:00:00.000Z")
+    );
+
+    await expect(coordinator.refreshAll(runId)).resolves.toBe("partial");
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "partial",
+      itemCount: 44,
+      anomaly: { state: "suspect", observedItemCount: 1 }
     });
   });
 });

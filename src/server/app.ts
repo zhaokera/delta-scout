@@ -205,6 +205,31 @@ export function createApp(dependencies?: AppDependencies): Express {
     );
   });
 
+  app.get("/api/listings/:key/history", (request, response) => {
+    const parsedLimit = HistoryLimitSchema.safeParse(
+      request.query.limit ?? 20
+    );
+    if (!parsedLimit.success) {
+      response.status(400).json({
+        error: "invalid_history_limit",
+        message: "账号历史数量参数无效"
+      });
+      return;
+    }
+    const history = repository.getListingHistory(
+      request.params.key,
+      parsedLimit.data
+    );
+    if (!history) {
+      response.status(404).json({
+        error: "listing_history_not_found",
+        message: "账号不存在或尚无可信历史"
+      });
+      return;
+    }
+    response.json(history);
+  });
+
   app.get("/api/listings/:key", (request, response) => {
     const listing = repository.getListing(request.params.key);
     if (!listing) {

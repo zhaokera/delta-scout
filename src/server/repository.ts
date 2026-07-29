@@ -3,13 +3,25 @@ import {
   selectBalancedCandidatePool,
   selectGlobalCandidatePool
 } from "../domain/candidatePool.js";
+import { markPossibleDuplicates } from "../domain/duplicates.js";
 import { listingMaterialHash } from "../domain/listingFingerprint.js";
+import {
+  buildListingHistorySnapshot,
+  diffListingSnapshots,
+  type ListingFieldChange,
+  type ListingHistorySnapshot
+} from "../domain/listingHistory.js";
+import {
+  evaluateSnapshotAnomaly,
+  type SnapshotAnomalyGuard
+} from "../domain/snapshotAnomaly.js";
 import {
   type Eligibility,
   type Listing,
   type SourceId
 } from "../domain/listing.js";
 import { ListingSchema } from "../domain/listing.js";
+import { scoreEligibleListings } from "../domain/score.js";
 import { parseStoredListing } from "./storedListing.js";
 
 export type SourceState =
@@ -29,7 +41,22 @@ export interface SourceStatus {
   stopReason: string | null;
   error: string | null;
   stale: boolean;
+  anomaly: SourceAnomalyStatus;
 }
+
+export type SourceAnomalyStatus =
+  | { state: "clear" }
+  | {
+      state: "suspect";
+      baselineItemCount: number;
+      baselinePagesScanned: number;
+      observedItemCount: number;
+      observedPagesScanned: number;
+      confirmationCount: number;
+      firstDetectedAt: string;
+      lastDetectedAt: string;
+      reason: string;
+    };
 
 interface ListingRow {
   payload: string;
@@ -44,6 +71,15 @@ interface SourceStatusRow {
   pages_scanned: number;
   stop_reason: string | null;
   error: string | null;
+  anomaly_state: "clear" | "suspect";
+  baseline_item_count: number | null;
+  baseline_pages_scanned: number | null;
+  observed_item_count: number | null;
+  observed_pages_scanned: number | null;
+  confirmation_count: number;
+  first_detected_at: string | null;
+  last_detected_at: string | null;
+  anomaly_reason: string | null;
 }
 
 export interface ScanMetadata {
@@ -64,6 +100,8 @@ export interface ScanHistorySource {
   globalCandidateCount: number;
   stopReason: string | null;
   error: string | null;
+  anomalyState: string;
+  published: boolean;
 }
 
 export interface ScanHistoryRun {
@@ -73,6 +111,23 @@ export interface ScanHistoryRun {
   state: "running" | ScanState;
   error: string | null;
   sources: ScanHistorySource[];
+}
+
+export interface ListingHistoryObservation {
+  runId: number;
+  observedAt: string;
+  availability: "active" | "removed";
+  priceCny: number | null;
+  snapshot: ListingHistorySnapshot;
+  changes: ListingFieldChange[];
+}
+
+export interface ListingHistoryView {
+  key: string;
+  source: SourceId;
+  availability: "active" | "removed" | "unknown";
+  lastSeenAt: string | null;
+  observations: ListingHistoryObservation[];
 }
 
 export type SourceRefreshStatusUpdate =
@@ -353,31 +408,249 @@ export class ListingRepository {
     statusUpdates: SourceRefreshStatusUpdate[],
     finishedAt = new Date()
   ): ScanState {
-    const freshUpdates = statusUpdates.filter(
-      (
-        update
-      ): update is Extract<
-        SourceRefreshStatusUpdate,
-        { state: "success" | "partial" }
-      > => "metadata" in update
+    type FreshUpdate = Extract<
+      SourceRefreshStatusUpdate,
+      { state: "success" | "partial" }
+    >;
+    type PreparedUpdate = {
+      original: SourceRefreshStatusUpdate;
+      state: Exclude<SourceState, "idle">;
+      published: boolean;
+      anomalyState: "none" | "suspect" | "confirmed" | "recovered";
+      nextGuard: SnapshotAnomalyGuard | null | undefined;
+      stopReason: string;
+      error: string | null;
+    };
+    const oldListings = this.getListings();
+    const sourceStatus = new Map(
+      this.getSourceStatuses().map((status) => [status.source, status])
+    );
+    const latestCompleteVolume = this.database.prepare(`
+      SELECT observed_item_count, pages_scanned
+      FROM scan_source_results
+      WHERE source = ?
+        AND state = 'success'
+        AND published = 1
+      ORDER BY run_id DESC
+      LIMIT 1
+    `);
+    const trustedBaselines = new Map<
+      SourceId,
+      { itemCount: number; pagesScanned: number }
+    >();
+    for (const source of ["jiaoyimao", "panzhi", "pxb7"] as const) {
+      const row = latestCompleteVolume.get(source) as
+        | { observed_item_count: number; pages_scanned: number }
+        | undefined;
+      const current = sourceStatus.get(source);
+      if (row) {
+        trustedBaselines.set(source, {
+          itemCount: row.observed_item_count,
+          pagesScanned: row.pages_scanned
+        });
+      } else if (current?.state === "success") {
+        trustedBaselines.set(source, {
+          itemCount: current.itemCount,
+          pagesScanned: current.pagesScanned
+        });
+      }
+    }
+    const preparedUpdates: PreparedUpdate[] = statusUpdates.map((update) => {
+      const currentStatus = sourceStatus.get(update.source);
+      const pending =
+        currentStatus?.anomaly.state === "suspect"
+          ? {
+              baseline: {
+                itemCount: currentStatus.anomaly.baselineItemCount,
+                pagesScanned:
+                  currentStatus.anomaly.baselinePagesScanned
+              },
+              observed: {
+                itemCount: currentStatus.anomaly.observedItemCount,
+                pagesScanned:
+                  currentStatus.anomaly.observedPagesScanned
+              },
+              confirmationCount:
+                currentStatus.anomaly.confirmationCount,
+              firstDetectedAt:
+                currentStatus.anomaly.firstDetectedAt,
+              lastDetectedAt:
+                currentStatus.anomaly.lastDetectedAt,
+              reason: currentStatus.anomaly
+                .reason as SnapshotAnomalyGuard["reason"]
+            }
+          : null;
+      if (!("metadata" in update)) {
+        return {
+          original: update,
+          state: update.state,
+          published: false,
+          anomalyState: pending ? "suspect" : "none",
+          nextGuard: undefined,
+          stopReason: "error",
+          error: update.error
+        };
+      }
+      if (update.state === "partial") {
+        const partialDrop = evaluateSnapshotAnomaly({
+          complete: true,
+          baseline:
+            pending?.baseline ??
+            trustedBaselines.get(update.source) ?? {
+              itemCount: 0,
+              pagesScanned: 0
+            },
+          current: {
+            itemCount: update.itemCount,
+            pagesScanned: update.metadata.pagesScanned
+          },
+          pending: null,
+          observedAt: update.attemptedAt.toISOString()
+        });
+        return {
+          original: update,
+          state: "partial",
+          published:
+            pending === null && partialDrop.kind !== "quarantine",
+          anomalyState: pending ? "suspect" : "none",
+          nextGuard: undefined,
+          stopReason: pending
+            ? "anomaly_guard"
+            : (update.metadata.stopReason ?? "error"),
+          error: update.metadata.error ?? null
+        };
+      }
+      const decision = evaluateSnapshotAnomaly({
+        complete: true,
+        baseline:
+          pending?.baseline ??
+          trustedBaselines.get(update.source) ?? {
+            itemCount: 0,
+            pagesScanned: 0
+          },
+        current: {
+          itemCount: update.itemCount,
+          pagesScanned: update.metadata.pagesScanned
+        },
+        pending,
+        observedAt: update.attemptedAt.toISOString()
+      });
+      if (decision.kind === "quarantine") {
+        return {
+          original: update,
+          state: "partial",
+          published: false,
+          anomalyState: "suspect",
+          nextGuard: decision.nextGuard,
+          stopReason: "anomaly_guard",
+          error: `数据骤降待确认：观测 ${update.itemCount} 条`
+        };
+      }
+      return {
+        original: update,
+        state: "success",
+        published: true,
+        anomalyState:
+          decision.reason === "confirmed"
+            ? "confirmed"
+            : decision.reason === "recovered"
+              ? "recovered"
+              : "none",
+        nextGuard: null,
+        stopReason: update.metadata.stopReason ?? "end_of_pages",
+        error: update.metadata.error ?? null
+      };
+    });
+    const freshUpdates = preparedUpdates.filter(
+      (prepared): prepared is PreparedUpdate & { original: FreshUpdate } =>
+        "metadata" in prepared.original
     );
     const roundState: ScanState =
       freshUpdates.length === 0
         ? "failed"
-        : statusUpdates.every(({ state }) => state === "success")
+        : preparedUpdates.every(
+            ({ state, published }) => state === "success" && published
+          )
           ? "success"
           : "partial";
     const successfulSources = new Set(
       freshUpdates
-        .filter(({ state }) => state === "success")
-        .map(({ source }) => source)
+        .filter(
+          ({ state, published }) => state === "success" && published
+        )
+        .map(({ original }) => original.source)
     );
     const partialSources = new Set(
       freshUpdates
-        .filter(({ state }) => state === "partial")
-        .map(({ source }) => source)
+        .filter(
+          ({ state, published }) => state === "partial" && published
+        )
+        .map(({ original }) => original.source)
     );
-    const derivedListings = listings.map((listing) => {
+    const incomingBySource = new Map<SourceId, Listing[]>();
+    const oldBySource = new Map<SourceId, Listing[]>();
+    for (const source of ["jiaoyimao", "panzhi", "pxb7"] as const) {
+      incomingBySource.set(
+        source,
+        listings.filter((listing) => listing.source === source)
+      );
+      oldBySource.set(
+        source,
+        oldListings.filter((listing) => listing.source === source)
+      );
+    }
+    const preparedBySource = new Map(
+      preparedUpdates.map((prepared) => [
+        prepared.original.source,
+        prepared
+      ])
+    );
+    const effectiveListings = (
+      ["jiaoyimao", "panzhi", "pxb7"] as const
+    ).flatMap((source) => {
+      const prepared = preparedBySource.get(source);
+      return prepared?.published
+        ? (incomingBySource.get(source) ?? [])
+        : (oldBySource.get(source) ?? []);
+    });
+    const candidateSources = new Set(
+      preparedUpdates
+        .filter(
+          ({ published, anomalyState }) =>
+            published || anomalyState === "suspect"
+        )
+        .map(({ original }) => original.source)
+    );
+    const markedCandidates = markPossibleDuplicates(
+      effectiveListings
+        .filter(({ source }) => candidateSources.has(source))
+        .map((listing) => ({ ...listing, score: null }))
+    );
+    const scoredCandidates = scoreEligibleListings(
+      markedCandidates,
+      finishedAt
+    );
+    const markedByKey = new Map(
+      markedCandidates.map((listing) => [listing.key, listing])
+    );
+    const scoreByKey = new Map(
+      scoredCandidates.map((listing) => [listing.key, listing.score])
+    );
+    const normalizedListings = effectiveListings.map((listing) => {
+      const marked = markedByKey.get(listing.key);
+      if (!marked) {
+        return {
+          ...listing,
+          score: null,
+          possibleDuplicateKeys: []
+        };
+      }
+      return {
+        ...marked,
+        score: scoreByKey.get(marked.key) ?? null
+      };
+    });
+    const derivedListings = normalizedListings.map((listing) => {
       if (partialSources.has(listing.source)) {
         return {
           ...listing,
@@ -395,6 +668,7 @@ export class ListingRepository {
           JOIN scan_runs r ON r.id = sr.run_id
           WHERE sr.source = ?
             AND sr.state = 'success'
+            AND sr.published = 1
             AND sr.run_id < ?
           ORDER BY sr.run_id DESC
           LIMIT 1
@@ -413,7 +687,9 @@ export class ListingRepository {
         .prepare(`
           SELECT material_hash, consecutive_unchanged_scans
           FROM listing_observations
-          WHERE run_id = ? AND listing_key = ?
+          WHERE run_id = ?
+            AND listing_key = ?
+            AND availability = 'active'
         `)
         .get(previousRun.run_id, listing.key) as
         | {
@@ -491,57 +767,257 @@ export class ListingRepository {
           run_id, source, state, pages_scanned,
           observed_item_count, eligible_count,
           balanced_candidate_count, global_candidate_count,
-          stop_reason, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          anomaly_state, published, stop_reason, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const insertObservation = this.database.prepare(`
         INSERT INTO listing_observations (
           run_id, listing_key, source, observed_at, eligibility,
-          material_hash, stability, consecutive_unchanged_scans
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          material_hash, stability, consecutive_unchanged_scans,
+          snapshot_json, changes_json, availability, trusted
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const previousTrustedObservation = this.database.prepare(`
+        SELECT snapshot_json, availability
+        FROM listing_observations
+        WHERE listing_key = ?
+          AND trusted = 1
+          AND snapshot_json IS NOT NULL
+          AND run_id < ?
+        ORDER BY run_id DESC
+        LIMIT 1
+      `);
+      const previousTrustedRun = this.database.prepare(`
+        SELECT run_id
+        FROM scan_source_results
+        WHERE source = ?
+          AND state = 'success'
+          AND published = 1
+          AND run_id < ?
+        ORDER BY run_id DESC
+        LIMIT 1
+      `);
+      const previousActiveObservations = this.database.prepare(`
+        SELECT listing_key, eligibility, material_hash, snapshot_json
+        FROM listing_observations
+        WHERE run_id = ?
+          AND source = ?
+          AND trusted = 1
+          AND availability = 'active'
+          AND snapshot_json IS NOT NULL
       `);
 
-      for (const update of statusUpdates) {
+      const preserveStatus = this.database.prepare(`
+        UPDATE source_status
+        SET state = ?,
+            last_attempt_at = ?,
+            stop_reason = ?,
+            error = ?
+        WHERE source = ?
+      `);
+      const clearGuard = this.database.prepare(`
+        UPDATE source_anomaly_guards
+        SET state = 'clear',
+            baseline_item_count = NULL,
+            baseline_pages_scanned = NULL,
+            observed_item_count = NULL,
+            observed_pages_scanned = NULL,
+            confirmation_count = 0,
+            first_detected_at = NULL,
+            last_detected_at = NULL,
+            reason = NULL
+        WHERE source = ?
+      `);
+      const saveGuard = this.database.prepare(`
+        UPDATE source_anomaly_guards
+        SET state = 'suspect',
+            baseline_item_count = ?,
+            baseline_pages_scanned = ?,
+            observed_item_count = ?,
+            observed_pages_scanned = ?,
+            confirmation_count = ?,
+            first_detected_at = ?,
+            last_detected_at = ?,
+            reason = ?
+        WHERE source = ?
+      `);
+
+      for (const prepared of preparedUpdates) {
+        const update = prepared.original;
         const timestamp = update.attemptedAt.toISOString();
-        if ("metadata" in update) {
-          updateSuccess.run(
-            update.state,
-            timestamp,
-            timestamp,
-            update.itemCount,
-            update.metadata.pagesScanned,
-            update.metadata.stopReason,
-            update.metadata.error ?? null,
+        if (prepared.nextGuard === null) {
+          clearGuard.run(update.source);
+        } else if (prepared.nextGuard !== undefined) {
+          saveGuard.run(
+            prepared.nextGuard.baseline.itemCount,
+            prepared.nextGuard.baseline.pagesScanned,
+            prepared.nextGuard.observed.itemCount,
+            prepared.nextGuard.observed.pagesScanned,
+            prepared.nextGuard.confirmationCount,
+            prepared.nextGuard.firstDetectedAt,
+            prepared.nextGuard.lastDetectedAt,
+            prepared.nextGuard.reason,
             update.source
           );
+        }
+        if ("metadata" in update) {
+          if (prepared.published) {
+            updateSuccess.run(
+              prepared.state,
+              timestamp,
+              timestamp,
+              update.itemCount,
+              update.metadata.pagesScanned,
+              prepared.stopReason,
+              prepared.error,
+              update.source
+            );
+          } else {
+            preserveStatus.run(
+              prepared.state,
+              timestamp,
+              prepared.stopReason,
+              prepared.error,
+              update.source
+            );
+          }
           const sourceListings = derivedListings.filter(
+            ({ source }) => source === update.source
+          );
+          const observedListings = listings.filter(
             ({ source }) => source === update.source
           );
           insertResult.run(
             runId,
             update.source,
-            update.state,
+            prepared.state,
             update.metadata.pagesScanned,
             update.itemCount,
-            sourceListings.filter(
+            observedListings.filter(
               ({ eligibility }) => eligibility === "eligible"
             ).length,
             balancedCounts.get(update.source) ?? 0,
             globalCounts.get(update.source) ?? 0,
-            update.metadata.stopReason,
-            update.metadata.error ?? null
+            prepared.anomalyState,
+            prepared.published ? 1 : 0,
+            prepared.stopReason,
+            prepared.error
           );
-          for (const listing of sourceListings) {
-            insertObservation.run(
-              runId,
-              listing.key,
-              listing.source,
-              timestamp,
-              listing.eligibility,
-              listingMaterialHash(listing),
-              listing.scanStability,
-              listing.consecutiveUnchangedScans
-            );
+          if (prepared.published) {
+            if (prepared.state === "success") {
+              const currentKeys = new Set(
+                sourceListings.map(({ key }) => key)
+              );
+              for (const listing of sourceListings) {
+                const snapshot = buildListingHistorySnapshot(listing);
+                const previous = previousTrustedObservation.get(
+                  listing.key,
+                  runId
+                ) as
+                  | {
+                      snapshot_json: string;
+                      availability: "active" | "removed";
+                    }
+                  | undefined;
+                const changes: ListingFieldChange[] = previous
+                  ? [
+                      ...(previous.availability === "removed"
+                        ? [
+                            {
+                              field: "availability" as const,
+                              label: "在售状态",
+                              before: "已下架",
+                              after: "在售"
+                            }
+                          ]
+                        : []),
+                      ...diffListingSnapshots(
+                        JSON.parse(
+                          previous.snapshot_json
+                        ) as ListingHistorySnapshot,
+                        snapshot
+                      )
+                    ]
+                  : [
+                      {
+                        field: "availability",
+                        label: "在售状态",
+                        before: "未记录",
+                        after: "在售"
+                      }
+                    ];
+                insertObservation.run(
+                  runId,
+                  listing.key,
+                  listing.source,
+                  timestamp,
+                  listing.eligibility,
+                  listingMaterialHash(listing),
+                  listing.scanStability,
+                  listing.consecutiveUnchangedScans,
+                  JSON.stringify(snapshot),
+                  JSON.stringify(changes),
+                  "active",
+                  1
+                );
+              }
+              const previousRun = previousTrustedRun.get(
+                update.source,
+                runId
+              ) as { run_id: number } | undefined;
+              const previousRows = previousRun
+                ? (previousActiveObservations.all(
+                    previousRun.run_id,
+                    update.source
+                  ) as unknown as Array<{
+                    listing_key: string;
+                    eligibility: Eligibility;
+                    material_hash: string;
+                    snapshot_json: string;
+                  }>)
+                : [];
+              for (const previous of previousRows) {
+                if (currentKeys.has(previous.listing_key)) continue;
+                insertObservation.run(
+                  runId,
+                  previous.listing_key,
+                  update.source,
+                  timestamp,
+                  previous.eligibility,
+                  previous.material_hash,
+                  "changed",
+                  0,
+                  previous.snapshot_json,
+                  JSON.stringify([
+                    {
+                      field: "availability",
+                      label: "在售状态",
+                      before: "在售",
+                      after: "已下架"
+                    }
+                  ]),
+                  "removed",
+                  1
+                );
+              }
+            } else {
+              for (const listing of sourceListings) {
+                insertObservation.run(
+                  runId,
+                  listing.key,
+                  listing.source,
+                  timestamp,
+                  listing.eligibility,
+                  listingMaterialHash(listing),
+                  listing.scanStability,
+                  listing.consecutiveUnchangedScans,
+                  null,
+                  "[]",
+                  "active",
+                  0
+                );
+              }
+            }
           }
         } else {
           updateFailure.run(
@@ -558,6 +1034,8 @@ export class ListingRepository {
             0,
             0,
             0,
+            0,
+            prepared.anomalyState,
             0,
             "error",
             update.error
@@ -604,7 +1082,8 @@ export class ListingRepository {
     const sourceQuery = this.database.prepare(`
       SELECT source, state, pages_scanned, observed_item_count,
              eligible_count, balanced_candidate_count,
-             global_candidate_count, stop_reason, error
+             global_candidate_count, anomaly_state, published,
+             stop_reason, error
       FROM scan_source_results
       WHERE run_id = ?
       ORDER BY source
@@ -624,6 +1103,8 @@ export class ListingRepository {
           eligible_count: number;
           balanced_candidate_count: number;
           global_candidate_count: number;
+          anomaly_state: string;
+          published: number;
           stop_reason: string | null;
           error: string | null;
         }>
@@ -635,6 +1116,8 @@ export class ListingRepository {
         eligibleCount: source.eligible_count,
         balancedCandidateCount: source.balanced_candidate_count,
         globalCandidateCount: source.global_candidate_count,
+        anomalyState: source.anomaly_state,
+        published: source.published === 1,
         stopReason: source.stop_reason,
         error: source.error
       }))
@@ -667,6 +1150,64 @@ export class ListingRepository {
       latestRun,
       lastSnapshotAt:
         published?.finished_at ?? fallback.last_snapshot_at
+    };
+  }
+
+  getListingHistory(
+    key: string,
+    limit: number
+  ): ListingHistoryView | null {
+    const rows = this.database
+      .prepare(`
+        SELECT run_id, source, observed_at, availability,
+               snapshot_json, changes_json
+        FROM listing_observations
+        WHERE listing_key = ?
+          AND trusted = 1
+          AND snapshot_json IS NOT NULL
+        ORDER BY run_id DESC
+        LIMIT ?
+      `)
+      .all(key, limit) as unknown as Array<{
+      run_id: number;
+      source: SourceId;
+      observed_at: string;
+      availability: "active" | "removed";
+      snapshot_json: string;
+      changes_json: string;
+    }>;
+    const current = this.getListing(key);
+    if (!current && rows.length === 0) return null;
+
+    const observations: ListingHistoryObservation[] = rows.map((row) => {
+      const snapshot = JSON.parse(
+        row.snapshot_json
+      ) as ListingHistorySnapshot;
+      return {
+        runId: row.run_id,
+        observedAt: row.observed_at,
+        availability: row.availability,
+        priceCny: snapshot.priceCny,
+        snapshot,
+        changes: JSON.parse(row.changes_json) as ListingFieldChange[]
+      };
+    });
+    const source = current?.source ?? rows[0].source;
+    const latest = observations[0];
+    const availability: ListingHistoryView["availability"] = current
+      ? "active"
+      : latest?.availability === "removed"
+        ? "removed"
+        : "unknown";
+    return {
+      key,
+      source,
+      availability,
+      lastSeenAt:
+        observations.find(
+          (observation) => observation.availability === "active"
+        )?.observedAt ?? null,
+      observations
     };
   }
 
@@ -736,21 +1277,59 @@ export class ListingRepository {
 
   getSourceStatuses(now = new Date()): SourceStatus[] {
     const rows = this.database
-      .prepare("SELECT * FROM source_status ORDER BY source")
+      .prepare(`
+        SELECT s.*,
+               g.state AS anomaly_state,
+               g.baseline_item_count,
+               g.baseline_pages_scanned,
+               g.observed_item_count,
+               g.observed_pages_scanned,
+               g.confirmation_count,
+               g.first_detected_at,
+               g.last_detected_at,
+               g.reason AS anomaly_reason
+        FROM source_status s
+        JOIN source_anomaly_guards g ON g.source = s.source
+        ORDER BY s.source
+      `)
       .all() as unknown as SourceStatusRow[];
 
-    return rows.map((row) => ({
-      source: row.source,
-      state: row.state,
-      lastAttemptAt: row.last_attempt_at,
-      lastSuccessAt: row.last_success_at,
-      itemCount: row.item_count,
-      pagesScanned: row.pages_scanned,
-      stopReason: row.stop_reason,
-      error: row.error,
-      stale:
-        row.last_success_at !== null &&
-        now.getTime() - Date.parse(row.last_success_at) > STALE_AFTER_MS
-    }));
+    return rows.map((row) => {
+      const anomaly: SourceAnomalyStatus =
+        row.anomaly_state === "suspect" &&
+        row.baseline_item_count !== null &&
+        row.baseline_pages_scanned !== null &&
+        row.observed_item_count !== null &&
+        row.observed_pages_scanned !== null &&
+        row.first_detected_at !== null &&
+        row.last_detected_at !== null &&
+        row.anomaly_reason !== null
+          ? {
+              state: "suspect",
+              baselineItemCount: row.baseline_item_count,
+              baselinePagesScanned: row.baseline_pages_scanned,
+              observedItemCount: row.observed_item_count,
+              observedPagesScanned: row.observed_pages_scanned,
+              confirmationCount: row.confirmation_count,
+              firstDetectedAt: row.first_detected_at,
+              lastDetectedAt: row.last_detected_at,
+              reason: row.anomaly_reason
+            }
+          : { state: "clear" };
+      return {
+        source: row.source,
+        state: row.state,
+        lastAttemptAt: row.last_attempt_at,
+        lastSuccessAt: row.last_success_at,
+        itemCount: row.item_count,
+        pagesScanned: row.pages_scanned,
+        stopReason: row.stop_reason,
+        error: row.error,
+        anomaly,
+        stale:
+          row.last_success_at !== null &&
+          now.getTime() - Date.parse(row.last_success_at) > STALE_AFTER_MS
+      };
+    });
   }
 }

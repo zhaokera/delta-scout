@@ -30,13 +30,26 @@ export const EvidenceRecordSchema = z.object({
 
 export const ScoreSchema = z.object({
   total: z.number().int().min(0).max(100),
+  value: z.number().min(0).max(100),
+  safety: z.number().min(0).max(100),
+  dataQuality: z.number().min(0).max(100),
+  riskLevel: z.enum(["low", "medium", "high", "unknown"]),
+  coverage: z.object({
+    knownSafetySignals: z.number().int().min(0).max(3),
+    totalSafetySignals: z.literal(3)
+  }),
   parts: z.object({
-    safety: z.number().min(0).max(30),
-    skinValue: z.number().min(0).max(30),
+    m7: z.number().min(0).max(35),
+    redSkins: z.number().min(0).max(20),
+    julang: z.number().min(0).max(15),
     price: z.number().min(0).max(20),
     assets: z.number().min(0).max(10),
-    confidence: z.number().min(0).max(10)
+    secondRealName: z.number().min(0).max(40),
+    recovery: z.number().min(0).max(35),
+    verification: z.number().min(0).max(25)
   }),
+  valueReasons: z.array(z.string()),
+  safetyReasons: z.array(z.string()),
   reasons: z.array(z.string())
 });
 

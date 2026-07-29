@@ -8,6 +8,13 @@ const SOURCE_LABELS = {
   pxb7: "螃蟹"
 } as const;
 
+const RISK_LABELS = {
+  low: "低风险",
+  medium: "中风险",
+  high: "高风险",
+  unknown: "风险待核验"
+} as const;
+
 const VIEW_LABELS: Record<Exclude<ListingView, "pool">, string> = {
   eligible: "全部合格",
   needs_verification: "待人工核验",
@@ -30,8 +37,8 @@ function sortListings(listings: Listing[], sort: SortKey): Listing[] {
   return [...listings].sort((left, right) => {
     if (sort === "skinValue") {
       return (
-        (right.score?.parts.skinValue ?? -1) -
-        (left.score?.parts.skinValue ?? -1)
+        (right.score?.value ?? -1) -
+        (left.score?.value ?? -1)
       );
     }
     if (sort === "price") {
@@ -219,6 +226,12 @@ export function ListingTable({
             <span className="listing-row__score">
               <strong>{listing.score?.total ?? "—"}</strong>
               <small>/ 100</small>
+              {listing.score ? (
+                <span>
+                  价值 {Math.round(listing.score.value)} ·{" "}
+                  {RISK_LABELS[listing.score.riskLevel]}
+                </span>
+              ) : null}
               <i aria-hidden="true">↗</i>
             </span>
           </button>

@@ -54,6 +54,9 @@ export function createDatabase(path: string): DatabaseSync {
         CHECK(balanced_candidate_count >= 0),
       global_candidate_count INTEGER NOT NULL
         CHECK(global_candidate_count >= 0),
+      anomaly_state TEXT NOT NULL DEFAULT 'none',
+      published INTEGER NOT NULL DEFAULT 1
+        CHECK(published IN (0, 1)),
       stop_reason TEXT,
       error TEXT,
       PRIMARY KEY (run_id, source),
@@ -75,6 +78,12 @@ export function createDatabase(path: string): DatabaseSync {
         CHECK(stability IN ('unknown', 'new', 'changed', 'stable')),
       consecutive_unchanged_scans INTEGER NOT NULL
         CHECK(consecutive_unchanged_scans >= 0),
+      snapshot_json TEXT,
+      changes_json TEXT NOT NULL DEFAULT '[]',
+      availability TEXT NOT NULL DEFAULT 'active'
+        CHECK(availability IN ('active', 'removed')),
+      trusted INTEGER NOT NULL DEFAULT 0
+        CHECK(trusted IN (0, 1)),
       PRIMARY KEY (run_id, listing_key),
       FOREIGN KEY (run_id) REFERENCES scan_runs(id) ON DELETE CASCADE
     );
@@ -83,6 +92,21 @@ export function createDatabase(path: string): DatabaseSync {
       ON listing_observations (listing_key, run_id DESC);
     CREATE INDEX IF NOT EXISTS listing_observations_source_run_idx
       ON listing_observations (source, run_id DESC);
+
+    CREATE TABLE IF NOT EXISTS source_anomaly_guards (
+      source TEXT PRIMARY KEY
+        CHECK(source IN ('jiaoyimao', 'panzhi', 'pxb7')),
+      state TEXT NOT NULL DEFAULT 'clear'
+        CHECK(state IN ('clear', 'suspect')),
+      baseline_item_count INTEGER,
+      baseline_pages_scanned INTEGER,
+      observed_item_count INTEGER,
+      observed_pages_scanned INTEGER,
+      confirmation_count INTEGER NOT NULL DEFAULT 0,
+      first_detected_at TEXT,
+      last_detected_at TEXT,
+      reason TEXT
+    );
   `);
 
   const columns = new Set(
@@ -101,6 +125,52 @@ export function createDatabase(path: string): DatabaseSync {
     database.exec("ALTER TABLE source_status ADD COLUMN stop_reason TEXT");
   }
 
+  const resultColumns = new Set(
+    (
+      database.prepare("PRAGMA table_info(scan_source_results)").all() as {
+        name: string;
+      }[]
+    ).map(({ name }) => name)
+  );
+  if (!resultColumns.has("anomaly_state")) {
+    database.exec(
+      "ALTER TABLE scan_source_results ADD COLUMN anomaly_state TEXT NOT NULL DEFAULT 'none'"
+    );
+  }
+  if (!resultColumns.has("published")) {
+    database.exec(
+      "ALTER TABLE scan_source_results ADD COLUMN published INTEGER NOT NULL DEFAULT 1"
+    );
+  }
+
+  const observationColumns = new Set(
+    (
+      database.prepare("PRAGMA table_info(listing_observations)").all() as {
+        name: string;
+      }[]
+    ).map(({ name }) => name)
+  );
+  if (!observationColumns.has("snapshot_json")) {
+    database.exec(
+      "ALTER TABLE listing_observations ADD COLUMN snapshot_json TEXT"
+    );
+  }
+  if (!observationColumns.has("changes_json")) {
+    database.exec(
+      "ALTER TABLE listing_observations ADD COLUMN changes_json TEXT NOT NULL DEFAULT '[]'"
+    );
+  }
+  if (!observationColumns.has("availability")) {
+    database.exec(
+      "ALTER TABLE listing_observations ADD COLUMN availability TEXT NOT NULL DEFAULT 'active'"
+    );
+  }
+  if (!observationColumns.has("trusted")) {
+    database.exec(
+      "ALTER TABLE listing_observations ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0"
+    );
+  }
+
   const seed = database.prepare(`
     INSERT INTO source_status (source, state, item_count)
     VALUES (?, 'idle', 0)
@@ -108,6 +178,14 @@ export function createDatabase(path: string): DatabaseSync {
   `);
   for (const source of ["jiaoyimao", "panzhi", "pxb7"]) {
     seed.run(source);
+  }
+  const seedGuard = database.prepare(`
+    INSERT INTO source_anomaly_guards (source, state)
+    VALUES (?, 'clear')
+    ON CONFLICT(source) DO NOTHING
+  `);
+  for (const source of ["jiaoyimao", "panzhi", "pxb7"]) {
+    seedGuard.run(source);
   }
 
   try {

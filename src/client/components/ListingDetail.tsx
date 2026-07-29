@@ -1,4 +1,5 @@
 import type { Listing } from "../../domain/listing";
+import type { ListingHistoryView } from "../api";
 import { buildEvidenceExcerpt } from "../../domain/evidenceExcerpt";
 
 const SOURCE_LABELS = {
@@ -45,13 +46,26 @@ function stabilityLabel(listing: Listing): string {
   return "稳定性待观测";
 }
 
+const RISK_LABELS = {
+  low: "低风险",
+  medium: "中风险",
+  high: "高风险",
+  unknown: "风险待核验"
+} as const;
+
 export function ListingDetail({
   listing,
   loading,
+  history = null,
+  historyLoading = false,
+  historyError = null,
   onClose
 }: {
   listing: Listing | null;
   loading: boolean;
+  history?: ListingHistoryView | null;
+  historyLoading?: boolean;
+  historyError?: string | null;
   onClose?: () => void;
 }) {
   if (!listing) {
@@ -67,6 +81,30 @@ export function ListingDetail({
   const m7Excerpt = buildEvidenceExcerpt(
     listing.m7Evidence[0]?.text ?? "待人工核验"
   );
+  const prices =
+    history?.observations.filter(
+      (
+        observation
+      ): observation is typeof observation & { priceCny: number } =>
+        observation.availability === "active" &&
+        observation.priceCny !== null
+    ) ?? [];
+  const latestMovement =
+    prices.length >= 2 ? prices[0].priceCny - prices[1].priceCny : null;
+  const movementLabel =
+    latestMovement === null
+      ? "等待下一轮可信扫描"
+      : latestMovement > 0
+        ? `上涨 ¥${latestMovement.toLocaleString("zh-CN")}`
+        : latestMovement < 0
+          ? `下降 ¥${Math.abs(latestMovement).toLocaleString("zh-CN")}`
+          : "价格持平";
+  const availabilityLabel =
+    history?.availability === "active"
+      ? "当前在售"
+      : history?.availability === "removed"
+        ? "已下架"
+        : "在售状态待确认";
 
   return (
     <aside className="detail-panel" aria-label="候选详情" aria-busy={loading}>
@@ -208,22 +246,105 @@ export function ListingDetail({
       {listing.score ? (
         <section className="score-breakdown">
           <span>评分依据</span>
-          <div className="score-parts">
-            <p>安全信息 {scorePart(listing.score.parts.safety)} / 30</p>
+          <div className="score-summary">
+            <p>账号价值 {scorePart(listing.score.value)} / 100</p>
+            <p>购买安全 {scorePart(listing.score.safety)} / 100</p>
             <p>
-              皮肤价值 {scorePart(listing.score.parts.skinValue)} / 30
+              数据完整度 {scorePart(listing.score.dataQuality)} / 100
             </p>
+            <strong
+              className={`risk-badge risk-badge--${listing.score.riskLevel}`}
+            >
+              {RISK_LABELS[listing.score.riskLevel]}
+            </strong>
+            <small>
+              安全证据 {listing.score.coverage.knownSafetySignals} /{" "}
+              {listing.score.coverage.totalSafetySignals}
+            </small>
+          </div>
+          <div className="score-parts">
+            <p>M7 品质 {scorePart(listing.score.parts.m7)} / 35</p>
+            <p>
+              角色红皮 {scorePart(listing.score.parts.redSkins)} / 20
+            </p>
+            <p>巨浪 {scorePart(listing.score.parts.julang)} / 15</p>
             <p>价格 {scorePart(listing.score.parts.price)} / 20</p>
             <p>资产 {scorePart(listing.score.parts.assets)} / 10</p>
             <p>
-              置信度 {scorePart(listing.score.parts.confidence)} / 10
+              二次实名 {scorePart(listing.score.parts.secondRealName)} / 40
+            </p>
+            <p>
+              找回保障 {scorePart(listing.score.parts.recovery)} / 35
+            </p>
+            <p>
+              验号时效 {scorePart(listing.score.parts.verification)} / 25
             </p>
           </div>
+          {listing.score.valueReasons.map((reason) => (
+            <p key={`value:${reason}`}>{reason}</p>
+          ))}
+          {listing.score.safetyReasons.map((reason) => (
+            <p key={`safety:${reason}`}>{reason}</p>
+          ))}
           {listing.score.reasons.map((reason) => (
-            <p key={reason}>{reason}</p>
+            <p key={`overall:${reason}`}>{reason}</p>
           ))}
         </section>
       ) : null}
+
+      <section className="history-block" aria-label="账号历史">
+        <div className="history-block__heading">
+          <span>在售与变化</span>
+          <strong>{history ? availabilityLabel : "状态待加载"}</strong>
+        </div>
+        {historyLoading ? <p>正在读取可信历史…</p> : null}
+        {historyError ? (
+          <p className="history-block__error">{historyError}</p>
+        ) : null}
+        {history ? (
+          <>
+            <div className="price-history__heading">
+              <strong>价格历史</strong>
+              <span>{movementLabel}</span>
+            </div>
+            {prices.length > 0 ? (
+              <ol className="price-history">
+                {prices.map((observation) => (
+                  <li key={observation.runId}>
+                    <strong>
+                      ¥{observation.priceCny.toLocaleString("zh-CN")}
+                    </strong>
+                    <span>
+                      {new Date(observation.observedAt).toLocaleString(
+                        "zh-CN"
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p>尚无可信价格记录</p>
+            )}
+            <div className="change-history">
+              <strong>最近变化</strong>
+              {(history.observations[0]?.changes.length ?? 0) > 0 ? (
+                history.observations[0].changes.map((change) => (
+                  <p key={`${change.field}:${change.before}:${change.after}`}>
+                    <span>{change.label}</span>
+                    <b>
+                      {change.before} → {change.after}
+                    </b>
+                  </p>
+                ))
+              ) : (
+                <p>本轮关键字段无变化</p>
+              )}
+            </div>
+          </>
+        ) : historyLoading || historyError ? null : (
+          <p>等待下一轮可信扫描</p>
+        )}
+      </section>
 
       {listing.parseWarnings.length ? (
         <section className="warning-block">

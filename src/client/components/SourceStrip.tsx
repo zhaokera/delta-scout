@@ -10,6 +10,9 @@ function sourceState(status: SourceStatusView): {
   label: string;
   tone: string;
 } {
+  if (status.anomaly.state === "suspect") {
+    return { label: "数据骤降待确认", tone: "warn" };
+  }
   if (status.completion === "complete") {
     return { label: "完整", tone: "ok" };
   }
@@ -40,6 +43,7 @@ const STOP_REASON_LABELS: Record<string, string> = {
   captcha_required: "入口触发验证码",
   unverified_structure: "列表结构待核验",
   entry_failed: "入口请求失败",
+  anomaly_guard: "异常量保护已启用",
   error: "采集过程出错"
 };
 
@@ -72,6 +76,8 @@ export function SourceStrip({
           status.completion === "blocked" ||
           status.completion === "failed";
         const idle = status.completion === "idle";
+        const anomaly =
+          status.anomaly.state === "suspect" ? status.anomaly : null;
         return (
           <article
             className={`source-card source-card--${status.completion}`}
@@ -86,7 +92,19 @@ export function SourceStrip({
                 {state.label}
               </span>
             </div>
-            {retained ? (
+            {anomaly ? (
+              <div className="source-card__anomaly">
+                <span>
+                  本轮观测 {anomaly.observedItemCount} 条 /{" "}
+                  {anomaly.observedPagesScanned} 页
+                </span>
+                <span>
+                  继续使用可信快照 {anomaly.baselineItemCount} 条 /{" "}
+                  {anomaly.baselinePagesScanned} 页
+                </span>
+                <span>等待下一次完整扫描确认</span>
+              </div>
+            ) : retained ? (
               <div className="source-card__retained">
                 <span>本轮 0 页</span>
                 <span>保留旧快照 {status.itemCount} 条</span>

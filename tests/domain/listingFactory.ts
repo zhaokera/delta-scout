@@ -6,14 +6,27 @@ export function makeScore(
 ): Score {
   return {
     total,
+    value: 0,
+    safety: 0,
+    dataQuality: 0,
+    riskLevel: "unknown",
+    coverage: {
+      knownSafetySignals: 0,
+      totalSafetySignals: 3
+    },
     parts: {
-      safety: 0,
-      skinValue: 0,
+      m7: 0,
+      redSkins: 0,
+      julang: 0,
       price: 0,
       assets: 0,
-      confidence: 0,
+      secondRealName: 0,
+      recovery: 0,
+      verification: 0,
       ...parts
     },
+    valueReasons: [],
+    safetyReasons: [],
     reasons: []
   };
 }

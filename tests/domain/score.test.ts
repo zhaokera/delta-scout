@@ -12,14 +12,27 @@ describe("scoreEligibleListings", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 75,
+      total: 80,
+      value: 63.5,
+      safety: 100,
+      dataQuality: 100,
+      riskLevel: "low",
+      coverage: {
+        knownSafetySignals: 3,
+        totalSafetySignals: 3
+      },
       parts: {
-        safety: 30,
-        skinValue: 19.5,
+        m7: 29,
+        redSkins: 4,
+        julang: 15,
         price: 10,
         assets: 5.5,
-        confidence: 10
+        secondRealName: 40,
+        recovery: 35,
+        verification: 25
       },
+      valueReasons: expect.any(Array),
+      safetyReasons: expect.any(Array),
       reasons: expect.any(Array)
     });
   });
@@ -52,10 +65,10 @@ describe("scoreEligibleListings", () => {
   });
 
   it.each([
-    ["S", 14],
-    ["A", 11],
-    ["B", 8],
-    ["C", 5],
+    ["S", 35],
+    ["A", 29],
+    ["B", 23],
+    ["C", 17],
     [null, 0]
   ] as const)("scores M7 quality %s explicitly", (quality, expected) => {
     const [result] = scoreEligibleListings([
@@ -68,13 +81,15 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.parts.skinValue).toBe(expected);
+    expect(result.score?.parts.m7).toBe(expected);
     if (quality === null) {
-      expect(result.score?.reasons.join(" ")).toContain("极品品质待核验");
+      expect(result.score?.valueReasons.join(" ")).toContain(
+        "极品品质待核验"
+      );
     }
   });
 
-  it("caps red-skin value at four and includes Julang", () => {
+  it("caps red-skin value at five and scores Julang separately", () => {
     const [result] = scoreEligibleListings([
       makeListing({
         m7PrismQuality: "C",
@@ -84,9 +99,12 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.parts.skinValue).toBe(21);
-    expect(result.score?.reasons.join(" ")).toContain("5 个已识别角色红皮");
-    expect(result.score?.reasons.join(" ")).toContain("巨浪已拥有");
+    expect(result.score?.parts.redSkins).toBe(20);
+    expect(result.score?.parts.julang).toBe(15);
+    expect(result.score?.valueReasons.join(" ")).toContain(
+      "5 个已识别角色红皮"
+    );
+    expect(result.score?.valueReasons.join(" ")).toContain("巨浪已拥有");
   });
 
   it("does not reward known negative safety values", () => {
@@ -98,7 +116,77 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.parts.safety).toBe(0);
+    expect(result.score).toMatchObject({
+      safety: 0,
+      riskLevel: "high",
+      coverage: {
+        knownSafetySignals: 2,
+        totalSafetySignals: 3
+      },
+      parts: {
+        secondRealName: 0,
+        recovery: 0,
+        verification: 0
+      }
+    });
+    expect(result.score?.safetyReasons.join(" ")).toContain("不可二次实名");
+    expect(result.score?.safetyReasons.join(" ")).toContain("无包赔");
+  });
+
+  it("marks all-unknown safety evidence as unknown instead of safe", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        secondRealNameAvailable: null,
+        recoveryCoverage: null,
+        verificationAt: null
+      })
+    ], now);
+
+    expect(result.score).toMatchObject({
+      safety: 0,
+      riskLevel: "unknown",
+      coverage: {
+        knownSafetySignals: 0,
+        totalSafetySignals: 3
+      }
+    });
+  });
+
+  it("uses medium risk for incomplete or stale safety evidence", () => {
+    const [missing] = scoreEligibleListings([
+      makeListing({ recoveryCoverage: null })
+    ], now);
+    const [stale] = scoreEligibleListings([
+      makeListing({
+        verificationAt: "2026-05-01T00:00:00.000Z"
+      })
+    ], now);
+
+    expect(missing.score?.riskLevel).toBe("medium");
+    expect(stale.score?.riskLevel).toBe("medium");
+  });
+
+  it("makes the combined recommendation formula explicit", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        confidence: 80,
+        secondRealNameAvailable: true,
+        recoveryCoverage: false,
+        verificationAt: null,
+        m7PrismQuality: "S",
+        redSkins: [],
+        julangStatus: "absent",
+        totalAssetsM: null,
+        hafCoins: null
+      })
+    ], now);
+
+    expect(result.score?.value).toBe(45);
+    expect(result.score?.safety).toBe(40);
+    expect(result.score?.dataQuality).toBe(80);
+    expect(result.score?.total).toBe(
+      Math.round(45 * 0.55 + 40 * 0.35 + 80 * 0.1)
+    );
   });
 
   it("sorts ties by confidence, price, capture time, then URL", () => {

@@ -380,6 +380,32 @@ button {
   border-color: var(--line);
 }
 
+.source-card__anomaly {
+  position: relative;
+  z-index: 1;
+  margin-top: 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.source-card__anomaly span {
+  padding: 7px 9px;
+  color: #d7d0bc;
+  background: rgba(255, 189, 74, 0.055);
+  border-left: 2px solid rgba(255, 189, 74, 0.55);
+  font: 650 10px/1.35 var(--mono);
+}
+
+.source-card__anomaly span:nth-child(2) {
+  color: #cbd0ca;
+  background: rgba(255, 255, 255, 0.025);
+  border-left-color: var(--acid);
+}
+
+.source-card__anomaly span:last-child {
+  color: var(--amber);
+}
+
 .source-card__footer {
   position: relative;
   z-index: 1;
@@ -842,6 +868,14 @@ input[type="search"] {
   font: 600 9px var(--mono);
 }
 
+.listing-row__score > span {
+  grid-column: 1 / -1;
+  margin-top: 5px;
+  color: #b8beb8;
+  font: 650 9px/1.35 var(--mono);
+  white-space: nowrap;
+}
+
 .listing-row__score i {
   grid-column: 1 / -1;
   justify-self: end;
@@ -1110,6 +1144,54 @@ input[type="search"] {
   font: 500 10px var(--mono);
 }
 
+.score-summary {
+  margin-bottom: 11px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  background: rgba(5, 8, 6, 0.5);
+  border: 1px solid rgba(216, 255, 62, 0.16);
+}
+
+.score-summary p {
+  margin: 0;
+  padding: 7px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.score-summary small {
+  align-self: center;
+  color: var(--muted);
+  font: 600 9px var(--mono);
+}
+
+.risk-badge {
+  width: fit-content;
+  align-self: center;
+  padding: 4px 7px;
+  color: var(--muted);
+  border: 1px solid var(--line-bright);
+  font: 750 9px var(--mono);
+}
+
+.risk-badge--low {
+  color: var(--acid);
+  border-color: rgba(216, 255, 62, 0.35);
+}
+
+.risk-badge--medium,
+.risk-badge--unknown {
+  color: var(--amber);
+  border-color: rgba(255, 189, 74, 0.35);
+}
+
+.risk-badge--high {
+  color: var(--danger);
+  border-color: rgba(255, 110, 87, 0.4);
+}
+
 .score-parts {
   margin-bottom: 10px;
   display: grid;
@@ -1121,6 +1203,109 @@ input[type="search"] {
   margin: 0;
   padding: 6px 7px;
   border: 1px solid rgba(216, 255, 62, 0.12);
+}
+
+.history-block {
+  margin: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.history-block__heading,
+.price-history__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.history-block__heading span {
+  color: var(--acid);
+  font: 700 9px var(--mono);
+  letter-spacing: 0.14em;
+}
+
+.history-block__heading strong {
+  color: var(--ink);
+  font: 750 10px var(--mono);
+}
+
+.history-block > p,
+.change-history > p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font: 500 10px/1.5 var(--mono);
+}
+
+.history-block .history-block__error {
+  color: var(--amber);
+}
+
+.price-history__heading {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font: 650 10px var(--mono);
+}
+
+.price-history__heading span {
+  color: var(--amber);
+}
+
+.price-history {
+  margin: 9px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+  list-style: none;
+}
+
+.price-history li {
+  padding: 7px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border-left: 1px solid var(--line-bright);
+}
+
+.price-history li strong {
+  color: var(--ink);
+  font: 750 11px var(--mono);
+}
+
+.price-history li span {
+  color: var(--muted);
+  font: 500 9px var(--mono);
+}
+
+.change-history {
+  margin-top: 13px;
+}
+
+.change-history > strong {
+  color: #cbd0ca;
+  font: 700 10px var(--mono);
+}
+
+.change-history > p {
+  padding: 7px 8px;
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.change-history > p span {
+  color: var(--muted);
+}
+
+.change-history > p b {
+  color: var(--ink);
+  font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .warning-block {
@@ -1550,6 +1735,14 @@ input[type="search"] {
   }
 
   .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .score-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .change-history > p {
     grid-template-columns: 1fr;
   }
 

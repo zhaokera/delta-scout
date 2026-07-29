@@ -189,7 +189,36 @@ export const pxb7Adapter: SourceAdapter = {
         candidate.pathname === "/buy/10371/1" &&
         compactText(link.text()).includes(query);
     });
-    if (!foundCatalog) {
+    const officialNuxtShell =
+      $("#__nuxt").length === 1 &&
+      $("#teleports").length === 1 &&
+      $('meta[name="keywords"]')
+        .attr("content")
+        ?.includes("螃蟹账号交易平台") === true &&
+      $("script").toArray().some((node) => {
+        const text = $(node).text();
+        return (
+          text.includes("window.__NUXT__") &&
+          /baseUrl\s*:\s*["']https:\/\/api-pc\.pxb7\.com["']/.test(text)
+        );
+      }) &&
+      $('script[type="module"][src]').toArray().some((node) => {
+        const src = $(node).attr("src");
+        if (!src) return false;
+        try {
+          const url = new URL(src);
+          return (
+            url.origin === "https://g.pxb7.com" &&
+            url.port === "" &&
+            /^\/pc\/version\/[^/]+\/entry\.[A-Za-z0-9_-]+\.js$/.test(
+              url.pathname
+            )
+          );
+        } catch {
+          return false;
+        }
+      });
+    if (!foundCatalog && !officialNuxtShell) {
       return { kind: "blocked", reason: "catalog_not_found" };
     }
     return { kind: "ok", request: makeListRequest(1) };

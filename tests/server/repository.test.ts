@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { listingMaterialHash } from "../../src/domain/listingFingerprint.js";
 import {
   ListingRepository,
   type SourceRefreshStatusUpdate
@@ -19,19 +20,37 @@ const scanTime = new Date("2026-07-29T10:00:00.000Z");
 function successUpdate(
   source: "jiaoyimao" | "panzhi" | "pxb7",
   itemCount: number,
-  state: "success" | "partial" = "success"
+  state: "success" | "partial" = "success",
+  pagesScanned = 1,
+  attemptedAt = scanTime
 ): SourceRefreshStatusUpdate {
   return {
     source,
     state,
-    attemptedAt: scanTime,
+    attemptedAt,
     itemCount,
     metadata: {
-      pagesScanned: 1,
+      pagesScanned,
       stopReason: state === "success" ? "end_of_pages" : "error",
       error: state === "partial" ? "partial_fixture" : null
     }
   };
+}
+
+function sourceListings(
+  source: "jiaoyimao" | "panzhi" | "pxb7",
+  count: number,
+  prefix: string
+) {
+  return Array.from({ length: count }, (_, index) =>
+    makeListing({
+      source,
+      key: `${source}:${prefix}-${index}`,
+      sourceListingId: `${prefix}-${index}`,
+      url: `https://example.test/${source}/${prefix}-${index}`,
+      score: makeScore(80)
+    })
+  ).sort((left, right) => left.key.localeCompare(right.key));
 }
 
 function failureUpdate(
@@ -81,6 +100,36 @@ describe("ListingRepository", () => {
             stopReason: null
           })
         );
+        const resultColumns = (
+          database.prepare("PRAGMA table_info(scan_source_results)").all() as
+            Array<{ name: string }>
+        ).map(({ name }) => name);
+        expect(resultColumns).toEqual(
+          expect.arrayContaining(["anomaly_state", "published"])
+        );
+        const observationColumns = (
+          database.prepare("PRAGMA table_info(listing_observations)").all() as
+            Array<{ name: string }>
+        ).map(({ name }) => name);
+        expect(observationColumns).toEqual(
+          expect.arrayContaining([
+            "snapshot_json",
+            "changes_json",
+            "availability",
+            "trusted"
+          ])
+        );
+        expect(
+          database
+            .prepare(
+              "SELECT source, state FROM source_anomaly_guards ORDER BY source"
+            )
+            .all()
+        ).toEqual([
+          { source: "jiaoyimao", state: "clear" },
+          { source: "panzhi", state: "clear" },
+          { source: "pxb7", state: "clear" }
+        ]);
       } finally {
         database.close();
       }
@@ -471,6 +520,505 @@ describe("ListingRepository", () => {
     expect(repository.getListing(original.key)).toMatchObject({
       scanStability: "stable",
       consecutiveUnchangedScans: 2
+    });
+  });
+
+  it("quarantines the first 44-to-10 drop and retains the trusted snapshot", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const trusted = sourceListings("panzhi", 44, "trusted");
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      trusted,
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+
+    const runId = repository.startScan(scanTime);
+    expect(
+      repository.commitScanRefresh(
+        runId,
+        sourceListings("panzhi", 10, "low"),
+        [
+          successUpdate("panzhi", 10, "success", 1),
+          failureUpdate("jiaoyimao"),
+          failureUpdate("pxb7")
+        ],
+        scanTime
+      )
+    ).toBe("partial");
+
+    const retained = repository
+      .getListings()
+      .filter(({ source }) => source === "panzhi");
+    expect(retained.map(({ key }) => key)).toEqual(
+      trusted.map(({ key }) => key)
+    );
+    expect(retained.map(listingMaterialHash)).toEqual(
+      trusted.map(listingMaterialHash)
+    );
+    expect(
+      repository.getSourceStatuses().find(({ source }) => source === "panzhi")
+    ).toMatchObject({
+      state: "partial",
+      itemCount: 44,
+      pagesScanned: 5,
+      stopReason: "anomaly_guard",
+      anomaly: {
+        state: "suspect",
+        baselineItemCount: 44,
+        baselinePagesScanned: 5,
+        observedItemCount: 10,
+        observedPagesScanned: 1,
+        confirmationCount: 1
+      }
+    });
+    expect(repository.getScanHistory(1)[0].sources).toContainEqual(
+      expect.objectContaining({
+        source: "panzhi",
+        state: "partial",
+        observedItemCount: 10,
+        pagesScanned: 1,
+        anomalyState: "suspect",
+        published: false
+      })
+    );
+  });
+
+  it("rescales the retained trusted snapshot with fresh sources while an anomaly is quarantined", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const trusted = sourceListings("panzhi", 44, "trusted").map(
+      (listing) => ({ ...listing, score: null })
+    );
+    const failedRetained = makeListing({
+      source: "pxb7",
+      key: "pxb7:retained",
+      sourceListingId: "retained",
+      url: "https://example.test/pxb7/retained",
+      score: makeScore(99)
+    });
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      trusted,
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+    repository.replaceSourceSnapshot(
+      "pxb7",
+      [failedRetained],
+      "success",
+      scanTime,
+      { pagesScanned: 1, stopReason: "end_of_pages" }
+    );
+    const fresh = makeListing({
+      source: "jiaoyimao",
+      key: "jiaoyimao:fresh",
+      sourceListingId: "fresh",
+      url: "https://example.test/jiaoyimao/fresh",
+      score: null
+    });
+
+    const runId = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      runId,
+      [...sourceListings("panzhi", 10, "low"), fresh],
+      [
+        successUpdate("panzhi", 10, "success", 1),
+        successUpdate("jiaoyimao", 1),
+        failureUpdate("pxb7")
+      ],
+      scanTime
+    );
+
+    expect(repository.getListing(trusted[0].key)?.score).not.toBeNull();
+    expect(repository.getListing(fresh.key)?.score).not.toBeNull();
+    expect(repository.getListing(failedRetained.key)?.score).toBeNull();
+  });
+
+  it("does not publish an anomalously low partial scan or start confirmation", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const trusted = sourceListings("panzhi", 44, "trusted");
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      trusted,
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      sourceListings("panzhi", 10, "partial-low"),
+      [
+        successUpdate("panzhi", 10, "partial", 1),
+        failureUpdate("jiaoyimao"),
+        failureUpdate("pxb7")
+      ],
+      scanTime
+    );
+
+    const retained = repository
+      .getListings()
+      .filter(({ source }) => source === "panzhi");
+    expect(retained.map(({ key }) => key)).toEqual(
+      trusted.map(({ key }) => key)
+    );
+    expect(
+      repository.getSourceStatuses().find(({ source }) => source === "panzhi")
+    ).toMatchObject({
+      state: "partial",
+      itemCount: 44,
+      pagesScanned: 5,
+      anomaly: { state: "clear" }
+    });
+    expect(repository.getScanHistory(1)[0].sources).toContainEqual(
+      expect.objectContaining({
+        source: "panzhi",
+        state: "partial",
+        observedItemCount: 10,
+        published: false,
+        anomalyState: "none"
+      })
+    );
+  });
+
+  it("publishes a second similar low scan and clears the anomaly guard", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      sourceListings("panzhi", 44, "trusted"),
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+    const failures = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7")
+    ];
+
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      sourceListings("panzhi", 10, "low-first"),
+      [successUpdate("panzhi", 10, "success", 1), ...failures],
+      scanTime
+    );
+    const confirmed = sourceListings("panzhi", 11, "low-confirmed");
+    repository.commitScanRefresh(
+      repository.startScan(new Date(scanTime.getTime() + 1_000)),
+      confirmed,
+      [successUpdate("panzhi", 11, "success", 1), ...failures],
+      new Date(scanTime.getTime() + 1_000)
+    );
+
+    expect(
+      repository.getListings().filter(({ source }) => source === "panzhi")
+    ).toHaveLength(11);
+    expect(
+      repository.getSourceStatuses().find(({ source }) => source === "panzhi")
+    ).toMatchObject({
+      state: "success",
+      itemCount: 11,
+      pagesScanned: 1,
+      anomaly: { state: "clear" }
+    });
+    expect(repository.getScanHistory(1)[0].sources).toContainEqual(
+      expect.objectContaining({
+        source: "panzhi",
+        state: "success",
+        anomalyState: "confirmed",
+        published: true
+      })
+    );
+  });
+
+  it("does not use partial or blocked scans to confirm a pending drop", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const trusted = sourceListings("panzhi", 44, "trusted");
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      trusted,
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+    const otherFailures = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7")
+    ];
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      sourceListings("panzhi", 10, "suspect"),
+      [successUpdate("panzhi", 10, "success", 1), ...otherFailures],
+      scanTime
+    );
+
+    repository.commitScanRefresh(
+      repository.startScan(new Date(scanTime.getTime() + 1_000)),
+      sourceListings("panzhi", 10, "partial"),
+      [successUpdate("panzhi", 10, "partial", 1), ...otherFailures],
+      new Date(scanTime.getTime() + 1_000)
+    );
+    expect(
+      repository.getSourceStatuses().find(({ source }) => source === "panzhi")
+    ).toMatchObject({
+      anomaly: {
+        state: "suspect",
+        confirmationCount: 1
+      }
+    });
+    const retained = repository
+      .getListings()
+      .filter(({ source }) => source === "panzhi");
+    expect(retained.map(({ key }) => key)).toEqual(
+      trusted.map(({ key }) => key)
+    );
+    expect(retained.map(listingMaterialHash)).toEqual(
+      trusted.map(listingMaterialHash)
+    );
+
+    repository.finalizeFailedScan(
+      repository.startScan(new Date(scanTime.getTime() + 2_000)),
+      [
+        failureUpdate("panzhi", "blocked"),
+        failureUpdate("jiaoyimao"),
+        failureUpdate("pxb7")
+      ],
+      "没有来源取得新鲜数据",
+      new Date(scanTime.getTime() + 2_000)
+    );
+    expect(
+      repository.getSourceStatuses().find(({ source }) => source === "panzhi")
+    ).toMatchObject({
+      anomaly: {
+        state: "suspect",
+        confirmationCount: 1
+      }
+    });
+  });
+
+  it("accepts a recovered volume and clears a pending guard", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      sourceListings("panzhi", 44, "trusted"),
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+    const failures = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7")
+    ];
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      sourceListings("panzhi", 10, "suspect"),
+      [successUpdate("panzhi", 10, "success", 1), ...failures],
+      scanTime
+    );
+    const recovered = sourceListings("panzhi", 43, "recovered");
+    repository.commitScanRefresh(
+      repository.startScan(new Date(scanTime.getTime() + 1_000)),
+      recovered,
+      [successUpdate("panzhi", 43, "success", 5), ...failures],
+      new Date(scanTime.getTime() + 1_000)
+    );
+
+    expect(
+      repository.getListings().filter(({ source }) => source === "panzhi")
+    ).toHaveLength(43);
+    expect(
+      repository.getSourceStatuses().find(({ source }) => source === "panzhi")
+    ).toMatchObject({
+      state: "success",
+      anomaly: { state: "clear" }
+    });
+  });
+
+  it("stores trusted field and price changes for an active listing", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const failures = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7")
+    ];
+    const original = makeListing({ priceCny: 1888 });
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      [original],
+      [successUpdate("panzhi", 1), ...failures],
+      scanTime
+    );
+    const changedAt = new Date(scanTime.getTime() + 1_000);
+    repository.commitScanRefresh(
+      repository.startScan(changedAt),
+      [
+        makeListing({
+          priceCny: 2199,
+          recoveryCoverage: false
+        })
+      ],
+      [successUpdate("panzhi", 1, "success", 1, changedAt), ...failures],
+      changedAt
+    );
+
+    expect(repository.getListingHistory(original.key, 20)).toMatchObject({
+      key: original.key,
+      source: "panzhi",
+      availability: "active",
+      lastSeenAt: changedAt.toISOString(),
+      observations: [
+        {
+          observedAt: changedAt.toISOString(),
+          availability: "active",
+          priceCny: 2199,
+          changes: expect.arrayContaining([
+            {
+              field: "priceCny",
+              label: "价格",
+              before: "¥1,888",
+              after: "¥2,199"
+            },
+            {
+              field: "recoveryCoverage",
+              label: "找回保障",
+              before: "支持包赔",
+              after: "无包赔"
+            }
+          ])
+        },
+        {
+          availability: "active",
+          priceCny: 1888,
+          changes: [
+            {
+              field: "availability",
+              label: "在售状态",
+              before: "未记录",
+              after: "在售"
+            }
+          ]
+        }
+      ]
+    });
+  });
+
+  it("writes a removed tombstone only after a trusted complete scan", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const failures = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7")
+    ];
+    const listing = makeListing();
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      [listing],
+      [successUpdate("panzhi", 1), ...failures],
+      scanTime
+    );
+    const partialAt = new Date(scanTime.getTime() + 1_000);
+    repository.commitScanRefresh(
+      repository.startScan(partialAt),
+      [],
+      [
+        successUpdate("panzhi", 0, "partial", 1, partialAt),
+        ...failures
+      ],
+      partialAt
+    );
+
+    expect(repository.getListingHistory(listing.key, 20)).toMatchObject({
+      availability: "unknown",
+      observations: [
+        expect.objectContaining({ availability: "active" })
+      ]
+    });
+
+    const removedAt = new Date(scanTime.getTime() + 2_000);
+    repository.commitScanRefresh(
+      repository.startScan(removedAt),
+      [],
+      [successUpdate("panzhi", 0, "success", 1, removedAt), ...failures],
+      removedAt
+    );
+    expect(repository.getListing(listing.key)).toBeNull();
+    expect(repository.getListingHistory(listing.key, 20)).toMatchObject({
+      availability: "removed",
+      lastSeenAt: scanTime.toISOString(),
+      observations: [
+        {
+          observedAt: removedAt.toISOString(),
+          availability: "removed",
+          changes: [
+            {
+              field: "availability",
+              label: "在售状态",
+              before: "在售",
+              after: "已下架"
+            }
+          ]
+        },
+        expect.objectContaining({ availability: "active" })
+      ]
+    });
+  });
+
+  it("records a removed listing becoming active again", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const failures = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7")
+    ];
+    const listing = makeListing();
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      [listing],
+      [successUpdate("panzhi", 1), ...failures],
+      scanTime
+    );
+    repository.commitScanRefresh(
+      repository.startScan(new Date(scanTime.getTime() + 1_000)),
+      [],
+      [
+        successUpdate(
+          "panzhi",
+          0,
+          "success",
+          1,
+          new Date(scanTime.getTime() + 1_000)
+        ),
+        ...failures
+      ],
+      new Date(scanTime.getTime() + 1_000)
+    );
+    const reappearedAt = new Date(scanTime.getTime() + 2_000);
+    repository.commitScanRefresh(
+      repository.startScan(reappearedAt),
+      [listing],
+      [
+        successUpdate("panzhi", 1, "success", 1, reappearedAt),
+        ...failures
+      ],
+      reappearedAt
+    );
+
+    expect(repository.getListingHistory(listing.key, 20)).toMatchObject({
+      availability: "active",
+      observations: [
+        {
+          availability: "active",
+          changes: expect.arrayContaining([
+            {
+              field: "availability",
+              label: "在售状态",
+              before: "已下架",
+              after: "在售"
+            }
+          ])
+        },
+        expect.objectContaining({ availability: "removed" }),
+        expect.objectContaining({ availability: "active" })
+      ]
     });
   });
 

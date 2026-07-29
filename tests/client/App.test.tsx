@@ -16,6 +16,7 @@ import type {
 } from "../../src/client/api";
 import { httpScoutApi } from "../../src/client/api";
 import type { Listing, SourceId } from "../../src/domain/listing";
+import { buildListingHistorySnapshot } from "../../src/domain/listingHistory";
 import { makeListing, makeScore } from "../domain/listingFactory";
 
 function makeSourceStatus(
@@ -35,6 +36,7 @@ function makeSourceStatus(
     completion: "complete",
     error: null,
     stale: false,
+    anomaly: { state: "clear" },
     ...overrides
   };
 }
@@ -44,6 +46,7 @@ function makeApi({
   getSources = async () => sources,
   getListings = async () => [],
   getListing,
+  getListingHistory,
   startRefresh = async () => ({ runId: 1, state: "running" as const }),
   getRefreshStatus = async () => makeRefreshStatus(),
   getScanHistory = async () => ({ runs: [] })
@@ -52,6 +55,7 @@ function makeApi({
   getSources?: ScoutApi["getSources"];
   getListings?: ScoutApi["getListings"];
   getListing?: ScoutApi["getListing"];
+  getListingHistory?: ScoutApi["getListingHistory"];
   startRefresh?: ScoutApi["startRefresh"];
   getRefreshStatus?: ScoutApi["getRefreshStatus"];
   getScanHistory?: ScoutApi["getScanHistory"];
@@ -64,11 +68,24 @@ function makeApi({
       if (!listing) throw new Error("not found");
       return listing;
     });
+  const resolveHistory =
+    getListingHistory ??
+    (async (key: string) => {
+      const listing = await resolveListing(key);
+      return {
+        key,
+        source: listing.source,
+        availability: "active" as const,
+        lastSeenAt: listing.capturedAt,
+        observations: []
+      };
+    });
 
   return {
     getSources: vi.fn(getSources),
     getListings: vi.fn(getListings),
     getListing: vi.fn(resolveListing),
+    getListingHistory: vi.fn(resolveHistory),
     startRefresh: vi.fn(startRefresh),
     getRefreshStatus: vi.fn(getRefreshStatus),
     getScanHistory: vi.fn(getScanHistory)
@@ -171,6 +188,7 @@ describe("App shell", () => {
       await httpScoutApi.startRefresh();
       await httpScoutApi.getRefreshStatus();
       await httpScoutApi.getScanHistory(5);
+      await httpScoutApi.getListingHistory("panzhi:SA 123", 7);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -185,7 +203,8 @@ describe("App shell", () => {
       "/api/listings?view=all&status=rejected",
       "/api/refresh",
       "/api/refresh-status",
-      "/api/scan-history?limit=5"
+      "/api/scan-history?limit=5",
+      "/api/listings/panzhi%3ASA%20123/history?limit=7"
     ]);
     expect(fetchMock.mock.calls[5]?.[1]).toMatchObject({ method: "POST" });
   });
@@ -482,6 +501,35 @@ describe("App shell", () => {
     expect(within(detail).queryByText("111M")).not.toBeInTheDocument();
   });
 
+  it("loads listing history with detail and keeps detail on a history error", async () => {
+    const listing = makeListing({
+      key: "panzhi:history-detail",
+      sourceListingId: "HISTORY-DETAIL",
+      totalAssetsM: 777
+    });
+    const api = makeApi({
+      getListings: async () => [listing],
+      getListing: async () => listing,
+      getListingHistory: async () => {
+        throw new Error("历史服务暂不可用");
+      }
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(
+      await screen.findByRole("button", { name: /HISTORY-DETAIL/ })
+    );
+
+    const detail = screen.getByRole("complementary", {
+      name: "候选详情"
+    });
+    expect(within(detail).getByText("777M")).toBeInTheDocument();
+    expect(within(detail).getByText("历史服务暂不可用"))
+      .toBeInTheDocument();
+    expect(api.getListingHistory).toHaveBeenCalledWith(listing.key, 20);
+  });
+
   it("keeps the latest detail busy when a stale request rejects", async () => {
     const listingA = makeListing({
       key: "jiaoyimao:stale-detail",
@@ -591,11 +639,14 @@ describe("App shell", () => {
       totalAssetsM: 100,
       score: {
         ...makeScore(50, {
-          safety: 20,
-          skinValue: 10,
+          m7: 10,
+          redSkins: 0,
+          julang: 0,
           price: 10,
           assets: 5,
-          confidence: 5
+          secondRealName: 20,
+          recovery: 0,
+          verification: 0
         }),
         reasons: ["旧快照"]
       }
@@ -606,11 +657,14 @@ describe("App shell", () => {
       totalAssetsM: 999,
       score: {
         ...makeScore(95, {
-          safety: 30,
-          skinValue: 30,
+          m7: 30,
+          redSkins: 15,
+          julang: 15,
           price: 18,
           assets: 9,
-          confidence: 8
+          secondRealName: 40,
+          recovery: 35,
+          verification: 25
         }),
         reasons: ["新快照"]
       }
@@ -834,12 +888,12 @@ describe("App shell", () => {
     const highTotal = makeListing({
       key: "panzhi:total-high",
       sourceListingId: "TOTAL-HIGH",
-      score: makeScore(95, { skinValue: 12 })
+      score: { ...makeScore(95), value: 12 }
     });
     const highSkin = makeListing({
       key: "panzhi:skin-high",
       sourceListingId: "SKIN-HIGH",
-      score: makeScore(80, { skinValue: 29 })
+      score: { ...makeScore(80), value: 29 }
     });
     const user = userEvent.setup();
 
@@ -988,6 +1042,45 @@ describe("App shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("explains a quarantined volume drop without replacing trusted counts", async () => {
+    const api = makeApi({
+      sources: [
+        makeSourceStatus({
+          source: "panzhi",
+          state: "partial",
+          completion: "partial",
+          pagesScanned: 5,
+          itemCount: 44,
+          stopReason: "anomaly_guard",
+          error: "数据骤降待确认",
+          anomaly: {
+            state: "suspect",
+            baselineItemCount: 44,
+            baselinePagesScanned: 5,
+            observedItemCount: 10,
+            observedPagesScanned: 1,
+            confirmationCount: 1,
+            firstDetectedAt: "2026-07-29T10:00:00.000Z",
+            lastDetectedAt: "2026-07-29T10:00:00.000Z",
+            reason: "items_and_pages_drop"
+          }
+        })
+      ]
+    });
+
+    render(<App api={api} />);
+
+    const source = (await screen.findByText("盼之代售")).closest("article");
+    expect(source).not.toBeNull();
+    expect(within(source!).getByText("数据骤降待确认")).toBeInTheDocument();
+    expect(within(source!).getByText("本轮观测 10 条 / 1 页"))
+      .toBeInTheDocument();
+    expect(within(source!).getByText("继续使用可信快照 44 条 / 5 页"))
+      .toBeInTheDocument();
+    expect(within(source!).getByText("等待下一次完整扫描确认"))
+      .toBeInTheDocument();
+  });
+
   it("loads source states and opens complete candidate evidence", async () => {
     const listing = makeListing({
       key: "panzhi:SA2PEAK",
@@ -1003,11 +1096,14 @@ describe("App shell", () => {
       recoveryCoverage: false,
       score: {
         ...makeScore(87, {
-          safety: 28,
-          skinValue: 28,
+          m7: 29,
+          redSkins: 12,
+          julang: 15,
           price: 16,
           assets: 8,
-          confidence: 7
+          secondRealName: 40,
+          recovery: 0,
+          verification: 15
         }),
         reasons: ["安全信息 28.0/30", "价格合理性 16.0/20"]
       }
@@ -1054,6 +1150,13 @@ describe("App shell", () => {
       ]),
       getListings: vi.fn(async () => [listing]),
       getListing: vi.fn(async () => listing),
+      getListingHistory: vi.fn(async () => ({
+        key: listing.key,
+        source: listing.source,
+        availability: "active" as const,
+        lastSeenAt: listing.capturedAt,
+        observations: []
+      })),
       startRefresh: vi.fn(async () => ({
         runId: 1,
         state: "running" as const
@@ -1157,6 +1260,284 @@ describe("App shell", () => {
     expect(
       screen.getAllByRole("button", { name: /正在刷新/ })[0]
     ).toBeDisabled();
+  });
+
+  it("discovers an externally started refresh and reloads its new snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      let statusCall = 0;
+      let listingCall = 0;
+      const oldListing = makeListing({
+        key: "panzhi:external-old",
+        sourceListingId: "EXTERNAL-OLD"
+      });
+      const freshListing = makeListing({
+        key: "panzhi:external-new",
+        sourceListingId: "EXTERNAL-NEW"
+      });
+      const api = makeApi({
+        getListings: async () => {
+          listingCall += 1;
+          return listingCall === 1 ? [oldListing] : [freshListing];
+        },
+        getRefreshStatus: async () => {
+          statusCall += 1;
+          if (statusCall === 1) {
+            return makeRefreshStatus({
+              runId: 20,
+              state: "success",
+              finishedAt: "2026-07-29T09:00:00.000Z",
+              lastSnapshotAt: "2026-07-29T09:00:00.000Z"
+            });
+          }
+          if (statusCall === 2) {
+            return makeRefreshStatus({
+              runId: 21,
+              state: "running",
+              source: "pxb7",
+              phase: "list",
+              page: 2,
+              summaries: 18,
+              lastSnapshotAt: "2026-07-29T09:00:00.000Z"
+            });
+          }
+          return makeRefreshStatus({
+            runId: 21,
+            state: "success",
+            finishedAt: "2026-07-29T10:00:00.000Z",
+            lastSnapshotAt: "2026-07-29T10:00:00.000Z"
+          });
+        }
+      });
+
+      render(<App api={api} />);
+      await act(async () => undefined);
+      expect(screen.getByRole("button", {
+        name: /EXTERNAL-OLD/
+      })).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(screen.getByRole("status")).toHaveTextContent("螃蟹账号");
+      expect(screen.getByRole("status")).toHaveTextContent("18 商品");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(screen.getByRole("button", {
+        name: /EXTERNAL-NEW/
+      })).toBeInTheDocument();
+      expect(api.startRefresh).not.toHaveBeenCalled();
+      expect(api.getListings).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("checks on focus, preserves UI state, and ignores an unchanged snapshot", async () => {
+    let latestStatus = makeRefreshStatus({
+      runId: 30,
+      state: "success",
+      finishedAt: "2026-07-29T09:00:00.000Z",
+      lastSnapshotAt: "2026-07-29T09:00:00.000Z"
+    });
+    const api = makeApi({
+      getListings: async () => [makeListing()],
+      getRefreshStatus: async () => latestStatus
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await screen.findByRole("button", { name: /SA123/ });
+    await user.click(
+      screen.getByRole("button", { name: "全局 Top 30" })
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "候选排序" }),
+      "price"
+    );
+    const callsBeforeFocus = vi.mocked(api.getListings).mock.calls.length;
+
+    window.dispatchEvent(new Event("focus"));
+    await act(async () => undefined);
+    expect(api.getListings).toHaveBeenCalledTimes(callsBeforeFocus);
+
+    latestStatus = makeRefreshStatus({
+      runId: 31,
+      state: "success",
+      finishedAt: "2026-07-29T10:00:00.000Z",
+      lastSnapshotAt: "2026-07-29T10:00:00.000Z"
+    });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(api.getListings).toHaveBeenCalledTimes(callsBeforeFocus + 1)
+    );
+    expect(api.getListings).toHaveBeenLastCalledWith("pool", "global");
+    expect(
+      screen.getByRole("combobox", { name: "候选排序" })
+    ).toHaveValue("price");
+
+    window.dispatchEvent(new Event("focus"));
+    await act(async () => undefined);
+    expect(api.getListings).toHaveBeenCalledTimes(callsBeforeFocus + 1);
+  });
+
+  it("uses a BroadcastChannel message to discover an external refresh immediately", async () => {
+    let channel:
+      | {
+          onmessage: ((event: MessageEvent) => void) | null;
+        }
+      | undefined;
+    class BroadcastChannelStub {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(readonly name: string) {
+        channel = this;
+      }
+      postMessage() {}
+      close() {}
+    }
+    vi.stubGlobal("BroadcastChannel", BroadcastChannelStub);
+    let latestStatus = makeRefreshStatus({
+      runId: 40,
+      state: "success",
+      lastSnapshotAt: "2026-07-29T09:00:00.000Z"
+    });
+    const api = makeApi({
+      getRefreshStatus: async () => latestStatus
+    });
+    try {
+      render(<App api={api} />);
+      await act(async () => undefined);
+      const callsBeforeMessage = vi.mocked(api.getRefreshStatus).mock.calls
+        .length;
+      latestStatus = makeRefreshStatus({
+        runId: 41,
+        state: "running",
+        source: "jiaoyimao",
+        phase: "list",
+        page: 4,
+        summaries: 35,
+        lastSnapshotAt: "2026-07-29T09:00:00.000Z"
+      });
+
+      await act(async () => {
+        channel?.onmessage?.(new MessageEvent("message"));
+      });
+
+      expect(api.getRefreshStatus).toHaveBeenCalledTimes(
+        callsBeforeMessage + 1
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("交易猫");
+      expect(screen.getByRole("status")).toHaveTextContent("第 4 页");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("refreshes the selected account history after an external snapshot", async () => {
+    const listing = makeListing({
+      key: "panzhi:history-sync",
+      sourceListingId: "HISTORY-SYNC"
+    });
+    let latestStatus = makeRefreshStatus({
+      runId: 50,
+      state: "success",
+      lastSnapshotAt: "2026-07-29T09:00:00.000Z"
+    });
+    let historyCall = 0;
+    const api = makeApi({
+      getListings: async () => [listing],
+      getListing: async () => listing,
+      getListingHistory: async () => {
+        historyCall += 1;
+        const priceCny = historyCall === 1 ? 5_500 : 5_200;
+        return {
+          key: listing.key,
+          source: listing.source,
+          availability: "active" as const,
+          lastSeenAt:
+            historyCall === 1
+              ? "2026-07-29T09:00:00.000Z"
+              : "2026-07-29T10:00:00.000Z",
+          observations: [
+            {
+              runId: historyCall,
+              observedAt:
+                historyCall === 1
+                  ? "2026-07-29T09:00:00.000Z"
+                  : "2026-07-29T10:00:00.000Z",
+              availability: "active" as const,
+              priceCny,
+              snapshot: {
+                ...buildListingHistorySnapshot(listing),
+                priceCny
+              },
+              changes: []
+            }
+          ]
+        };
+      },
+      getRefreshStatus: async () => latestStatus
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(
+      await screen.findByRole("button", { name: /HISTORY-SYNC/ })
+    );
+    expect(await screen.findByText("¥5,500")).toBeInTheDocument();
+
+    latestStatus = makeRefreshStatus({
+      runId: 51,
+      state: "success",
+      lastSnapshotAt: "2026-07-29T10:00:00.000Z"
+    });
+    window.dispatchEvent(new Event("focus"));
+
+    expect(await screen.findByText("¥5,200")).toBeInTheDocument();
+    expect(api.getListingHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes a selected account that disappears from the latest snapshot", async () => {
+    const listing = makeListing({
+      key: "panzhi:removed-on-sync",
+      sourceListingId: "REMOVED-ON-SYNC"
+    });
+    let latestStatus = makeRefreshStatus({
+      runId: 60,
+      state: "success",
+      lastSnapshotAt: "2026-07-29T09:00:00.000Z"
+    });
+    let listingCall = 0;
+    const api = makeApi({
+      getListings: async () => {
+        listingCall += 1;
+        return listingCall === 1 ? [listing] : [];
+      },
+      getListing: async () => listing,
+      getRefreshStatus: async () => latestStatus
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(
+      await screen.findByRole("button", { name: /REMOVED-ON-SYNC/ })
+    );
+    expect(screen.getByRole("complementary", {
+      name: "候选详情"
+    })).toHaveTextContent("REMOVED-ON-SYNC");
+
+    latestStatus = makeRefreshStatus({
+      runId: 61,
+      state: "success",
+      lastSnapshotAt: "2026-07-29T10:00:00.000Z"
+    });
+    window.dispatchEvent(new Event("focus"));
+
+    expect(
+      await screen.findByText("该账号已不在最新在售快照")
+    ).toBeInTheDocument();
+    expect(screen.getByRole("complementary", {
+      name: "候选详情"
+    })).toHaveTextContent("选择左侧候选");
   });
 
   it("starts a background refresh, reloads on success, and clears progress", async () => {

@@ -2,6 +2,10 @@ import type {
   Listing,
   SourceId
 } from "../domain/listing";
+import type {
+  ListingFieldChange,
+  ListingHistorySnapshot
+} from "../domain/listingHistory";
 
 export type ListingView =
   | "pool"
@@ -39,6 +43,19 @@ export interface SourceStatusView {
   completion: SourceCompletion;
   error: string | null;
   stale: boolean;
+  anomaly:
+    | { state: "clear" }
+    | {
+        state: "suspect";
+        baselineItemCount: number;
+        baselinePagesScanned: number;
+        observedItemCount: number;
+        observedPagesScanned: number;
+        confirmationCount: number;
+        firstDetectedAt: string;
+        lastDetectedAt: string;
+        reason: string;
+      };
 }
 
 export type RefreshState =
@@ -86,7 +103,24 @@ export interface ScanHistoryResponse {
       globalCandidateCount: number;
       stopReason: string | null;
       error: string | null;
+      anomalyState: string;
+      published: boolean;
     }>;
+  }>;
+}
+
+export interface ListingHistoryView {
+  key: string;
+  source: SourceId;
+  availability: "active" | "removed" | "unknown";
+  lastSeenAt: string | null;
+  observations: Array<{
+    runId: number;
+    observedAt: string;
+    availability: "active" | "removed";
+    priceCny: number | null;
+    snapshot: ListingHistorySnapshot;
+    changes: ListingFieldChange[];
   }>;
 }
 
@@ -94,6 +128,7 @@ export interface ScoutApi {
   getSources(mode?: PoolMode): Promise<SourceStatusView[]>;
   getListings(view: ListingView, mode?: PoolMode): Promise<Listing[]>;
   getListing(key: string): Promise<Listing>;
+  getListingHistory(key: string, limit?: number): Promise<ListingHistoryView>;
   startRefresh(): Promise<{ runId: number; state: "running" }>;
   getRefreshStatus(): Promise<RefreshStatusView>;
   getScanHistory(limit?: number): Promise<ScanHistoryResponse>;
@@ -132,6 +167,10 @@ export const httpScoutApi: ScoutApi = {
   getListing: (key) =>
     requestJson<Listing>(
       `/api/listings/${encodeURIComponent(key)}`
+    ),
+  getListingHistory: (key, limit = 20) =>
+    requestJson<ListingHistoryView>(
+      `/api/listings/${encodeURIComponent(key)}/history?limit=${limit}`
     ),
   startRefresh: () =>
     requestJson<{ runId: number; state: "running" }>("/api/refresh", {

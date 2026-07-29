@@ -71,19 +71,32 @@ describe("ListingSchema", () => {
     });
   });
 
-  it("accepts the five-part recommendation score", () => {
+  it("accepts separate value, safety, quality and risk scores", () => {
     expect(
       ListingSchema.parse({
         ...validListing,
         score: {
           total: 70,
+          value: 80,
+          safety: 60,
+          dataQuality: 50,
+          riskLevel: "medium",
+          coverage: {
+            knownSafetySignals: 2,
+            totalSafetySignals: 3
+          },
           parts: {
-            safety: 20,
-            skinValue: 25,
+            m7: 29,
+            redSkins: 8,
+            julang: 15,
             price: 10,
             assets: 5,
-            confidence: 10
+            secondRealName: 40,
+            recovery: 0,
+            verification: 15
           },
+          valueReasons: [],
+          safetyReasons: [],
           reasons: []
         }
       }).score

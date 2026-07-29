@@ -556,11 +556,14 @@ describe("listing API", () => {
           sourceListingId: "low",
           score: {
             ...makeScore(61, {
-              safety: 20,
-              skinValue: 10,
+              m7: 10,
+              redSkins: 0,
+              julang: 0,
               price: 15,
               assets: 8,
-              confidence: 8
+              secondRealName: 20,
+              recovery: 0,
+              verification: 0
             }),
             reasons: ["较低"]
           }
@@ -570,11 +573,14 @@ describe("listing API", () => {
           sourceListingId: "high",
           score: {
             ...makeScore(88, {
-              safety: 28,
-              skinValue: 28,
+              m7: 29,
+              redSkins: 12,
+              julang: 15,
               price: 18,
               assets: 8,
-              confidence: 6
+              secondRealName: 40,
+              recovery: 35,
+              verification: 15
             }),
             reasons: ["较高"]
           }
@@ -613,6 +619,85 @@ describe("listing API", () => {
       key: listing.key,
       m7Evidence: listing.m7Evidence,
       score: null
+    });
+  });
+
+  it("returns trusted listing history and keeps removed listings queryable", async () => {
+    const { app, repository } = setup();
+    const listing = makeListing();
+    const firstAt = new Date("2026-07-29T10:00:00.000Z");
+    repository.commitScanRefresh(
+      repository.startScan(firstAt),
+      [listing],
+      [
+        {
+          ...successUpdateForApi("panzhi"),
+          itemCount: 1,
+          attemptedAt: firstAt
+        }
+      ],
+      firstAt
+    );
+
+    const active = await request(app).get(
+      `/api/listings/${encodeURIComponent(listing.key)}/history?limit=20`
+    );
+    expect(active.status).toBe(200);
+    expect(active.body).toMatchObject({
+      key: listing.key,
+      availability: "active",
+      observations: [
+        expect.objectContaining({
+          availability: "active",
+          priceCny: 1888
+        })
+      ]
+    });
+
+    const removedAt = new Date("2026-07-29T11:00:00.000Z");
+    repository.commitScanRefresh(
+      repository.startScan(removedAt),
+      [],
+      [
+        {
+          ...successUpdateForApi("panzhi"),
+          attemptedAt: removedAt
+        }
+      ],
+      removedAt
+    );
+    const removed = await request(app).get(
+      `/api/listings/${encodeURIComponent(listing.key)}/history`
+    );
+    expect(removed.status).toBe(200);
+    expect(removed.body).toMatchObject({
+      availability: "removed",
+      observations: [
+        expect.objectContaining({ availability: "removed" }),
+        expect.objectContaining({ availability: "active" })
+      ]
+    });
+  });
+
+  it("validates listing history limits and unknown keys", async () => {
+    const { app } = setup();
+
+    const invalid = await request(app).get(
+      "/api/listings/panzhi%3Amissing/history?limit=0"
+    );
+    expect(invalid.status).toBe(400);
+    expect(invalid.body).toEqual({
+      error: "invalid_history_limit",
+      message: "账号历史数量参数无效"
+    });
+
+    const missing = await request(app).get(
+      "/api/listings/panzhi%3Amissing/history"
+    );
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({
+      error: "listing_history_not_found",
+      message: "账号不存在或尚无可信历史"
     });
   });
 

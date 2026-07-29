@@ -1,14 +1,21 @@
 import { useEffect, useRef } from "react";
 import type { Listing } from "../../domain/listing";
+import type { ListingHistoryView } from "../api";
 import { ListingDetail } from "./ListingDetail";
 
 export function DetailDrawer({
   listing,
   loading,
+  history,
+  historyLoading,
+  historyError,
   onClose
 }: {
   listing: Listing;
   loading: boolean;
+  history: ListingHistoryView | null;
+  historyLoading: boolean;
+  historyError: string | null;
   onClose(): void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -55,6 +62,9 @@ export function DetailDrawer({
         <ListingDetail
           listing={listing}
           loading={loading}
+          history={history}
+          historyLoading={historyLoading}
+          historyError={historyError}
           onClose={onClose}
         />
       </div>

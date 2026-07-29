@@ -9,6 +9,7 @@ import type { Listing, SourceId } from "../domain/listing";
 import { matchesListingFilters } from "../domain/listingFilters";
 import {
   httpScoutApi,
+  type ListingHistoryView,
   type ListingView,
   type PoolMode,
   type RefreshStatusView,
@@ -97,6 +98,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [listingHistory, setListingHistory] =
+    useState<ListingHistoryView | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [selectionNotice, setSelectionNotice] =
+    useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshStatus, setRefreshStatus] =
     useState<RefreshStatusView | null>(null);
@@ -109,7 +116,14 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
+  const syncTimerRef = useRef<ReturnType<typeof setInterval> | null>(
+    null
+  );
+  const broadcastRef = useRef<BroadcastChannel | null>(null);
   const pollSequenceRef = useRef(0);
+  const knownRunIdRef = useRef<number | null>(null);
+  const knownSnapshotAtRef = useRef<string | null>(null);
+  const selectedKeyRef = useRef<string | null>(null);
   const mounted = useRef(false);
   const activeView = useRef<ListingView>(view);
   const activePoolMode = useRef<PoolMode>(poolMode);
@@ -120,11 +134,14 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     async (
       requestedView: ListingView,
       requestedMode: PoolMode,
-      options: { preserveOnError?: boolean } = {}
+      options: {
+        preserveOnError?: boolean;
+        refreshSelection?: boolean;
+      } = {}
     ) => {
       if (!mounted.current) return;
       const requestSequence = ++loadSequence.current;
-      detailSequence.current += 1;
+      const detailRequestSequence = ++detailSequence.current;
       setDetailLoading(false);
       if (!options.preserveOnError) setLoading(true);
       setError(null);
@@ -139,12 +156,51 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         ) return;
         setSources(nextSources);
         setListings(nextListings);
-        setSelected((current) => {
-          if (!current) return null;
-          return (
-            nextListings.find(({ key }) => key === current.key) ?? null
-          );
-        });
+        const selectedKey = selectedKeyRef.current;
+        const nextSelected =
+          selectedKey === null
+            ? null
+            : (nextListings.find(({ key }) => key === selectedKey) ??
+              null);
+        setSelected(nextSelected);
+        if (selectedKey !== null && nextSelected === null) {
+          selectedKeyRef.current = null;
+          setListingHistory(null);
+          setHistoryError(null);
+          setHistoryLoading(false);
+          setDrawerOpen(false);
+          if (options.refreshSelection) {
+            setSelectionNotice("该账号已不在最新在售快照");
+          }
+        } else if (nextSelected && options.refreshSelection) {
+          setSelectionNotice(null);
+          setHistoryLoading(true);
+          setHistoryError(null);
+          const historyResult = await api
+            .getListingHistory(nextSelected.key, 20)
+            .then(
+              (value) => ({ status: "fulfilled" as const, value }),
+              (reason: unknown) => ({
+                status: "rejected" as const,
+                reason
+              })
+            );
+          if (
+            !mounted.current ||
+            requestSequence !== loadSequence.current ||
+            detailRequestSequence !== detailSequence.current
+          ) return;
+          if (historyResult.status === "fulfilled") {
+            setListingHistory(historyResult.value);
+          } else {
+            setHistoryError(
+              historyResult.reason instanceof Error
+                ? historyResult.reason.message
+              : "账号历史读取失败"
+            );
+          }
+          setHistoryLoading(false);
+        }
       } catch (cause) {
         if (
           !mounted.current ||
@@ -153,6 +209,10 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         if (!options.preserveOnError) {
           setListings([]);
           setSelected(null);
+          selectedKeyRef.current = null;
+          setListingHistory(null);
+          setHistoryError(null);
+          setHistoryLoading(false);
         }
         setError(
           cause instanceof Error
@@ -206,6 +266,8 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       if (!mounted.current || sequence !== pollSequenceRef.current) return;
       setRefreshStatus(status);
       setTransportWarning(null);
+      knownRunIdRef.current = status.runId;
+      knownSnapshotAtRef.current = status.lastSnapshotAt;
 
       if (status.state === "running" || status.state === "idle") {
         schedulePoll(sequence, 0, 1_000);
@@ -215,7 +277,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       stopPolling();
       if (status.state === "success" || status.state === "partial") {
         await load(activeView.current, activePoolMode.current, {
-          preserveOnError: true
+          preserveOnError: true,
+          refreshSelection: true
+        });
+        broadcastRef.current?.postMessage({
+          type: "refresh-state-changed",
+          runId: status.runId
         });
       }
     } catch (cause) {
@@ -247,19 +314,86 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   useEffect(() => {
     mounted.current = true;
     void load("pool", "balanced");
-    void api.getRefreshStatus()
-      .then((status) => {
-        if (!mounted.current || status.state !== "running") return;
-        resumePolling(status);
-      })
-      .catch(() => undefined);
+    let disposed = false;
+
+    async function synchronizeStatus(initial = false) {
+      if (!initial && refreshInFlight.current) return;
+      try {
+        const status = await api.getRefreshStatus();
+        if (disposed || !mounted.current) return;
+        const changedRun = status.runId !== knownRunIdRef.current;
+        const changedSnapshot =
+          status.lastSnapshotAt !== knownSnapshotAtRef.current;
+        knownRunIdRef.current = status.runId;
+        knownSnapshotAtRef.current = status.lastSnapshotAt;
+
+        if (status.state === "running") {
+          if (!refreshInFlight.current) {
+            resumePolling(status);
+          } else {
+            setRefreshStatus(status);
+          }
+          return;
+        }
+        if (initial) {
+          setRefreshStatus(status.state === "idle" ? null : status);
+          return;
+        }
+        if (
+          (changedRun || changedSnapshot) &&
+          (status.state === "success" || status.state === "partial")
+        ) {
+          setRefreshStatus(status);
+          await load(activeView.current, activePoolMode.current, {
+            preserveOnError: true,
+            refreshSelection: true
+          });
+        }
+      } catch {
+        // The active refresh poll owns visible transport warnings.
+      }
+    }
+
+    const handleFocus = () => {
+      void synchronizeStatus();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void synchronizeStatus();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+    if (typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel("delta-account-scout-refresh");
+      channel.onmessage = () => {
+        void synchronizeStatus();
+      };
+      broadcastRef.current = channel;
+    }
+    syncTimerRef.current = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void synchronizeStatus();
+      }
+    }, 5_000);
+    void synchronizeStatus(true);
+
     return () => {
+      disposed = true;
       mounted.current = false;
       loadSequence.current += 1;
       detailSequence.current += 1;
       refreshInFlight.current = false;
       pollSequenceRef.current += 1;
       clearPollTimer();
+      if (syncTimerRef.current !== null) {
+        clearInterval(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      broadcastRef.current?.close();
+      broadcastRef.current = null;
     };
   }, [api, load]);
 
@@ -296,32 +430,40 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
 
   async function selectListing(listing: Listing) {
     const requestSequence = ++detailSequence.current;
+    selectedKeyRef.current = listing.key;
     setSelected(listing);
+    setSelectionNotice(null);
+    setListingHistory(null);
+    setHistoryError(null);
     if (narrowLayout) setDrawerOpen(true);
     setDetailLoading(true);
-    try {
-      const detail = await api.getListing(listing.key);
-      if (
-        !mounted.current ||
-        requestSequence !== detailSequence.current
-      ) return;
-      setSelected(detail);
-    } catch {
-      if (
-        !mounted.current ||
-        requestSequence !== detailSequence.current
-      ) return;
+    setHistoryLoading(true);
+    const [detailResult, historyResult] = await Promise.allSettled([
+      api.getListing(listing.key),
+      api.getListingHistory(listing.key, 20)
+    ]);
+    if (
+      !mounted.current ||
+      requestSequence !== detailSequence.current
+    ) return;
+    if (detailResult.status === "fulfilled") {
+      setSelected(detailResult.value);
+    } else {
       setSelected((current) =>
         current?.key === listing.key ? listing : current
       );
-    } finally {
-      if (
-        mounted.current &&
-        requestSequence === detailSequence.current
-      ) {
-        setDetailLoading(false);
-      }
     }
+    if (historyResult.status === "fulfilled") {
+      setListingHistory(historyResult.value);
+    } else {
+      setHistoryError(
+        historyResult.reason instanceof Error
+          ? historyResult.reason.message
+          : "账号历史读取失败"
+      );
+    }
+    setDetailLoading(false);
+    setHistoryLoading(false);
   }
 
   async function refresh() {
@@ -337,6 +479,11 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       const started = await api.startRefresh();
       if (!mounted.current) return;
       const sequence = ++pollSequenceRef.current;
+      knownRunIdRef.current = started.runId;
+      broadcastRef.current?.postMessage({
+        type: "refresh-state-changed",
+        runId: started.runId
+      });
       setRefreshStatus({
         runId: started.runId,
         state: "running",
@@ -443,6 +590,11 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           setPoolMode(nextMode);
           setListings([]);
           setSelected(null);
+          selectedKeyRef.current = null;
+          setListingHistory(null);
+          setHistoryError(null);
+          setHistoryLoading(false);
+          setSelectionNotice(null);
           setDrawerOpen(false);
           setDetailLoading(false);
           setError(null);
@@ -464,6 +616,11 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           setView(nextView);
           setListings([]);
           setSelected(null);
+          selectedKeyRef.current = null;
+          setListingHistory(null);
+          setHistoryError(null);
+          setHistoryLoading(false);
+          setSelectionNotice(null);
           setDrawerOpen(false);
           setDetailLoading(false);
           setError(null);
@@ -480,6 +637,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         <section className="snapshot-warning" role="alert">
           <strong>无法读取最新快照，继续展示现有候选</strong>
           <span>{error}</span>
+        </section>
+      ) : null}
+      {selectionNotice ? (
+        <section className="snapshot-warning" role="alert">
+          <strong>{selectionNotice}</strong>
+          <span>可在账号历史中查看最近一次可信记录。</span>
         </section>
       ) : null}
 
@@ -560,7 +723,13 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           )}
         </div>
         {!narrowLayout ? (
-          <ListingDetail listing={selected} loading={detailLoading} />
+          <ListingDetail
+            listing={selected}
+            loading={detailLoading}
+            history={listingHistory}
+            historyLoading={historyLoading}
+            historyError={historyError}
+          />
         ) : null}
       </div>
 
@@ -568,6 +737,9 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         <DetailDrawer
           listing={selected}
           loading={detailLoading}
+          history={listingHistory}
+          historyLoading={historyLoading}
+          historyError={historyError}
           onClose={closeDrawer}
         />
       ) : null}

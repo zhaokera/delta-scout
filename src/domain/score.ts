@@ -30,55 +30,87 @@ function percentile(
   return value === null ? 0 : (percentiles.get(value) ?? 0);
 }
 
-function safetyScore(listing: Listing, now: Date): number {
-  let score = 0;
-  if (listing.secondRealNameAvailable === true) {
-    score += 12;
-  }
-  if (listing.recoveryCoverage === true) {
-    score += 8;
-  }
-  if (listing.verificationAt !== null) {
-    const ageDays = Math.max(
-      0,
-      (now.getTime() - Date.parse(listing.verificationAt)) / 86_400_000
-    );
-    score += ageDays <= 7 ? 10 : ageDays <= 30 ? 6 : 2;
-  }
-  return score;
-}
-
 const QUALITY_POINTS = {
-  S: 14,
-  A: 11,
-  B: 8,
-  C: 5
+  S: 35,
+  A: 29,
+  B: 23,
+  C: 17
 } as const;
 
-function skinValueScore(listing: Listing): number {
-  const scoredRedSkinCount =
-    listing.redSkins.length > 4 ? 4 : listing.redSkins.length;
-  return (
-    (listing.m7PrismQuality === null
-      ? 0
-      : QUALITY_POINTS[listing.m7PrismQuality]) +
-    scoredRedSkinCount * 2.5 +
-    (listing.julangStatus === "owned" ? 6 : 0)
+function verificationAgeDays(listing: Listing, now: Date): number | null {
+  if (listing.verificationAt === null) return null;
+  return Math.max(
+    0,
+    (now.getTime() - Date.parse(listing.verificationAt)) / 86_400_000
   );
 }
 
-function skinValueReason(listing: Listing): string {
+function m7ValueReason(listing: Listing): string {
   const quality =
     listing.m7PrismQuality === null
       ? "极品品质待核验"
       : `M7 极品${listing.m7PrismQuality}`;
-  const julang =
-    listing.julangStatus === "owned"
-      ? "巨浪已拥有"
-      : listing.julangStatus === "absent"
-        ? "巨浪明确没有"
-        : "巨浪待核验";
-  return `${quality}；${listing.redSkins.length} 个已识别角色红皮；${julang}`;
+  return quality;
+}
+
+function safetyParts(listing: Listing, now: Date) {
+  const verificationAge = verificationAgeDays(listing, now);
+  return {
+    secondRealName:
+      listing.secondRealNameAvailable === true ? 40 : 0,
+    recovery: listing.recoveryCoverage === true ? 35 : 0,
+    verification:
+      verificationAge === null
+        ? 0
+        : verificationAge <= 7
+          ? 25
+          : verificationAge <= 30
+            ? 15
+            : 5,
+    verificationAge
+  };
+}
+
+function safetyCoverage(listing: Listing): number {
+  return [
+    listing.secondRealNameAvailable,
+    listing.recoveryCoverage,
+    listing.verificationAt
+  ].filter((value) => value !== null).length;
+}
+
+function riskLevel(
+  listing: Listing,
+  safety: number,
+  knownSafetySignals: number,
+  verificationAge: number | null
+): Score["riskLevel"] {
+  if (
+    listing.secondRealNameAvailable === false ||
+    listing.recoveryCoverage === false ||
+    listing.banNotes.length > 0
+  ) {
+    return "high";
+  }
+  if (knownSafetySignals === 0) return "unknown";
+  if (
+    knownSafetySignals < 3 ||
+    verificationAge === null ||
+    verificationAge > 30 ||
+    safety < 75
+  ) {
+    return "medium";
+  }
+  return "low";
+}
+
+function booleanSafetyReason(
+  value: boolean | null,
+  positive: string,
+  negative: string,
+  unknown: string
+): string {
+  return value === true ? positive : value === false ? negative : unknown;
 }
 
 function scoreOne(
@@ -96,22 +128,94 @@ function scoreOne(
     percentile(listing.totalAssetsM, stats.totalAssets) * 6 +
     percentile(listing.hafCoins, stats.hafCoins) * 3 +
     (hasAssets ? 1 : 0);
-  const safety = safetyScore(listing, now);
-  const skinValue = skinValueScore(listing);
-  const confidence = (listing.confidence / 100) * 10;
-  const total = Math.round(
-    safety + skinValue + price + assets + confidence
+  const m7 =
+    listing.m7PrismQuality === null
+      ? 0
+      : QUALITY_POINTS[listing.m7PrismQuality];
+  const scoredRedSkinCount =
+    listing.redSkins.length > 5 ? 5 : listing.redSkins.length;
+  const redSkins = scoredRedSkinCount * 4;
+  const julang = listing.julangStatus === "owned" ? 15 : 0;
+  const value = m7 + redSkins + julang + price + assets;
+  const safetyPartValues = safetyParts(listing, now);
+  const safety =
+    safetyPartValues.secondRealName +
+    safetyPartValues.recovery +
+    safetyPartValues.verification;
+  const knownSafetySignals = safetyCoverage(listing);
+  const dataQuality = listing.confidence;
+  const calculatedRisk = riskLevel(
+    listing,
+    safety,
+    knownSafetySignals,
+    safetyPartValues.verificationAge
   );
+  const total = Math.round(
+    value * 0.55 + safety * 0.35 + dataQuality * 0.1
+  );
+  const julangReason =
+    listing.julangStatus === "owned"
+      ? "巨浪已拥有"
+      : listing.julangStatus === "absent"
+        ? "巨浪明确没有"
+        : "巨浪待核验";
+  const verificationReason =
+    safetyPartValues.verificationAge === null
+      ? "验号时间待核验"
+      : `验号距今 ${Math.floor(safetyPartValues.verificationAge)} 天`;
+  const valueReasons = [
+    `${m7ValueReason(listing)}，价值 ${m7.toFixed(1)}/35`,
+    `${listing.redSkins.length} 个已识别角色红皮，价值 ${redSkins.toFixed(1)}/20`,
+    `${julangReason}，价值 ${julang.toFixed(1)}/15`,
+    `价格合理性 ${price.toFixed(1)}/20`,
+    `可核验资产 ${assets.toFixed(1)}/10`
+  ];
+  const safetyReasons = [
+    booleanSafetyReason(
+      listing.secondRealNameAvailable,
+      "可二次实名",
+      "不可二次实名",
+      "二次实名待核验"
+    ),
+    booleanSafetyReason(
+      listing.recoveryCoverage,
+      "支持找回包赔",
+      "明确无包赔",
+      "找回保障待核验"
+    ),
+    verificationReason,
+    ...(listing.banNotes.length > 0
+      ? [`存在封禁备注：${listing.banNotes.join("；")}`]
+      : [])
+  ];
 
   return {
     total,
-    parts: { safety, skinValue, price, assets, confidence },
+    value,
+    safety,
+    dataQuality,
+    riskLevel: calculatedRisk,
+    coverage: {
+      knownSafetySignals,
+      totalSafetySignals: 3
+    },
+    parts: {
+      m7,
+      redSkins,
+      julang,
+      price,
+      assets,
+      secondRealName: safetyPartValues.secondRealName,
+      recovery: safetyPartValues.recovery,
+      verification: safetyPartValues.verification
+    },
+    valueReasons,
+    safetyReasons,
     reasons: [
-      `安全信息 ${safety.toFixed(1)}/30`,
-      `皮肤价值 ${skinValue.toFixed(1)}/30（${skinValueReason(listing)}）`,
-      `价格合理性 ${price.toFixed(1)}/20`,
-      `可核验资产 ${assets.toFixed(1)}/10`,
-      `数据置信度 ${confidence.toFixed(1)}/10`
+      `账号价值 ${value.toFixed(1)}/100`,
+      `购买安全 ${safety.toFixed(1)}/100`,
+      `数据完整度 ${dataQuality.toFixed(1)}/100`,
+      `综合分 = 价值 55% + 安全 35% + 数据 10%`
     ]
   };
 }

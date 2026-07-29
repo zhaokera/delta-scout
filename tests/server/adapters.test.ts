@@ -678,6 +678,34 @@ describe("jiaoyimao adapter", () => {
 });
 
 describe("pxb7 adapter", () => {
+  it("accepts the current official Nuxt shell when catalog links are client-rendered", () => {
+    const result = pxb7Adapter.discoverCatalog(
+      `
+        <html>
+          <head>
+            <meta name="keywords" content="螃蟹账号交易平台,游戏账号交易">
+            <script type="module"
+              src="https://g.pxb7.com/pc/version/2_10_16/entry.B0ryMWOO.js">
+            </script>
+          </head>
+          <body>
+            <div id="__nuxt"></div>
+            <div id="teleports"></div>
+            <script>
+              window.__NUXT__={};
+              window.__NUXT__.config={public:{baseUrl:"https://api-pc.pxb7.com"}};
+            </script>
+          </body>
+        </html>
+      `,
+      "三角洲行动"
+    );
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected PXB discovery");
+    expect(result.request.url).toContain("selectSearchPageList");
+  });
+
   it("ignores an earlier same-name promo link and verifies the exact catalog", () => {
     const result = pxb7Adapter.discoverCatalog(
       `
