@@ -659,6 +659,104 @@ describe("App shell", () => {
     expect(api.getListings).toHaveBeenCalledTimes(1);
   });
 
+  it("filters by M7 quality, named red skins, evidence, stability, and unknown 巨浪", async () => {
+    const target = makeListing({
+      key: "panzhi:advanced-target",
+      sourceListingId: "ADVANCED-TARGET",
+      m7PrismQuality: "S",
+      redSkins: ["HackClaw", "威龙", "露娜", "红狼"],
+      redSkinCount: 4,
+      julangStatus: "unknown",
+      scanStability: "stable",
+      consecutiveUnchangedScans: 3
+    });
+    const other = makeListing({
+      key: "panzhi:advanced-other",
+      sourceListingId: "ADVANCED-OTHER",
+      m7PrismQuality: "A",
+      redSkins: ["威龙"],
+      redSkinCount: 1,
+      julangStatus: "owned",
+      verificationAt: null,
+      scanStability: "changed"
+    });
+    const user = userEvent.setup();
+
+    render(<App api={makeApi({
+      getListings: async () => [target, other]
+    })} />);
+
+    expect(await screen.findByRole("button", {
+      name: /ADVANCED-TARGET/
+    })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /高级筛选/ }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "M7 品质" }),
+      "S"
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "最少已识别角色红皮" }),
+      "4"
+    );
+    await user.type(
+      screen.getByRole("searchbox", { name: "红皮角色" }),
+      " hackclaw "
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "巨浪" }),
+      "unknown"
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "证据完整度" }),
+      "complete"
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "稳定性" }),
+      "stable"
+    );
+
+    expect(screen.getByRole("button", {
+      name: /ADVANCED-TARGET/
+    })).toBeInTheDocument();
+    expect(screen.queryByRole("button", {
+      name: /ADVANCED-OTHER/
+    })).not.toBeInTheDocument();
+    expect(screen.getByText("高级筛选显示 1 / 2")).toBeInTheDocument();
+  });
+
+  it("sorts candidates by skin value", async () => {
+    const highTotal = makeListing({
+      key: "panzhi:total-high",
+      sourceListingId: "TOTAL-HIGH",
+      score: makeScore(95, { skinValue: 12 })
+    });
+    const highSkin = makeListing({
+      key: "panzhi:skin-high",
+      sourceListingId: "SKIN-HIGH",
+      score: makeScore(80, { skinValue: 29 })
+    });
+    const user = userEvent.setup();
+
+    render(<App api={makeApi({
+      getListings: async () => [highTotal, highSkin]
+    })} />);
+
+    const listingPanel = await screen.findByRole("region", {
+      name: "账号候选列表"
+    });
+    expect(within(listingPanel).getAllByRole("button")[0]).toHaveAccessibleName(
+      expect.stringContaining("TOTAL-HIGH")
+    );
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "候选排序" }),
+      "skinValue"
+    );
+    expect(within(listingPanel).getAllByRole("button")[0]).toHaveAccessibleName(
+      expect.stringContaining("SKIN-HIGH")
+    );
+  });
+
   it("separates filtered-out results from a truly empty view", async () => {
     const listing = makeListing({
       key: "jiaoyimao:filter-reset",
@@ -875,7 +973,9 @@ describe("App shell", () => {
     ).toBeInTheDocument();
     expect(within(detail).getByText("威龙 · 骇爪 · 红狼")).toBeInTheDocument();
     expect(within(detail).getByText("31,880,000")).toBeInTheDocument();
-    expect(within(detail).getByText("M7 棱镜攻势 极品")).toBeInTheDocument();
+    expect(detail.querySelector("blockquote")).toHaveTextContent(
+      "M7 棱镜攻势 极品"
+    );
     expect(
       within(detail).getByRole("link", { name: "前往盼之核验" })
     ).toHaveAttribute("target", "_blank");

@@ -6,6 +6,7 @@ import {
   useState
 } from "react";
 import type { Listing, SourceId } from "../domain/listing";
+import { matchesListingFilters } from "../domain/listingFilters";
 import {
   httpScoutApi,
   type ListingView,
@@ -26,7 +27,11 @@ const DEFAULT_FILTERS: AdvancedFilters = {
   secondRealName: false,
   recoveryCoverage: false,
   redSkin: "",
-  julang: "all"
+  julang: "all",
+  m7Quality: "all",
+  minRedSkinCount: 0,
+  evidenceCompleteness: "all",
+  stability: "all"
 };
 
 const EMPTY_STATES: Record<
@@ -54,22 +59,6 @@ const EMPTY_STATES: Record<
       "当前快照中没有明确违反硬条件而被淘汰的记录。"
   }
 };
-
-function matchesFilters(
-  listing: Listing,
-  filters: AdvancedFilters
-): boolean {
-  return (
-    (filters.source === "all" || listing.source === filters.source) &&
-    (!filters.secondRealName ||
-      listing.secondRealNameAvailable === true) &&
-    (!filters.recoveryCoverage || listing.recoveryCoverage === true) &&
-    (!filters.redSkin ||
-      listing.redSkins.some((name) => name.includes(filters.redSkin))) &&
-    (filters.julang === "all" ||
-      listing.julangStatus === filters.julang)
-  );
-}
 
 export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [sources, setSources] = useState<SourceStatusView[]>([]);
@@ -145,7 +134,10 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   }, [load, view]);
 
   const visibleListings = useMemo(
-    () => listings.filter((listing) => matchesFilters(listing, filters)),
+    () =>
+      listings.filter((listing) =>
+        matchesListingFilters(listing, filters)
+      ),
     [filters, listings]
   );
   const sourceContributions = useMemo<Record<SourceId, number>>(

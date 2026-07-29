@@ -28,6 +28,12 @@ function money(value: number | null): string {
 
 function sortListings(listings: Listing[], sort: SortKey): Listing[] {
   return [...listings].sort((left, right) => {
+    if (sort === "skinValue") {
+      return (
+        (right.score?.parts.skinValue ?? -1) -
+        (left.score?.parts.skinValue ?? -1)
+      );
+    }
     if (sort === "price") {
       return (left.priceCny ?? Infinity) - (right.priceCny ?? Infinity);
     }

@@ -1,4 +1,5 @@
 import type { Listing } from "../../domain/listing";
+import { buildEvidenceExcerpt } from "../../domain/evidenceExcerpt";
 
 const SOURCE_LABELS = {
   jiaoyimao: "交易猫",
@@ -31,6 +32,10 @@ function m7StatusLabel(listing: Listing): string {
   return "待人工核验";
 }
 
+function scorePart(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 export function ListingDetail({
   listing,
   loading
@@ -47,6 +52,10 @@ export function ListingDetail({
       </aside>
     );
   }
+
+  const m7Excerpt = buildEvidenceExcerpt(
+    listing.m7Evidence[0]?.text ?? "待人工核验"
+  );
 
   return (
     <aside className="detail-panel" aria-label="候选详情" aria-busy={loading}>
@@ -72,7 +81,19 @@ export function ListingDetail({
           </p>
         ) : null}
         <blockquote>
-          {listing.m7Evidence[0]?.text ?? "待人工核验"}
+          {m7Excerpt.leadingEllipsis ? "…" : null}
+          {m7Excerpt.segments.map((segment, index) =>
+            segment.highlighted ? (
+              <mark key={`${index}:${segment.text}`}>
+                {segment.text}
+              </mark>
+            ) : (
+              <span key={`${index}:${segment.text}`}>
+                {segment.text}
+              </span>
+            )
+          )}
+          {m7Excerpt.trailingEllipsis ? "…" : null}
         </blockquote>
       </section>
 
@@ -158,6 +179,17 @@ export function ListingDetail({
       {listing.score ? (
         <section className="score-breakdown">
           <span>评分依据</span>
+          <div className="score-parts">
+            <p>安全信息 {scorePart(listing.score.parts.safety)} / 30</p>
+            <p>
+              皮肤价值 {scorePart(listing.score.parts.skinValue)} / 30
+            </p>
+            <p>价格 {scorePart(listing.score.parts.price)} / 20</p>
+            <p>资产 {scorePart(listing.score.parts.assets)} / 10</p>
+            <p>
+              置信度 {scorePart(listing.score.parts.confidence)} / 10
+            </p>
+          </div>
           {listing.score.reasons.map((reason) => (
             <p key={reason}>{reason}</p>
           ))}

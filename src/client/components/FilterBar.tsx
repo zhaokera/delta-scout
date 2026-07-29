@@ -1,16 +1,16 @@
 import type { KeyboardEvent } from "react";
 import type { SourceId } from "../../domain/listing";
+import type { ListingFilters } from "../../domain/listingFilters";
 import type { ListingView } from "../api";
 
-export type SortKey = "score" | "price" | "assets" | "confidence";
+export type SortKey =
+  | "score"
+  | "skinValue"
+  | "price"
+  | "assets"
+  | "confidence";
 
-export interface AdvancedFilters {
-  source: SourceId | "all";
-  secondRealName: boolean;
-  recoveryCoverage: boolean;
-  redSkin: string;
-  julang: "all" | "owned" | "absent";
-}
+export type AdvancedFilters = ListingFilters;
 
 interface FilterBarProps {
   view: ListingView;
@@ -89,6 +89,7 @@ export function FilterBar(props: FilterBarProps) {
               }
             >
               <option value="score">推荐分</option>
+              <option value="skinValue">皮肤价值高优先</option>
               <option value="price">价格低优先</option>
               <option value="assets">总资产高优先</option>
               <option value="confidence">置信度高优先</option>
@@ -164,6 +165,45 @@ export function FilterBar(props: FilterBarProps) {
             />
           </label>
           <label>
+            <span>M7 品质</span>
+            <select
+              value={props.filters.m7Quality}
+              onChange={(event) =>
+                props.onFiltersChange({
+                  ...props.filters,
+                  m7Quality:
+                    event.target.value as AdvancedFilters["m7Quality"]
+                })
+              }
+            >
+              <option value="all">不限</option>
+              <option value="S">S</option>
+              <option value="A">A</option>
+              <option value="B">B</option>
+              <option value="C">C</option>
+            </select>
+          </label>
+          <label>
+            <span>最少已识别角色红皮</span>
+            <select
+              value={props.filters.minRedSkinCount}
+              onChange={(event) =>
+                props.onFiltersChange({
+                  ...props.filters,
+                  minRedSkinCount: Number(
+                    event.target.value
+                  ) as AdvancedFilters["minRedSkinCount"]
+                })
+              }
+            >
+              <option value="0">不限</option>
+              <option value="1">至少 1 个</option>
+              <option value="2">至少 2 个</option>
+              <option value="3">至少 3 个</option>
+              <option value="4">至少 4 个</option>
+            </select>
+          </label>
+          <label>
             <span>巨浪</span>
             <select
               value={props.filters.julang}
@@ -177,6 +217,43 @@ export function FilterBar(props: FilterBarProps) {
               <option value="all">不限</option>
               <option value="owned">有巨浪</option>
               <option value="absent">无巨浪</option>
+              <option value="unknown">待核验</option>
+            </select>
+          </label>
+          <label>
+            <span>证据完整度</span>
+            <select
+              value={props.filters.evidenceCompleteness}
+              onChange={(event) =>
+                props.onFiltersChange({
+                  ...props.filters,
+                  evidenceCompleteness:
+                    event.target
+                      .value as AdvancedFilters["evidenceCompleteness"]
+                })
+              }
+            >
+              <option value="all">不限</option>
+              <option value="complete">关键字段完整</option>
+              <option value="unknown">有未知字段</option>
+            </select>
+          </label>
+          <label>
+            <span>稳定性</span>
+            <select
+              value={props.filters.stability}
+              onChange={(event) =>
+                props.onFiltersChange({
+                  ...props.filters,
+                  stability:
+                    event.target.value as AdvancedFilters["stability"]
+                })
+              }
+            >
+              <option value="all">不限</option>
+              <option value="stable">连续稳定</option>
+              <option value="new">首次发现</option>
+              <option value="changed">本轮有变化</option>
             </select>
           </label>
           <button className="reset-button" type="button" onClick={props.onReset}>
