@@ -146,7 +146,7 @@ SQLite 幂等增加三张表：
 ```text
 scan_runs
   id INTEGER PRIMARY KEY AUTOINCREMENT
-  started_at, finished_at, state, error
+  started_at, finished_at, state, error, is_baseline
 
 scan_source_results
   PRIMARY KEY (run_id, source)
@@ -170,7 +170,21 @@ listing_observations
 `scan_source_results` 对 `(run_id, source)` 唯一，`listing_observations` 对
 `(run_id, listing_key)` 唯一，并为 `(listing_key, run_id DESC)` 和
 `(source, run_id DESC)` 建索引。`state`、`source` 和计数列使用数据库 CHECK 约束；
-计数非负。只保留最近 50 次扫描及其来源结果和观察记录，提交成功后删除更老
+计数非负。`is_baseline` 只能为 0 或 1，正常刷新恒为 0。
+
+升级旧数据库时，如果尚无 `scan_runs`，但 `listings` 中存在某个
+`source_status.state === "success"` 来源的旧快照，则迁移事务创建一条隐藏的
+`is_baseline=1` 兼容基线：
+
+- 为每个旧 success 来源写一条 success 的 `scan_source_results`；
+- 为该来源每个旧 Listing 计算物质指纹并写入 `listing_observations`；
+- 基线观察使用 `stability=unknown`、`consecutive_unchanged_scans=1`；
+- 基线时间取这些来源已有 `last_success_at` 的最大值，无可用时间时取迁移时间；
+- partial/blocked/failed/idle 来源不进入兼容基线。
+
+该基线持久存在且不由后续 partial 快照覆盖，因此升级后的第一次刷新即使是 partial，
+下一次完整 success 仍能找到正确的旧 success 观察。它不出现在历史 API，也不计入
+“最近 50 次”限制。正常 `is_baseline=0` 扫描只保留最近 50 次，提交成功后删除更老
 `scan_runs`，子表通过级联删除，防止本地数据库无限增长。
 
 ### 物质变化指纹
@@ -202,8 +216,8 @@ consecutiveUnchangedScans: number;
 
 - 查找该来源紧邻的上一次完整成功扫描，而不是任意 partial 扫描；
 - 如果没有任何历史成功扫描且当前数据库没有该来源旧快照：`new / 1`；
-- 如果没有历史表记录，但迁移前数据库存在状态为 success 的该来源旧快照，把旧
-  快照视为一次兼容基线：同指纹为 `stable / 2`，不同为 `changed / 1`；
+- 如果存在上述隐藏兼容基线，把基线当作上一次完整 success：同指纹为
+  `stable / 2`，不同为 `changed / 1`；
 - 如果上一次完整成功扫描没有该 listing key，本轮再次出现时为 `new / 1`，此前
   更早的连续次数不继承；
 - 如果上次完整成功扫描存在该 key 但指纹不同：`changed / 1`；
@@ -221,7 +235,8 @@ API 增加：
 GET /api/scan-history?limit=10
 ```
 
-`limit` 范围 1–50，默认 10；无效值返回 HTTP 400 `invalid_history_limit`。响应：
+`limit` 范围 1–50，默认 10；无效值返回 HTTP 400 `invalid_history_limit`。查询
+必须排除 `is_baseline=1`。响应：
 
 ```ts
 {
@@ -306,8 +321,11 @@ idle -> running -> success | partial | failed
 
 一次运行达到终态后不能再回到 running。下一次 POST 创建新的 runId。服务启动时把
 数据库里遗留的 `running` 扫描标记为 `failed / 进程中断`；内存 tracker 从数据库
-最近一轮终态初始化。`lastSnapshotAt` 取当前 `listings.capturedAt` 的最大值；没有
-任何有效快照时为 null。
+最近一轮终态初始化。`lastSnapshotAt` 优先取最近一条非基线、状态为 success 或
+partial 的 `scan_runs.finished_at`；旧数据库尚无正常历史时，退化为
+`source_status.last_success_at` 的最大值。这样即使一次完整成功刷新确认“三平台
+当前均无符合目录的商品”并发布空 listings，仍有非空的有效快照时间。只有从未有
+任何来源成功、也从未发布 success/partial 扫描时才为 null。
 
 协调器通过可选进度回调发布来源开始、列表页完成、详情完成、统一评分、提交和结束
 事件。它不写 Cookie、Token、原文或 URL 到进度信息。
@@ -422,10 +440,11 @@ src/client/components/PoolModeToggle.tsx
 4. 指纹字段规范化、物质变化检测、连续两轮稳定、来源失败不增加次数；
 5. 历史表幂等迁移、50 轮保留、失败不覆盖当前快照；
 6. 后台刷新 202、并发刷新 409、进度终态、Promise 失败被记录；
-7. React 刷新失败保留旧候选和选择，进度轮询停止并显示旧快照警告；
-8. 新筛选、皮肤排序、M7 证据截取和关键词标记；
-9. 移动详情抽屉的打开、关闭、Escape、焦点恢复和无障碍属性；
-10. 现有三平台分页、分类、去重和原子提交回归测试全部通过。
+7. React 收到服务端终态 failed 后停止轮询并保留旧候选和选择；
+8. React 遇到进度请求传输失败时降频继续轮询，不伪造终态、不清空旧快照；
+9. 新筛选、皮肤排序、M7 证据截取和关键词标记；
+10. 移动详情抽屉的打开、关闭、Escape、焦点恢复和无障碍属性；
+11. 现有三平台分页、分类、去重和原子提交回归测试全部通过。
 
 完成实现后执行：
 
