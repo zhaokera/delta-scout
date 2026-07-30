@@ -31,6 +31,40 @@ function claimResponse() {
   });
 }
 
+function acceptedListResponse() {
+  return jsonResponse({
+    acceptedCount: 1,
+    uniqueItemCount: 1,
+    nextSequence: 2
+  });
+}
+
+function acceptedLoadResponse(sequence = 2) {
+  return jsonResponse({
+    acceptedCount: 1,
+    loadActionCount: sequence - 1,
+    nextSequence: sequence
+  });
+}
+
+function acceptedDetailResponse() {
+  return jsonResponse({
+    acceptedCount: 1,
+    detailCompletedCount: 1,
+    detailRequiredCount: 1,
+    nextSourceListingId: null,
+    nextSequence: 2
+  });
+}
+
+function completedResponse() {
+  return jsonResponse({
+    state: "success",
+    scanRunId: 1,
+    publishedRunId: 1
+  });
+}
+
 function mockFetch(...responses: Array<Response | Error>) {
   const fetch = vi.fn<typeof globalThis.fetch>();
   for (const response of responses) {
@@ -156,39 +190,94 @@ describe("Jiaoyimao Codex browser bridge", () => {
     expect(work).toMatchObject({
       nextActionAt: "2026-07-30T10:00:02.000Z",
       cooldownUntil: null,
-      actionPermit: "permit-1"
+      actionPermitAvailable: true
     });
+    expect(work).not.toHaveProperty("actionPermit");
+    expect(JSON.stringify(work)).not.toContain("permit-1");
     expect(JSON.stringify(client)).toBe("{}");
     expect(JSON.stringify(client)).not.toContain(bridgeToken);
     expect(Object.values(client)).not.toContain(bridgeToken);
+  });
+
+  it.each([
+    "http://127.0.0.1",
+    "http://127.0.0.1:4310",
+    "http://localhost",
+    "http://localhost:9999",
+    "http://[::1]",
+    "http://[::1]:4310"
+  ])("allows loopback bridge origin %s", async (baseUrl) => {
+    const fetch = mockFetch(claimResponse());
+
+    await claimJiaoyimaoBrowserJob({
+      jobId,
+      claimCode,
+      baseUrl,
+      fetch
+    });
+
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(String(fetch.mock.calls[0]?.[0])).toBe(
+      `${baseUrl}/api/browser-refresh/${jobId}/claim`
+    );
+  });
+
+  it.each([
+    "https://127.0.0.1:4310",
+    "http://example.com:4310",
+    "http://0.0.0.0:4310",
+    "http://user:pass@127.0.0.1:4310",
+    "http://127.0.0.1:4310/api",
+    "http://127.0.0.1:4310/?query=1",
+    "http://127.0.0.1:4310/#fragment"
+  ])("rejects non-loopback bridge URL %s before claim", async (baseUrl) => {
+    const fetch = mockFetch(claimResponse());
+
+    await expect(
+      claimJiaoyimaoBrowserJob({
+        jobId,
+        claimCode,
+        baseUrl,
+        fetch
+      })
+    ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("sends the exact route schemas and Bearer header for every bridge method", async () => {
     const fetch = mockFetch(
       claimResponse(),
       jsonResponse({ state: "collecting_list" }),
-      jsonResponse({ acceptedCount: 1 }),
+      acceptedListResponse(),
       jsonResponse({
         kind: "list",
         nextActionAt: null,
         cooldownUntil: null,
-        actionPermit: "list-permit"
+        actionPermit: "list-permit",
+        nextListBatchSequence: 2,
+        nextLoadSequence: 1
       }),
-      jsonResponse({ acceptedCount: 1 }),
+      acceptedLoadResponse(),
       jsonResponse({
         kind: "detail",
         nextActionAt: null,
         cooldownUntil: null,
-        actionPermit: "detail-permit"
+        actionPermit: "detail-permit",
+        sourceListingId: "1785384225212552",
+        url:
+          "https://www.jiaoyimao.com/jg2007840/" +
+          "1785384225212552.html",
+        nextDetailSequence: 1
       }),
-      jsonResponse({ acceptedCount: 1 }),
+      acceptedDetailResponse(),
       jsonResponse({ state: "paused" }),
       jsonResponse({ state: "collecting_details" }),
       jsonResponse({
         state: "cooling_down",
         cooldownUntil: "2026-07-30T10:00:30.000Z"
       }),
-      jsonResponse({ state: "success" })
+      completedResponse()
     );
     const client = await claimWith(fetch);
 
@@ -247,16 +336,21 @@ describe("Jiaoyimao Codex browser bridge", () => {
     expect(bodyOf(fetch, 10)).toEqual({});
   });
 
-  it("uses a permit only for its matching outcome and clears it after a failed attempt", async () => {
+  it("uses a permit only for its matching outcome and clears it after success", async () => {
     const fetch = mockFetch(
       claimResponse(),
       jsonResponse({
         kind: "detail",
         nextActionAt: null,
         cooldownUntil: null,
-        actionPermit: "detail-only"
+        actionPermit: "detail-only",
+        sourceListingId: "1785384225212552",
+        url:
+          "https://www.jiaoyimao.com/jg2007840/" +
+          "1785384225212552.html",
+        nextDetailSequence: 1
       }),
-      jsonResponse({ acceptedCount: 1 }),
+      acceptedLoadResponse(),
       jsonResponse(
         {
           error: "action_too_early",
@@ -264,8 +358,8 @@ describe("Jiaoyimao Codex browser bridge", () => {
         },
         409
       ),
-      jsonResponse({ acceptedCount: 1 }),
-      jsonResponse({ acceptedCount: 1 })
+      acceptedDetailResponse(),
+      acceptedLoadResponse(3)
     );
     const client = await claimWith(fetch);
 
@@ -288,8 +382,128 @@ describe("Jiaoyimao Codex browser bridge", () => {
       "actionPermit",
       "detail-only"
     );
-    expect(bodyOf(fetch, 4)).not.toHaveProperty("actionPermit");
+    expect(bodyOf(fetch, 4)).toHaveProperty(
+      "actionPermit",
+      "detail-only"
+    );
     expect(bodyOf(fetch, 5)).not.toHaveProperty("actionPermit");
+  });
+
+  it("preserves a matching permit across ambiguous and nonterminal failures", async () => {
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        actionPermit: "retryable-list-permit",
+        nextListBatchSequence: 1,
+        nextLoadSequence: 1
+      }),
+      new Error("connection reset"),
+      jsonResponse(
+        {
+          error: "action_too_early",
+          message: "尚未到下一次浏览器操作时间"
+        },
+        409
+      ),
+      jsonResponse(
+        {
+          error: "staging_invalid",
+          message: "浏览器采集数据无效"
+        },
+        409
+      ),
+      acceptedLoadResponse(5),
+      acceptedLoadResponse(6)
+    );
+    const client = await claimWith(fetch);
+
+    await client.getWork();
+    await expect(
+      client.submitLoadEvent(loadEvent())
+    ).rejects.toMatchObject({ code: "browser_bridge_network_error" });
+    await expect(
+      client.submitLoadEvent({ ...loadEvent(), sequence: 2 })
+    ).rejects.toMatchObject({ code: "action_too_early" });
+    await expect(
+      client.submitLoadEvent({ ...loadEvent(), sequence: 3 })
+    ).rejects.toMatchObject({ code: "staging_invalid" });
+    await client.submitLoadEvent({ ...loadEvent(), sequence: 4 });
+    await client.submitLoadEvent({ ...loadEvent(), sequence: 5 });
+
+    for (const index of [2, 3, 4, 5]) {
+      expect(bodyOf(fetch, index)).toHaveProperty(
+        "actionPermit",
+        "retryable-list-permit"
+      );
+    }
+    expect(bodyOf(fetch, 6)).not.toHaveProperty("actionPermit");
+  });
+
+  it("clears a matching permit when the server explicitly rejects it", async () => {
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        actionPermit: "invalid-list-permit",
+        nextListBatchSequence: 1,
+        nextLoadSequence: 1
+      }),
+      jsonResponse(
+        {
+          error: "action_permit_invalid",
+          message: "浏览器操作许可无效"
+        },
+        409
+      ),
+      acceptedLoadResponse(3)
+    );
+    const client = await claimWith(fetch);
+
+    await client.getWork();
+    await expect(
+      client.submitLoadEvent(loadEvent())
+    ).rejects.toMatchObject({ code: "action_permit_invalid" });
+    await client.submitLoadEvent({ ...loadEvent(), sequence: 2 });
+
+    expect(bodyOf(fetch, 2)).toHaveProperty(
+      "actionPermit",
+      "invalid-list-permit"
+    );
+    expect(bodyOf(fetch, 3)).not.toHaveProperty("actionPermit");
+  });
+
+  it("rejects a malformed 2xx outcome and still consumes its permit", async () => {
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        actionPermit: "confirmed-list-permit",
+        nextListBatchSequence: 1,
+        nextLoadSequence: 1
+      }),
+      jsonResponse({ acceptedCount: 1 }),
+      acceptedLoadResponse(3)
+    );
+    const client = await claimWith(fetch);
+
+    await client.getWork();
+    await expect(
+      client.submitLoadEvent(loadEvent())
+    ).rejects.toMatchObject({ code: "invalid_server_response" });
+    await client.submitLoadEvent({ ...loadEvent(), sequence: 2 });
+
+    expect(bodyOf(fetch, 2)).toHaveProperty(
+      "actionPermit",
+      "confirmed-list-permit"
+    );
+    expect(bodyOf(fetch, 3)).not.toHaveProperty("actionPermit");
   });
 
   it("rejects unknown or sensitive fields before serializing or fetching", async () => {
@@ -320,6 +534,17 @@ describe("Jiaoyimao Codex browser bridge", () => {
         authorization: "Bearer network-secret"
       })
     ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    await expect(
+      client.submitFilterProof({
+        ...filterProof(),
+        nested: {
+          claimCode: "claim",
+          bridgeToken: "bridge",
+          credential: "credential",
+          secret: "secret"
+        }
+      })
+    ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(fetch.mock.calls)).not.toContain(
       "session=secret"
@@ -333,7 +558,7 @@ describe("Jiaoyimao Codex browser bridge", () => {
     const fetch = mockFetch(
       claimResponse(),
       jsonResponse({ state: "collecting_list" }),
-      jsonResponse({ acceptedCount: 1 })
+      acceptedListResponse()
     );
     const client = await claimWith(fetch);
 
@@ -472,7 +697,13 @@ describe("Jiaoyimao Codex browser bridge", () => {
         },
         409
       ),
-      jsonResponse({ kind: "list" })
+      jsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        nextListBatchSequence: 2,
+        nextLoadSequence: 1
+      })
     );
     const client = await claimWith(fetch);
 
@@ -492,6 +723,35 @@ describe("Jiaoyimao Codex browser bridge", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     await client.getWork();
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects sensitive fields in successful server responses", async () => {
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        nextListBatchSequence: 1,
+        nextLoadSequence: 1,
+        credential: "response-credential"
+      })
+    );
+    const client = await claimWith(fetch);
+
+    let failure: unknown;
+    try {
+      await client.getWork();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      code: "invalid_server_response"
+    });
+    expect(JSON.stringify(failure)).not.toContain(
+      "response-credential"
+    );
   });
 
   it("clears the token after a terminal error", async () => {
@@ -529,9 +789,9 @@ describe("Jiaoyimao Codex browser bridge", () => {
     async (method) => {
       const fetch = mockFetch(
         claimResponse(),
-        jsonResponse({
-          state: method === "complete" ? "success" : "cancelled"
-        })
+        method === "complete"
+          ? completedResponse()
+          : jsonResponse({ state: "cancelled" })
       );
       const client = await claimWith(fetch);
 
@@ -550,7 +810,7 @@ describe("Jiaoyimao Codex browser bridge", () => {
   );
 
   it.each(["complete", "cancel"] as const)(
-    "clears the token after failed %s",
+    "preserves the token after nonterminal failed %s",
     async (method) => {
       const fetch = mockFetch(
         claimResponse(),
@@ -558,6 +818,65 @@ describe("Jiaoyimao Codex browser bridge", () => {
           {
             error: "invalid_transition",
             message: "当前任务状态不允许此操作"
+          },
+          409
+        ),
+        jsonResponse({
+          kind: "list",
+          nextActionAt: null,
+          cooldownUntil: null,
+          nextListBatchSequence: 1,
+          nextLoadSequence: 1
+        })
+      );
+      const client = await claimWith(fetch);
+
+      await expect(client[method]()).rejects.toMatchObject({
+        code: "invalid_transition"
+      });
+      await expect(client.getWork()).resolves.toMatchObject({
+        kind: "list"
+      });
+      expect(fetch).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it.each(["complete", "cancel"] as const)(
+    "preserves the token after network failure during %s",
+    async (method) => {
+      const fetch = mockFetch(
+        claimResponse(),
+        new Error("connection reset"),
+        jsonResponse({
+          kind: "list",
+          nextActionAt: null,
+          cooldownUntil: null,
+          nextListBatchSequence: 1,
+          nextLoadSequence: 1
+        })
+      );
+      const client = await claimWith(fetch);
+
+      await expect(client[method]()).rejects.toMatchObject({
+        code: "browser_bridge_network_error"
+      });
+      await expect(client.getWork()).resolves.toMatchObject({
+        kind: "list"
+      });
+      expect(fetch).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it.each(["complete", "cancel"] as const)(
+    "clears the token after explicit terminal response during %s",
+    async (method) => {
+      const fetch = mockFetch(
+        claimResponse(),
+        jsonResponse(
+          {
+            error: "invalid_transition",
+            message: "任务已经终止",
+            state: "failed"
           },
           409
         )
@@ -590,7 +909,48 @@ describe("Jiaoyimao Codex browser bridge", () => {
 
     expect(waited).toBe(30_000);
     expect(wait).toHaveBeenCalledOnce();
-    expect(wait).toHaveBeenCalledWith(30_000);
+    expect(wait).toHaveBeenCalledWith(30_000, undefined);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not wait when the authoritative deadline has elapsed", async () => {
+    const fetch = mockFetch(claimResponse());
+    const client = await claimWith(fetch);
+    const wait = vi.fn(async (_milliseconds: number) => {});
+
+    const waited = await client.waitUntilAllowed(
+      {
+        nextActionAt: "2026-07-30T09:59:59.000Z",
+        cooldownUntil: null
+      },
+      () => Date.parse("2026-07-30T10:00:00.000Z"),
+      wait
+    );
+
+    expect(waited).toBe(0);
+    expect(wait).not.toHaveBeenCalled();
+  });
+
+  it("cancels the default timer through AbortSignal with a stable error", async () => {
+    const fetch = mockFetch(claimResponse());
+    const client = await claimWith(fetch);
+    const controller = new AbortController();
+
+    const waiting = client.waitUntilAllowed(
+      {
+        nextActionAt: "2026-07-30T10:15:00.000Z",
+        cooldownUntil: null
+      },
+      () => Date.parse("2026-07-30T10:00:00.000Z"),
+      undefined,
+      controller.signal
+    );
+    controller.abort();
+
+    await expect(waiting).rejects.toMatchObject({
+      code: "browser_wait_aborted",
+      message: "浏览器等待已取消"
+    });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
@@ -619,6 +979,10 @@ describe("Jiaoyimao browser refresh runbook", () => {
     expect(runbook).toContain("2,000–3,500 ms");
     expect(runbook).toMatch(/30 秒.*2 分钟.*5 分钟.*15 分钟/s);
     expect(runbook).toContain("硬编码循环");
+    expect(runbook).toMatch(/仅.*新增商品.*submitListBatch/s);
+    expect(runbook).toMatch(/每轮.*submitLoadEvent/s);
+    expect(runbook).toMatch(/自然末页.*不.*空.*submitListBatch/s);
+    expect(runbook).toMatch(/不得.*记录.*action permit/i);
     expect(runbook).toMatch(
       /永不.*cookies.*localStorage.*密码.*CAPTCHA 答案.*网络认证请求头/s
     );

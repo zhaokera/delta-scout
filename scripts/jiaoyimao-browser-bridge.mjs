@@ -11,10 +11,28 @@ const TERMINAL_STATES = new Set([
   "cancelled",
   "expired"
 ]);
+const JOB_STATES = new Set([
+  "awaiting_codex",
+  "collecting_list",
+  "collecting_details",
+  "awaiting_user_verification",
+  "cooling_down",
+  "validating",
+  "committing",
+  "success",
+  "quarantined",
+  "paused",
+  "failed",
+  "cancelled",
+  "expired"
+]);
 const TERMINAL_ERROR_CODES = new Set([
   "bridge_unauthorized",
   "browser_job_not_found",
   "browser_job_expired"
+]);
+const INVALID_PERMIT_ERROR_CODES = new Set([
+  "action_permit_invalid"
 ]);
 const PAUSE_REASONS = new Set([
   "login_required",
@@ -48,7 +66,13 @@ const FORBIDDEN_FIELD_NAMES = new Set([
   "networkauthorization",
   "networkauthheader",
   "networkauthheaders",
-  "requestheaders"
+  "requestheaders",
+  "claimcode",
+  "bridgetoken",
+  "credential",
+  "credentials",
+  "secret",
+  "secrets"
 ]);
 const FORBIDDEN_VISIBLE_TEXT = [
   /cookie\s*[:=]/i,
@@ -453,9 +477,13 @@ function normalizeBaseUrl(value) {
     throw bridgeError();
   }
   if (
-    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.protocol !== "http:" ||
+    !new Set(["127.0.0.1", "localhost", "[::1]"]).has(
+      url.hostname
+    ) ||
     url.username !== "" ||
     url.password !== "" ||
+    url.pathname !== "/" ||
     url.search !== "" ||
     url.hash !== ""
   ) {
@@ -465,11 +493,24 @@ function normalizeBaseUrl(value) {
 }
 
 function validateClaimOptions(options) {
-  const value = assertOptionalExactObject(
-    options,
-    ["jobId", "claimCode"],
-    ["baseUrl", "fetch"]
-  );
+  if (!isPlainObject(options)) throw bridgeError();
+  const value = options;
+  const allowed = new Set([
+    "jobId",
+    "claimCode",
+    "baseUrl",
+    "fetch"
+  ]);
+  if (
+    !("jobId" in value) ||
+    !("claimCode" in value) ||
+    Object.keys(value).some((key) => !allowed.has(key))
+  ) {
+    throw bridgeError();
+  }
+  for (const [key, nested] of Object.entries(value)) {
+    if (key !== "claimCode") assertNoForbiddenFields(nested);
+  }
   const id = assertString(value.jobId, 1, 128);
   if (!/^[A-Za-z0-9-]+$/.test(id)) throw bridgeError();
   assertString(value.claimCode, 1, 64);
@@ -484,6 +525,189 @@ function validateClaimOptions(options) {
 
 function isTerminalPayload(value) {
   return TERMINAL_STATES.has(value?.state);
+}
+
+function invalidServerResponse() {
+  return bridgeError(
+    "invalid_server_response",
+    "浏览器桥接响应格式无效"
+  );
+}
+
+function validateServerShape(check) {
+  try {
+    check();
+  } catch {
+    throw invalidServerResponse();
+  }
+}
+
+function assertNullableIsoTimestamp(value) {
+  if (value !== null) assertIsoTimestamp(value);
+}
+
+function validateWorkResponse(value) {
+  if (!isPlainObject(value)) {
+    throw invalidServerResponse();
+  }
+  validateServerShape(() => {
+    if (!["list", "detail", "validating"].includes(value.kind)) {
+      throw bridgeError();
+    }
+    assertNullableIsoTimestamp(value.nextActionAt);
+    assertNullableIsoTimestamp(value.cooldownUntil);
+    if (value.actionPermit !== undefined) {
+      assertString(value.actionPermit, 1, 128);
+    }
+    if (value.kind === "list") {
+      assertInteger(value.nextListBatchSequence, 1, MAX_UNIQUE_ITEMS);
+      assertInteger(value.nextLoadSequence, 1, MAX_LOAD_EVENTS);
+    } else if (value.kind === "detail") {
+      assertString(value.sourceListingId, 1, 100);
+      parseApprovedUrl(value.url);
+      assertInteger(value.nextDetailSequence, 1, MAX_UNIQUE_ITEMS);
+    }
+  });
+  return value;
+}
+
+function validateJobResponse(value, expectedState) {
+  validateServerShape(() => {
+    if (
+      !isPlainObject(value) ||
+      !JOB_STATES.has(value.state) ||
+      (expectedState !== undefined && value.state !== expectedState)
+    ) {
+      throw bridgeError();
+    }
+  });
+  return value;
+}
+
+function validateClaimResponse(value, expectedJobId) {
+  validateServerShape(() => {
+    if (
+      !isPlainObject(value) ||
+      value.id !== expectedJobId ||
+      !JOB_STATES.has(value.state)
+    ) {
+      throw bridgeError();
+    }
+  });
+  return value;
+}
+
+function validateListResponse(value) {
+  validateServerShape(() => {
+    if (!isPlainObject(value)) throw bridgeError();
+    assertInteger(value.acceptedCount, 1, MAX_LIST_ITEMS);
+    assertInteger(value.uniqueItemCount, 0, MAX_UNIQUE_ITEMS);
+    assertInteger(
+      value.nextSequence,
+      1,
+      MAX_UNIQUE_ITEMS + 1
+    );
+  });
+  return value;
+}
+
+function validateLoadResponse(value) {
+  validateServerShape(() => {
+    if (!isPlainObject(value) || value.acceptedCount !== 1) {
+      throw bridgeError();
+    }
+    assertInteger(value.loadActionCount, 1, MAX_LOAD_EVENTS);
+    assertInteger(value.nextSequence, 1, MAX_LOAD_EVENTS + 1);
+  });
+  return value;
+}
+
+function validateDetailResponse(value) {
+  validateServerShape(() => {
+    if (!isPlainObject(value)) throw bridgeError();
+    assertInteger(value.acceptedCount, 1, MAX_DETAIL_ITEMS);
+    assertInteger(
+      value.detailCompletedCount,
+      0,
+      MAX_UNIQUE_ITEMS
+    );
+    assertInteger(
+      value.detailRequiredCount,
+      0,
+      MAX_UNIQUE_ITEMS
+    );
+    if (
+      value.nextSourceListingId !== null &&
+      (
+        typeof value.nextSourceListingId !== "string" ||
+        !/^\d+$/.test(value.nextSourceListingId)
+      )
+    ) {
+      throw bridgeError();
+    }
+    assertInteger(
+      value.nextSequence,
+      1,
+      MAX_UNIQUE_ITEMS + 1
+    );
+  });
+  return value;
+}
+
+function validateCompletionResponse(value) {
+  validateServerShape(() => {
+    if (
+      !isPlainObject(value) ||
+      !["success", "quarantined"].includes(value.state)
+    ) {
+      throw bridgeError();
+    }
+    assertInteger(value.scanRunId, 1, Number.MAX_SAFE_INTEGER);
+    if (value.publishedRunId !== null) {
+      assertInteger(
+        value.publishedRunId,
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
+    }
+  });
+  return value;
+}
+
+function waitAbortError() {
+  return bridgeError(
+    "browser_wait_aborted",
+    "浏览器等待已取消"
+  );
+}
+
+function assertAbortSignal(value) {
+  if (value === undefined) return;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    typeof value.aborted !== "boolean" ||
+    typeof value.addEventListener !== "function" ||
+    typeof value.removeEventListener !== "function"
+  ) {
+    throw bridgeError();
+  }
+}
+
+function abortableDelay(milliseconds, signal) {
+  if (signal?.aborted) return Promise.reject(waitAbortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    function onAbort() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(waitAbortError());
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export async function claimJiaoyimaoBrowserJob(options) {
@@ -528,6 +752,9 @@ export async function claimJiaoyimaoBrowserJob(options) {
     );
   }
   const claimedToken = claimPayload?.bridgeToken;
+  if (isPlainObject(claimPayload)) {
+    delete claimPayload.bridgeToken;
+  }
   if (
     typeof claimedToken !== "string" ||
     claimedToken.length < 1 ||
@@ -538,6 +765,8 @@ export async function claimJiaoyimaoBrowserJob(options) {
       "浏览器桥接响应格式无效"
     );
   }
+  assertSafeServerPayload(claimPayload);
+  validateClaimResponse(claimPayload, claimed.jobId);
 
   let token = claimedToken;
   let pendingPermit = null;
@@ -561,7 +790,8 @@ export async function claimJiaoyimaoBrowserJob(options) {
     method,
     path,
     body,
-    authenticated = true
+    authenticated = true,
+    onConfirmedSuccess
   ) {
     const currentToken = requireToken();
     if (body !== undefined) assertBatchSize(body);
@@ -597,7 +827,8 @@ export async function claimJiaoyimaoBrowserJob(options) {
       );
       if (
         response.status === 401 ||
-        TERMINAL_ERROR_CODES.has(code)
+        TERMINAL_ERROR_CODES.has(code) ||
+        isTerminalPayload(payload)
       ) {
         clearCredentials();
       }
@@ -609,6 +840,7 @@ export async function claimJiaoyimaoBrowserJob(options) {
         safeRetryAt(payload?.retryAt)
       );
     }
+    onConfirmedSuccess?.();
     const safePayload = assertSafeServerPayload(payload);
     if (isTerminalPayload(safePayload)) {
       clearCredentials();
@@ -622,7 +854,9 @@ export async function claimJiaoyimaoBrowserJob(options) {
 
   async function getWork(input) {
     validateEmptyArgument(input);
-    const work = await request("GET", bridgePath("work"));
+    const work = validateWorkResponse(
+      await request("GET", bridgePath("work"))
+    );
     if (typeof work.actionPermit === "string") {
       pendingPermit = work.kind === "list"
         ? { kind: "load", value: work.actionPermit }
@@ -632,103 +866,168 @@ export async function claimJiaoyimaoBrowserJob(options) {
     } else {
       pendingPermit = null;
     }
-    return work;
+    const publicWork = {
+      ...work,
+      actionPermitAvailable:
+        typeof work.actionPermit === "string"
+    };
+    delete publicWork.actionPermit;
+    return publicWork;
   }
 
   async function submitFilterProof(input) {
     const proof = validateFilterProof(input);
-    return request("POST", bridgePath("filter-proof"), proof);
+    return validateJobResponse(
+      await request("POST", bridgePath("filter-proof"), proof)
+    );
   }
 
   async function submitListBatch(input) {
     const batch = validateListBatch(input);
-    return request("POST", bridgePath("list-batches"), batch);
+    return validateListResponse(
+      await request("POST", bridgePath("list-batches"), batch)
+    );
   }
 
-  function takePermit(kind) {
-    if (pendingPermit?.kind !== kind) return undefined;
-    const value = pendingPermit.value;
-    pendingPermit = null;
-    return value;
+  function matchingPermit(kind) {
+    return pendingPermit?.kind === kind
+      ? pendingPermit
+      : null;
+  }
+
+  function clearMatchingPermit(permit) {
+    if (permit !== null && pendingPermit === permit) {
+      pendingPermit = null;
+    }
+  }
+
+  async function submitOutcome(kind, path, payload) {
+    const permit = matchingPermit(kind);
+    try {
+      return await request(
+        "POST",
+        path,
+        {
+          ...payload,
+          ...(permit ? { actionPermit: permit.value } : {})
+        },
+        true,
+        () => clearMatchingPermit(permit)
+      );
+    } catch (error) {
+      if (INVALID_PERMIT_ERROR_CODES.has(error?.code)) {
+        clearMatchingPermit(permit);
+      }
+      throw error;
+    }
   }
 
   async function submitLoadEvent(input) {
     const event = validateLoadEvent(input);
-    const actionPermit = takePermit("load");
-    return request("POST", bridgePath("load-events"), {
-      ...event,
-      ...(actionPermit ? { actionPermit } : {})
-    });
+    return validateLoadResponse(
+      await submitOutcome(
+        "load",
+        bridgePath("load-events"),
+        event
+      )
+    );
   }
 
   async function submitDetails(input) {
     const batch = validateDetailBatch(input);
-    const actionPermit = takePermit("detail");
-    return request("POST", bridgePath("details"), {
-      ...batch,
-      ...(actionPermit ? { actionPermit } : {})
-    });
+    return validateDetailResponse(
+      await submitOutcome(
+        "detail",
+        bridgePath("details"),
+        batch
+      )
+    );
   }
 
   async function pause(input) {
     const value = validatePause(input);
-    pendingPermit = null;
-    return request("POST", bridgePath("pause"), value);
+    return validateJobResponse(
+      await request(
+        "POST",
+        bridgePath("pause"),
+        value,
+        true,
+        () => {
+          pendingPermit = null;
+        }
+      )
+    );
   }
 
   async function resume(input) {
     validateEmptyArgument(input);
-    pendingPermit = null;
-    return request("POST", bridgePath("resume"), {});
+    return validateJobResponse(
+      await request(
+        "POST",
+        bridgePath("resume"),
+        {},
+        true,
+        () => {
+          pendingPermit = null;
+        }
+      )
+    );
   }
 
   async function startCooldown(input) {
     validateEmptyArgument(input);
-    pendingPermit = null;
-    return request(
-      "POST",
-      bridgePath("cooldown"),
-      { reason: "rate_limited" }
+    return validateJobResponse(
+      await request(
+        "POST",
+        bridgePath("cooldown"),
+        { reason: "rate_limited" },
+        true,
+        () => {
+          pendingPermit = null;
+        }
+      )
     );
   }
 
   async function complete(input) {
     validateEmptyArgument(input);
-    try {
-      return await request(
+    return validateCompletionResponse(
+      await request(
         "POST",
         bridgePath("complete"),
-        {}
-      );
-    } finally {
-      clearCredentials();
-    }
+        {},
+        true,
+        clearCredentials
+      )
+    );
   }
 
   async function cancel(input) {
     validateEmptyArgument(input);
-    try {
-      return await request(
+    return validateJobResponse(
+      await request(
         "POST",
         `/api/sources/jiaoyimao/browser-refresh/` +
           `${encodedJobId}/cancel`,
         {},
-        false
-      );
-    } finally {
-      clearCredentials();
-    }
+        false,
+        clearCredentials
+      ),
+      "cancelled"
+    );
   }
 
   async function waitUntilAllowed(
     work,
     now = Date.now,
-    wait = (milliseconds) =>
-      new Promise((resolve) => setTimeout(resolve, milliseconds))
+    wait = abortableDelay,
+    signal
   ) {
     assertNoForbiddenFields(work);
     if (!isPlainObject(work)) throw bridgeError();
     if (typeof wait !== "function") throw bridgeError();
+    assertAbortSignal(signal);
+    if (signal?.aborted) throw waitAbortError();
     const current = typeof now === "function"
       ? now()
       : now instanceof Date
@@ -745,7 +1044,14 @@ export async function claimJiaoyimaoBrowserJob(options) {
       (deadlines.length > 0 ? Math.max(...deadlines) : current) -
         current
     );
-    if (delay > 0) await wait(delay);
+    if (delay > 0) {
+      try {
+        await wait(delay, signal);
+      } catch (error) {
+        if (signal?.aborted) throw waitAbortError();
+        throw error;
+      }
+    }
     return delay;
   }
 

@@ -7,7 +7,7 @@
 安全边界：Codex 永不检查、读取、记录或提交 cookies、localStorage、密码、
 CAPTCHA 答案、网络认证请求头，也不读取 sessionStorage 或认证会话。只采集页面上
 普通用户可见的筛选标签、商品卡片和指定详情区块。claim code、bridge token 和
-action permit 不写入日志、文档、页面脚本或持久化存储。
+action permit 不写入日志、文档、页面脚本或持久化存储；任何情况下都不得记录 action permit。
 
 1. 在软件的“交易猫浏览器刷新”面板确认任务显示“等待 Codex 接管”，读取面板上一次性可见的 claim code 与任务 ID。不要从开发者工具、网络记录或浏览器存储中寻找任何凭据。
 
@@ -25,11 +25,11 @@ action permit 不写入日志、文档、页面脚本或持久化存储。
 
 5. 从页面可见标签构造 filter proof，并调用 `submitFilterProof`。proof 必须包含当前精确 URL、可见的游戏/平台/类别标签、四到八个 M7 筛选标签和观察时间；筛选不匹配时停止采集并向用户说明，不绕过服务端校验。
 
-6. 列表阶段每轮调用 `getWork`，用 `waitUntilAllowed` 等待服务端返回的 `nextActionAt` 或 `cooldownUntil`，只执行一次加载动作，再提交 `submitListBatch` 和对应的 `submitLoadEvent`。普通列表动作的服务端随机窗口是 `1,200–2,500 ms`；不要写固定 sleep，也不要建立硬编码循环。登录、CAPTCHA、限流、无进展或页面结构变化必须原样作为 outcome 报告。
+6. 列表阶段每轮调用 `getWork`，用 `waitUntilAllowed` 等待服务端返回的 `nextActionAt` 或 `cooldownUntil`，只执行一次加载动作。仅当本轮观察到一个或多个新增商品时调用 `submitListBatch`；每轮都必须调用一次 `submitLoadEvent`，包括新增商品数为零的轮次。自然末页没有新增商品时，不得发送空的 `submitListBatch`。普通列表动作的服务端随机窗口是 `1,200–2,500 ms`；不要写固定 sleep，也不要建立硬编码循环。登录、CAPTCHA、限流、无进展或页面结构变化必须原样作为 outcome 报告。
 
 7. 页面要求用户登录或完成 CAPTCHA 时，调用 `pause({ reason: "login_required" })` 或 `pause({ reason: "captcha_required" })`，立即停止浏览器动作并等待用户。Codex 不查看输入内容，不读取密码或 CAPTCHA 答案，也不代替用户处理验证。
 
-8. 用户确认验证完成后调用 `resume`，随后重新调用 `getWork`，以服务端权威状态继续。若 outcome 仍为限流，只调用一次 `startCooldown` 并返回工作循环；四档服务端冷却为 30 秒、2 分钟、5 分钟、15 分钟。冷却结束仍以返回的 `cooldownUntil` 为准，不能按本地固定次数重试；`actionPermit` 只随下一次匹配的 load/detail outcome 使用一次。
+8. 用户确认验证完成后调用 `resume`，随后重新调用 `getWork`，以服务端权威状态继续。若 outcome 仍为限流，只调用一次 `startCooldown` 并返回工作循环；四档服务端冷却为 30 秒、2 分钟、5 分钟、15 分钟。冷却结束仍以返回的 `cooldownUntil` 为准，不能按本地固定次数重试；闭包中的 `actionPermit` 只附加到匹配的 load/detail outcome，服务端成功接收或明确判定许可无效后才丢弃。
 
 9. 详情阶段逐次读取 `getWork` 给出的 `sourceListingId`、URL 和 `nextDetailSequence`，等待权威时间后只打开该详情一次，采集 head、report、safety、description 四个可见区块并调用 `submitDetails`。普通详情动作的服务端随机窗口是 `2,000–3,500 ms`；每次提交后回到 `getWork`，不预取、不猜测下一条，也不构造重试循环。
 
