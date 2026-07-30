@@ -49,7 +49,20 @@ function makeApi({
   getListingHistory,
   startRefresh = async () => ({ runId: 1, state: "running" as const }),
   getRefreshStatus = async () => makeRefreshStatus(),
-  getScanHistory = async () => ({ runs: [] })
+  getScanHistory = async () => ({ runs: [] }),
+  getCurrentJiaoyimaoBrowserRefresh = async () => null,
+  startJiaoyimaoBrowserRefresh = async () => ({
+    jobId: "browser-job-1",
+    state: "awaiting_codex" as const,
+    claimCode: "one-time-code",
+    expiresAt: "2026-07-31T02:00:00.000Z"
+  }),
+  cancelJiaoyimaoBrowserRefresh = async () => {
+    throw new Error("not configured");
+  },
+  keepWaitingForJiaoyimaoBrowserRefresh = async () => {
+    throw new Error("not configured");
+  }
 }: {
   sources?: SourceStatusView[];
   getSources?: ScoutApi["getSources"];
@@ -59,6 +72,14 @@ function makeApi({
   startRefresh?: ScoutApi["startRefresh"];
   getRefreshStatus?: ScoutApi["getRefreshStatus"];
   getScanHistory?: ScoutApi["getScanHistory"];
+  getCurrentJiaoyimaoBrowserRefresh?:
+    ScoutApi["getCurrentJiaoyimaoBrowserRefresh"];
+  startJiaoyimaoBrowserRefresh?:
+    ScoutApi["startJiaoyimaoBrowserRefresh"];
+  cancelJiaoyimaoBrowserRefresh?:
+    ScoutApi["cancelJiaoyimaoBrowserRefresh"];
+  keepWaitingForJiaoyimaoBrowserRefresh?:
+    ScoutApi["keepWaitingForJiaoyimaoBrowserRefresh"];
 } = {}): ScoutApi {
   const resolveListing =
     getListing ??
@@ -88,7 +109,15 @@ function makeApi({
     getListingHistory: vi.fn(resolveHistory),
     startRefresh: vi.fn(startRefresh),
     getRefreshStatus: vi.fn(getRefreshStatus),
-    getScanHistory: vi.fn(getScanHistory)
+    getScanHistory: vi.fn(getScanHistory),
+    getCurrentJiaoyimaoBrowserRefresh:
+      vi.fn(getCurrentJiaoyimaoBrowserRefresh),
+    startJiaoyimaoBrowserRefresh:
+      vi.fn(startJiaoyimaoBrowserRefresh),
+    cancelJiaoyimaoBrowserRefresh:
+      vi.fn(cancelJiaoyimaoBrowserRefresh),
+    keepWaitingForJiaoyimaoBrowserRefresh:
+      vi.fn(keepWaitingForJiaoyimaoBrowserRefresh)
   };
 }
 
@@ -1109,6 +1138,7 @@ describe("App shell", () => {
       }
     });
     const api: ScoutApi = {
+      ...makeApi(),
       getSources: vi.fn(async (): Promise<SourceStatusView[]> => [
         {
           ...makeSourceStatus({ source: "jiaoyimao" }),

@@ -86,6 +86,61 @@ export interface RefreshStatusView {
   lastSnapshotAt: string | null;
 }
 
+export type JiaoyimaoBrowserRefreshState =
+  | "awaiting_codex"
+  | "collecting_list"
+  | "collecting_details"
+  | "awaiting_user_verification"
+  | "cooling_down"
+  | "validating"
+  | "committing"
+  | "success"
+  | "quarantined"
+  | "paused"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export interface JiaoyimaoBrowserRefreshJob {
+  id: string;
+  source: "jiaoyimao";
+  state: JiaoyimaoBrowserRefreshState;
+  stage: string;
+  reason: string | null;
+  claimedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+  expiresAt: string;
+  listBatchCursor: number;
+  detailCompletedCount: number;
+  detailRequiredCount: number;
+  uniqueItemCount: number;
+  itemCount: number;
+  loadActionCount: number;
+  cooldownAttempt: number;
+  cooldownUntil: string | null;
+  nextActionAt: string | null;
+  actionPermitExpiresAt: string | null;
+  actionPermitConsumedAt: string | null;
+  filterUrl: string | null;
+  lastError: string | null;
+  scanRunId: number | null;
+  publishedRunId: number | null;
+}
+
+export interface StartedJiaoyimaoBrowserRefresh {
+  jobId: string;
+  state: "awaiting_codex";
+  claimCode: string;
+  expiresAt: string;
+}
+
+export interface JiaoyimaoBrowserRefreshConflict {
+  activeKind: "all_sources" | "browser";
+  message: string;
+}
+
 export interface ScanHistoryResponse {
   runs: Array<{
     id: number;
@@ -134,6 +189,16 @@ export interface ScoutApi {
   startRefresh(): Promise<{ runId: number; state: "running" }>;
   getRefreshStatus(): Promise<RefreshStatusView>;
   getScanHistory(limit?: number): Promise<ScanHistoryResponse>;
+  getCurrentJiaoyimaoBrowserRefresh():
+    Promise<JiaoyimaoBrowserRefreshJob | null>;
+  startJiaoyimaoBrowserRefresh():
+    Promise<StartedJiaoyimaoBrowserRefresh>;
+  cancelJiaoyimaoBrowserRefresh(
+    jobId: string
+  ): Promise<JiaoyimaoBrowserRefreshJob>;
+  keepWaitingForJiaoyimaoBrowserRefresh(
+    jobId: string
+  ): Promise<JiaoyimaoBrowserRefreshJob>;
 }
 
 const LISTING_QUERIES: Record<ListingView, string> = {
@@ -183,5 +248,28 @@ export const httpScoutApi: ScoutApi = {
   getScanHistory: (limit = 10) =>
     requestJson<ScanHistoryResponse>(
       `/api/scan-history?limit=${limit}`
+    ),
+  getCurrentJiaoyimaoBrowserRefresh: () =>
+    requestJson<JiaoyimaoBrowserRefreshJob | null>(
+      "/api/sources/jiaoyimao/browser-refresh/current"
+    ),
+  startJiaoyimaoBrowserRefresh: () =>
+    requestJson<StartedJiaoyimaoBrowserRefresh>(
+      "/api/sources/jiaoyimao/browser-refresh",
+      { method: "POST" }
+    ),
+  cancelJiaoyimaoBrowserRefresh: (jobId) =>
+    requestJson<JiaoyimaoBrowserRefreshJob>(
+      `/api/sources/jiaoyimao/browser-refresh/${
+        encodeURIComponent(jobId)
+      }/cancel`,
+      { method: "POST" }
+    ),
+  keepWaitingForJiaoyimaoBrowserRefresh: (jobId) =>
+    requestJson<JiaoyimaoBrowserRefreshJob>(
+      `/api/sources/jiaoyimao/browser-refresh/${
+        encodeURIComponent(jobId)
+      }/keep-waiting`,
+      { method: "POST" }
     )
 };

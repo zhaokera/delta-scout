@@ -178,6 +178,251 @@ button {
   text-align: right;
 }
 
+.browser-refresh-panel {
+  position: relative;
+  min-width: 0;
+  margin-top: 18px;
+  padding: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-top-color: var(--line-bright);
+  background:
+    linear-gradient(90deg, rgba(216, 255, 62, 0.035), transparent 42%),
+    var(--panel);
+}
+
+.browser-refresh-panel::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 72px;
+  height: 2px;
+  background: var(--acid);
+  content: "";
+}
+
+.browser-refresh-panel__header,
+.browser-refresh-panel__status,
+.browser-refresh-panel__actions,
+.browser-refresh-panel__metrics,
+.browser-refresh-panel__claim > div,
+.browser-refresh-dialog__actions {
+  display: flex;
+  align-items: center;
+}
+
+.browser-refresh-panel__header {
+  min-width: 0;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.browser-refresh-panel__header h2 {
+  margin: 5px 0 0;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.browser-refresh-panel__eyebrow,
+.browser-refresh-panel__source {
+  margin: 0;
+  color: var(--acid);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.14em;
+}
+
+.browser-refresh-panel__source {
+  padding: 6px 8px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.browser-refresh-panel__status {
+  min-width: 0;
+  margin-top: 16px;
+  padding: 14px;
+  gap: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.browser-refresh-panel__signal {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--acid);
+  box-shadow: 0 0 12px rgba(216, 255, 62, 0.42);
+}
+
+.browser-refresh-panel__status > div:first-of-type {
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.browser-refresh-panel__status small,
+.browser-refresh-panel__claim span {
+  color: var(--muted);
+  font: 700 9px/1 var(--mono);
+  letter-spacing: 0.12em;
+}
+
+.browser-refresh-panel__status strong {
+  font-size: 13px;
+}
+
+.browser-refresh-panel__status > p {
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font: 600 11px/1.45 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.browser-refresh-panel__metrics {
+  min-width: 0;
+  margin-left: auto;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.browser-refresh-panel__metrics span {
+  padding: 5px 8px;
+  color: #cdd3cd;
+  border: 1px solid var(--line);
+  font: 700 10px/1 var(--mono);
+  white-space: nowrap;
+}
+
+.browser-refresh-panel__claim {
+  margin-top: 10px;
+  padding: 14px;
+  border-left: 2px solid var(--amber);
+  background: rgba(255, 189, 74, 0.07);
+}
+
+.browser-refresh-panel__claim > div {
+  min-width: 0;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.browser-refresh-panel__claim code,
+.browser-refresh-panel__claim strong {
+  min-width: 0;
+  color: var(--amber);
+  font: 800 14px/1.35 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.browser-refresh-panel__claim p,
+.browser-refresh-panel__notice,
+.browser-refresh-panel__alert {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font: 600 11px/1.5 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.browser-refresh-panel__notice {
+  padding: 10px 12px;
+  border-left: 2px solid var(--line-bright);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.browser-refresh-panel__notice strong {
+  color: var(--ink);
+}
+
+.browser-refresh-panel__alert {
+  padding: 10px 12px;
+  color: #ffd1c9;
+  border: 1px solid rgba(255, 110, 87, 0.4);
+  background: rgba(255, 110, 87, 0.075);
+}
+
+.browser-refresh-panel__actions {
+  min-width: 0;
+  margin-top: 14px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.browser-refresh-panel__actions button,
+.browser-refresh-dialog__actions button {
+  min-height: 44px;
+  padding: 0 15px;
+  border: 1px solid var(--line-bright);
+  background: transparent;
+  cursor: pointer;
+}
+
+.browser-refresh-panel__actions button:disabled,
+.browser-refresh-dialog__actions button:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.browser-refresh-panel__primary {
+  border-color: var(--acid) !important;
+  background: var(--acid) !important;
+  color: #11150d;
+  font-weight: 800;
+}
+
+.browser-refresh-panel__secondary {
+  border-color: rgba(216, 255, 62, 0.55) !important;
+  color: var(--acid);
+}
+
+.browser-refresh-panel__quiet {
+  color: var(--muted);
+}
+
+.browser-refresh-dialog__backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  padding: 20px;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 6, 5, 0.78);
+}
+
+.browser-refresh-dialog {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid var(--line-bright);
+  border-top: 2px solid var(--danger);
+  background: var(--panel-raised);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
+}
+
+.browser-refresh-dialog h3 {
+  margin: 9px 0 8px;
+  font-size: 18px;
+}
+
+.browser-refresh-dialog > p:not(.browser-refresh-panel__eyebrow) {
+  margin: 0;
+  color: var(--muted);
+  font: 600 12px/1.6 var(--mono);
+}
+
+.browser-refresh-dialog__actions {
+  margin-top: 18px;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.browser-refresh-dialog__danger {
+  border-color: var(--danger) !important;
+  color: #ffd1c9;
+}
+
 .refresh-progress__metrics {
   display: flex;
   gap: 6px;
@@ -1618,6 +1863,44 @@ input[type="search"] {
 
   .refresh-progress__metrics {
     flex-wrap: wrap;
+  }
+
+  .browser-refresh-panel {
+    padding: 15px;
+  }
+
+  .browser-refresh-panel__header,
+  .browser-refresh-panel__status {
+    align-items: flex-start;
+  }
+
+  .browser-refresh-panel__status {
+    flex-wrap: wrap;
+  }
+
+  .browser-refresh-panel__metrics {
+    width: 100%;
+    margin-left: 20px;
+    justify-content: flex-start;
+  }
+
+  .browser-refresh-panel__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .browser-refresh-panel__actions button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .browser-refresh-dialog__actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .browser-refresh-dialog__actions button {
+    width: 100%;
   }
 
   .mission-brief {
