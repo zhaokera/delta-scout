@@ -18,6 +18,9 @@ import type {
 import type {
   RefreshProgressEvent
 } from "./collector/coordinator.js";
+import {
+  RefreshAdmissionController
+} from "./refreshAdmission.js";
 import type { RefreshTracker } from "./refreshTracker.js";
 
 interface RefreshCoordinator {
@@ -31,6 +34,7 @@ interface AppDependencies {
   repository: ListingRepository;
   coordinator: RefreshCoordinator;
   tracker: RefreshTracker;
+  admission?: RefreshAdmissionController;
 }
 
 const ListingViewSchema = z.enum(["pool", "all"]);
@@ -136,6 +140,9 @@ export function createApp(dependencies?: AppDependencies): Express {
   if (!dependencies) return app;
 
   const { repository, coordinator, tracker } = dependencies;
+  const admission =
+    dependencies.admission ??
+    RefreshAdmissionController.forAllSources(tracker);
 
   app.get("/api/sources", (request, response) => {
     const parsedMode =
@@ -263,19 +270,14 @@ export function createApp(dependencies?: AppDependencies): Express {
   });
 
   app.post("/api/refresh", (_request, response) => {
-    if (tracker.isRunning()) {
-      response.status(409).json({
-        error: "refresh_in_progress",
-        message: "刷新任务正在进行"
-      });
-      return;
-    }
-
     const startedAt = new Date();
-    let runId: number;
+    let acquired;
     try {
-      runId = repository.startScan(startedAt);
-      tracker.start(runId, startedAt);
+      acquired = admission.withAllSourcesLease(() => {
+        const runId = repository.startScan(startedAt);
+        tracker.start(runId, startedAt);
+        return runId;
+      });
     } catch {
       response.status(500).json({
         error: "refresh_failed",
@@ -283,6 +285,16 @@ export function createApp(dependencies?: AppDependencies): Express {
       });
       return;
     }
+    if (acquired.kind === "conflict") {
+      response.status(409).json({
+        error: "refresh_conflict",
+        message: "另一个刷新任务正在进行",
+        activeKind: acquired.activeKind,
+        ...(acquired.jobId ? { jobId: acquired.jobId } : {})
+      });
+      return;
+    }
+    const runId = acquired.value;
 
     void Promise.resolve()
       .then(() =>
@@ -303,6 +315,9 @@ export function createApp(dependencies?: AppDependencies): Express {
           finishedAt,
           "刷新失败"
         );
+      })
+      .finally(() => {
+        acquired.lease.release();
       });
 
     response.status(202).json({

@@ -7,7 +7,13 @@ import type {
   SourceId
 } from "../../src/domain/listing.js";
 import { createApp } from "../../src/server/app.js";
+import {
+  BrowserRefreshRepository
+} from "../../src/server/browserRefresh/repository.js";
 import { createDatabase } from "../../src/server/db.js";
+import {
+  RefreshAdmissionController
+} from "../../src/server/refreshAdmission.js";
 import { RefreshTracker } from "../../src/server/refreshTracker.js";
 import { ListingRepository } from "../../src/server/repository.js";
 import { makeListing, makeScore } from "../domain/listingFactory.js";
@@ -856,8 +862,9 @@ describe("listing API", () => {
     const second = await request(app).post("/api/refresh");
     expect(second.status).toBe(409);
     expect(second.body).toEqual({
-      error: "refresh_in_progress",
-      message: "刷新任务正在进行"
+      error: "refresh_conflict",
+      message: "另一个刷新任务正在进行",
+      activeKind: "all_sources"
     });
 
     const running = await request(app).get("/api/refresh-status");
@@ -880,6 +887,93 @@ describe("listing API", () => {
       source: null,
       phase: null
     });
+  });
+
+  it("returns a redacted browser conflict without creating a scan run", async () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const browserRepository = new BrowserRefreshRepository(database);
+    const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+    const admission = new RefreshAdmissionController({
+      browserRepository,
+      tracker,
+      now: () => new Date("2026-07-30T10:00:00.000Z")
+    });
+    const browser = admission.withBrowserLease(() =>
+      browserRepository.createJob(
+        new Date("2026-07-30T10:00:00.000Z")
+      )
+    );
+    if (browser.kind !== "acquired") {
+      throw new Error("expected browser admission");
+    }
+    const coordinator = {
+      refreshAll: vi.fn(async () => "success" as const)
+    };
+    const app = createApp({
+      repository,
+      coordinator,
+      tracker,
+      admission
+    });
+
+    const response = await request(app).post("/api/refresh");
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      error: "refresh_conflict",
+      message: "另一个刷新任务正在进行",
+      activeKind: "browser",
+      jobId: expect.any(String)
+    });
+    expect(response.body.jobId).not.toBe(browser.value.id);
+    expect(JSON.stringify(response.body)).not.toContain(
+      browser.value.claimCode
+    );
+    expect(coordinator.refreshAll).not.toHaveBeenCalled();
+    expect(repository.getScanHistory(10)).toEqual([]);
+  });
+
+  it("releases all-source admission after both success and failure", async () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const browserRepository = new BrowserRefreshRepository(database);
+    const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+    const admission = new RefreshAdmissionController({
+      browserRepository,
+      tracker
+    });
+    const coordinator = {
+      refreshAll: vi.fn()
+        .mockResolvedValueOnce("success" as const)
+        .mockRejectedValueOnce(new Error("collector failed"))
+        .mockResolvedValueOnce("success" as const)
+    };
+    const app = createApp({
+      repository,
+      coordinator,
+      tracker,
+      admission
+    });
+
+    const first = await request(app).post("/api/refresh");
+    expect(first.status).toBe(202);
+    await vi.waitFor(() => {
+      expect(tracker.snapshot().state).toBe("success");
+    });
+
+    const second = await request(app).post("/api/refresh");
+    expect(second.status).toBe(202);
+    await vi.waitFor(() => {
+      expect(tracker.snapshot().state).toBe("failed");
+    });
+
+    const third = await request(app).post("/api/refresh");
+    expect(third.status).toBe(202);
+    await vi.waitFor(() => {
+      expect(tracker.snapshot().state).toBe("success");
+    });
+    expect(coordinator.refreshAll).toHaveBeenCalledTimes(3);
   });
 
   it("records a background refresh rejection without exposing internals", async () => {
