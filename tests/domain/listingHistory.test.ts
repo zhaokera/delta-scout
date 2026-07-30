@@ -1,6 +1,7 @@
 import {
   buildListingHistorySnapshot,
-  diffListingSnapshots
+  diffListingSnapshots,
+  normalizeListingHistorySnapshot
 } from "../../src/domain/listingHistory";
 import { makeListing } from "./listingFactory";
 
@@ -21,6 +22,7 @@ describe("listing history snapshots", () => {
       eligibility: "eligible",
       m7PrismStatus: "peak",
       m7PrismQuality: "A",
+      m7RareFinishes: [],
       redSkins: ["威龙", "骇爪"],
       redSkinCount: 1,
       julangStatus: "owned",
@@ -37,6 +39,51 @@ describe("listing history snapshots", () => {
     expect(snapshot).not.toHaveProperty("title");
     expect(snapshot).not.toHaveProperty("evidence");
     expect(snapshot).not.toHaveProperty("score");
+  });
+
+  it("normalizes legacy finish fields and keeps their fixed order", () => {
+    const snapshot = buildListingHistorySnapshot(
+      makeListing({
+        m7RareFinishes: ["candy", "pearl", "iridescent", "pearl"]
+      })
+    );
+    const {
+      m7RareFinishes: _legacyFinishes,
+      ...legacy
+    } = snapshot;
+
+    expect(snapshot.m7RareFinishes).toEqual([
+      "pearl",
+      "iridescent",
+      "candy"
+    ]);
+    expect(
+      normalizeListingHistorySnapshot(legacy).m7RareFinishes
+    ).toEqual([]);
+    expect(
+      diffListingSnapshots(
+        legacy,
+        buildListingHistorySnapshot(
+          makeListing({ m7RareFinishes: [] })
+        )
+      )
+    ).toEqual([]);
+  });
+
+  it("reports a newly discovered M7 rare finish", () => {
+    const before = buildListingHistorySnapshot(
+      makeListing({ m7RareFinishes: [] })
+    );
+    const after = buildListingHistorySnapshot(
+      makeListing({ m7RareFinishes: ["pearl"] })
+    );
+
+    expect(diffListingSnapshots(before, after)).toContainEqual({
+      field: "m7RareFinishes",
+      label: "M7 稀有模板",
+      before: "待核验",
+      after: "珠光"
+    });
   });
 
   it("returns no change when only array order differs", () => {

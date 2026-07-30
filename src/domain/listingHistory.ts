@@ -5,6 +5,7 @@ export interface ListingHistorySnapshot {
   eligibility: Listing["eligibility"];
   m7PrismStatus: Listing["m7PrismStatus"];
   m7PrismQuality: Listing["m7PrismQuality"];
+  m7RareFinishes: Listing["m7RareFinishes"];
   redSkins: string[];
   redSkinCount: number | null;
   julangStatus: Listing["julangStatus"];
@@ -30,6 +31,45 @@ function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort();
 }
 
+const M7_RARE_FINISH_ORDER: readonly Listing["m7RareFinishes"][number][] = [
+  "pearl",
+  "iridescent",
+  "candy"
+];
+
+export function normalizeM7RareFinishes(
+  values: unknown
+): Listing["m7RareFinishes"] {
+  const found = new Set(
+    Array.isArray(values)
+      ? values.filter(
+          (
+            value
+          ): value is Listing["m7RareFinishes"][number] =>
+            M7_RARE_FINISH_ORDER.includes(
+              value as Listing["m7RareFinishes"][number]
+            )
+        )
+      : []
+  );
+  return M7_RARE_FINISH_ORDER.filter((finish) => found.has(finish));
+}
+
+export function normalizeListingHistorySnapshot(
+  value: unknown
+): ListingHistorySnapshot {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Invalid listing history snapshot");
+  }
+  const snapshot = value as Partial<ListingHistorySnapshot>;
+  return {
+    ...snapshot,
+    m7RareFinishes: normalizeM7RareFinishes(
+      snapshot.m7RareFinishes
+    )
+  } as ListingHistorySnapshot;
+}
+
 export function buildListingHistorySnapshot(
   listing: Listing
 ): ListingHistorySnapshot {
@@ -38,6 +78,9 @@ export function buildListingHistorySnapshot(
     eligibility: listing.eligibility,
     m7PrismStatus: listing.m7PrismStatus,
     m7PrismQuality: listing.m7PrismQuality,
+    m7RareFinishes: normalizeM7RareFinishes(
+      listing.m7RareFinishes
+    ),
     redSkins: uniqueSorted(listing.redSkins),
     redSkinCount: listing.redSkinCount,
     julangStatus: listing.julangStatus,
@@ -58,6 +101,7 @@ const LABELS: Record<keyof ListingHistorySnapshot, string> = {
   eligibility: "候选状态",
   m7PrismStatus: "M7 状态",
   m7PrismQuality: "M7 品质",
+  m7RareFinishes: "M7 稀有模板",
   redSkins: "角色红皮",
   redSkinCount: "红皮数量",
   julangStatus: "巨浪状态",
@@ -128,6 +172,17 @@ function formatValue(
     };
     return labels[value as Listing["m7PrismStatus"]];
   }
+  if (field === "m7RareFinishes") {
+    const labels = {
+      pearl: "珠光",
+      iridescent: "炫彩",
+      candy: "糖果"
+    } as const;
+    const finishes = normalizeM7RareFinishes(value);
+    return finishes.length > 0
+      ? finishes.map((finish) => labels[finish]).join("、")
+      : "待核验";
+  }
   if (Array.isArray(value)) {
     return value.length > 0 ? value.join("、") : "无";
   }
@@ -136,15 +191,17 @@ function formatValue(
 }
 
 export function diffListingSnapshots(
-  before: ListingHistorySnapshot,
-  after: ListingHistorySnapshot
+  before: unknown,
+  after: unknown
 ): ListingFieldChange[] {
+  const normalizedBefore = normalizeListingHistorySnapshot(before);
+  const normalizedAfter = normalizeListingHistorySnapshot(after);
   const changes: ListingFieldChange[] = [];
   for (const field of Object.keys(LABELS) as Array<
     keyof ListingHistorySnapshot
   >) {
-    const previous = before[field];
-    const current = after[field];
+    const previous = normalizedBefore[field];
+    const current = normalizedAfter[field];
     if (JSON.stringify(previous) === JSON.stringify(current)) continue;
     changes.push({
       field,

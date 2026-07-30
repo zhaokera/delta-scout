@@ -903,6 +903,62 @@ describe("ListingRepository", () => {
     });
   });
 
+  it("normalizes legacy history without inventing an empty finish change", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const failures = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7")
+    ];
+    const listing = makeListing({ m7RareFinishes: [] });
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      [listing],
+      [successUpdate("panzhi", 1), ...failures],
+      scanTime
+    );
+    const row = database
+      .prepare(`
+        SELECT run_id, snapshot_json
+        FROM listing_observations
+        WHERE listing_key = ?
+          AND trusted = 1
+      `)
+      .get(listing.key) as {
+      run_id: number;
+      snapshot_json: string;
+    };
+    const {
+      m7RareFinishes: _legacyFinishes,
+      ...legacySnapshot
+    } = JSON.parse(row.snapshot_json) as Record<string, unknown>;
+    database
+      .prepare(`
+        UPDATE listing_observations
+        SET snapshot_json = ?
+        WHERE run_id = ? AND listing_key = ?
+      `)
+      .run(JSON.stringify(legacySnapshot), row.run_id, listing.key);
+
+    const nextScan = new Date(scanTime.getTime() + 1_000);
+    repository.commitScanRefresh(
+      repository.startScan(nextScan),
+      [listing],
+      [successUpdate("panzhi", 1, "success", 1, nextScan), ...failures],
+      nextScan
+    );
+
+    const history = repository.getListingHistory(listing.key, 20);
+    expect(history?.observations[0].changes).not.toContainEqual(
+      expect.objectContaining({ field: "m7RareFinishes" })
+    );
+    expect(
+      history?.observations.map(
+        ({ snapshot }) => snapshot.m7RareFinishes
+      )
+    ).toEqual([[], []]);
+  });
+
   it("writes a removed tombstone only after a trusted complete scan", () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const failures = [

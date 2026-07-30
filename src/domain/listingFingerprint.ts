@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Listing } from "./listing.js";
+import { normalizeM7RareFinishes } from "./listingHistory.js";
 
 function sortedUnique(values: string[]): string[] {
   return [...new Set(values)].sort((left, right) =>
@@ -8,11 +9,15 @@ function sortedUnique(values: string[]): string[] {
 }
 
 export function listingMaterialHash(listing: Listing): string {
+  const m7RareFinishes = normalizeM7RareFinishes(
+    listing.m7RareFinishes
+  );
   const material = {
     priceCny: listing.priceCny,
     eligibility: listing.eligibility,
     m7PrismStatus: listing.m7PrismStatus,
     m7PrismQuality: listing.m7PrismQuality,
+    ...(m7RareFinishes.length > 0 ? { m7RareFinishes } : {}),
     redSkins: sortedUnique(listing.redSkins),
     redSkinCount: listing.redSkinCount,
     redSkinUnnamed: listing.redSkinUnnamed,

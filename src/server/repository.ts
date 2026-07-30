@@ -8,6 +8,7 @@ import { listingMaterialHash } from "../domain/listingFingerprint.js";
 import {
   buildListingHistorySnapshot,
   diffListingSnapshots,
+  normalizeListingHistorySnapshot,
   type ListingFieldChange,
   type ListingHistorySnapshot
 } from "../domain/listingHistory.js";
@@ -932,9 +933,9 @@ export class ListingRepository {
                           ]
                         : []),
                       ...diffListingSnapshots(
-                        JSON.parse(
-                          previous.snapshot_json
-                        ) as ListingHistorySnapshot,
+                        normalizeListingHistorySnapshot(
+                          JSON.parse(previous.snapshot_json)
+                        ),
                         snapshot
                       )
                     ]
@@ -1180,9 +1181,9 @@ export class ListingRepository {
     if (!current && rows.length === 0) return null;
 
     const observations: ListingHistoryObservation[] = rows.map((row) => {
-      const snapshot = JSON.parse(
-        row.snapshot_json
-      ) as ListingHistorySnapshot;
+      const snapshot = normalizeListingHistorySnapshot(
+        JSON.parse(row.snapshot_json)
+      );
       return {
         runId: row.run_id,
         observedAt: row.observed_at,
