@@ -775,6 +775,45 @@ export class JiaoyimaoBrowserTaskService {
       };
     }
     if (event.loadingVisible) {
+      if (
+        job.cooldownAttempt > 0 &&
+        job.actionPermitExpiresAt !== null
+      ) {
+        if (job.cooldownAttempt >= COOLDOWN_DELAYS_MS.length) {
+          return {
+            transition: {
+              next: "paused",
+              patch: {
+                stage: resumeTarget,
+                reason: "rate_limited",
+                lastError: "rate_limited",
+                cooldownUntil: null,
+                nextActionAt: null,
+                actionPermit: null,
+                actionPermitExpiresAt: null
+              }
+            }
+          };
+        }
+        const cooldownAttempt = job.cooldownAttempt + 1;
+        return {
+          transition: {
+            next: "cooling_down",
+            patch: {
+              stage: resumeTarget,
+              reason: "rate_limited",
+              lastError: "rate_limited",
+              cooldownAttempt,
+              cooldownUntil: new Date(
+                now.getTime() + COOLDOWN_DELAYS_MS[cooldownAttempt - 1]
+              ).toISOString(),
+              nextActionAt: null,
+              actionPermit: null,
+              actionPermitExpiresAt: null
+            }
+          }
+        };
+      }
       return {
         transition: {
           next: job.state,

@@ -346,6 +346,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     );
     expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
       state: "collecting_list",
+      cooldownAttempt: 0,
       nextActionAt: new Date(
         baseTime.getTime() + 1_200
       ).toISOString()
@@ -354,6 +355,97 @@ describe("JiaoyimaoBrowserTaskService", () => {
       () => f.service.getWork(f.id, f.token),
       "action_too_early"
     );
+  });
+
+  it("advances a permitted loading outcome to the next cooldown", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    const firstCooldown = f.service.startCooldown(f.id, f.token);
+    f.setTime(Date.parse(firstCooldown.cooldownUntil!));
+    const work = f.service.getWork(f.id, f.token);
+
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 0, 0, {
+        loadingVisible: true,
+        actionPermit: work.actionPermit
+      })
+    );
+
+    const secondDeadline = new Date(
+      Date.parse(firstCooldown.cooldownUntil!) + 120_000
+    ).toISOString();
+    expect(f.repository.getJob(
+      f.id,
+      new Date(Date.parse(firstCooldown.cooldownUntil!))
+    )).toMatchObject({
+      state: "cooling_down",
+      reason: "rate_limited",
+      cooldownAttempt: 2,
+      cooldownUntil: secondDeadline,
+      nextActionAt: null,
+      actionPermitExpiresAt: null,
+      actionPermitConsumedAt: null,
+      loadActionCount: 1
+    });
+    expectCode(
+      () => f.service.getWork(f.id, f.token),
+      "cooldown_active"
+    );
+  });
+
+  it("pauses after a permitted loading outcome exhausts stage four and resumes manually", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    let cooldown = f.service.startCooldown(f.id, f.token);
+
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      f.setTime(Date.parse(cooldown.cooldownUntil!));
+      const work = f.service.getWork(f.id, f.token);
+      f.service.submitLoadEvent(
+        f.id,
+        f.token,
+        loadEvent(attempt, 0, 0, {
+          loadingVisible: true,
+          actionPermit: work.actionPermit
+        })
+      );
+      if (attempt < 4) {
+        cooldown = f.repository.getJob(
+          f.id,
+          new Date(Date.parse(cooldown.cooldownUntil!))
+        )!;
+      }
+    }
+
+    const pausedAt = Date.parse(cooldown.cooldownUntil!);
+    expect(f.repository.getJob(f.id, new Date(pausedAt))).toMatchObject({
+      state: "paused",
+      reason: "rate_limited",
+      cooldownAttempt: 4,
+      cooldownUntil: null,
+      nextActionAt: null,
+      actionPermitExpiresAt: null,
+      actionPermitConsumedAt: null,
+      loadActionCount: 4
+    });
+
+    expect(f.service.resume(f.id, f.token)).toMatchObject({
+      state: "collecting_list",
+      reason: null,
+      cooldownAttempt: 0,
+      cooldownUntil: null,
+      nextActionAt: new Date(pausedAt + 1_200).toISOString()
+    });
+    expectCode(
+      () => f.service.getWork(f.id, f.token),
+      "action_too_early"
+    );
+    f.advance(1_200);
+    const manualWork = f.service.getWork(f.id, f.token);
+    expect(manualWork.kind).toBe("list");
+    expect(manualWork.actionPermit).toBeUndefined();
   });
 
   it.each([
