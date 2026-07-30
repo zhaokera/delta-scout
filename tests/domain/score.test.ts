@@ -12,8 +12,8 @@ describe("scoreEligibleListings", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 80,
-      value: 63.5,
+      total: 77,
+      value: 57.5,
       safety: 100,
       dataQuality: 100,
       riskLevel: "low",
@@ -22,7 +22,7 @@ describe("scoreEligibleListings", () => {
         totalSafetySignals: 3
       },
       parts: {
-        m7: 29,
+        m7: 23,
         redSkins: 4,
         julang: 15,
         price: 10,
@@ -65,10 +65,10 @@ describe("scoreEligibleListings", () => {
   });
 
   it.each([
-    ["S", 35],
-    ["A", 29],
-    ["B", 23],
-    ["C", 17],
+    ["S", 27],
+    ["A", 23],
+    ["B", 18],
+    ["C", 14],
     [null, 0]
   ] as const)("scores M7 quality %s explicitly", (quality, expected) => {
     const [result] = scoreEligibleListings([
@@ -87,6 +87,67 @@ describe("scoreEligibleListings", () => {
         "极品品质待核验"
       );
     }
+  });
+
+  it("adds one non-stacking eight-point bonus for trusted M7 finishes", () => {
+    const [untagged] = scoreEligibleListings([
+      makeListing({
+        key: "panzhi:untagged",
+        m7PrismQuality: "A",
+        m7RareFinishes: []
+      })
+    ], now);
+    const [tagged] = scoreEligibleListings([
+      makeListing({
+        key: "panzhi:tagged",
+        m7PrismQuality: "A",
+        m7RareFinishes: ["pearl"]
+      })
+    ], now);
+    const [multiTagged] = scoreEligibleListings([
+      makeListing({
+        key: "panzhi:multi-tagged",
+        m7PrismQuality: "S",
+        m7RareFinishes: ["pearl", "iridescent", "candy"]
+      })
+    ], now);
+
+    expect(untagged.score?.parts.m7).toBe(23);
+    expect(tagged.score?.parts.m7).toBe(31);
+    expect(multiTagged.score?.parts.m7).toBe(35);
+    expect(tagged.score?.parts).not.toHaveProperty("m7RareFinish");
+    expect(tagged.score?.valueReasons.join(" ")).toContain(
+      "品质价值 23.0/27"
+    );
+    expect(tagged.score?.valueReasons.join(" ")).toContain(
+      "M7 稀有模板：珠光 M7，价值 8.0/8"
+    );
+    expect(untagged.score?.valueReasons.join(" ")).toContain(
+      "M7 稀有模板待核验，价值 0.0/8"
+    );
+  });
+
+  it("does not let M7 rare finishes change purchase safety or risk", () => {
+    const listings = [
+      makeListing({
+        key: "panzhi:plain",
+        m7RareFinishes: [],
+        secondRealNameAvailable: false,
+        recoveryCoverage: true
+      }),
+      makeListing({
+        key: "panzhi:rare",
+        m7RareFinishes: ["candy"],
+        secondRealNameAvailable: false,
+        recoveryCoverage: true
+      })
+    ];
+    const results = scoreEligibleListings(listings, now);
+    const plain = results.find(({ key }) => key === "panzhi:plain")!;
+    const rare = results.find(({ key }) => key === "panzhi:rare")!;
+
+    expect(rare.score?.safety).toBe(plain.score?.safety);
+    expect(rare.score?.riskLevel).toBe(plain.score?.riskLevel);
   });
 
   it("caps red-skin value at five and scores Julang separately", () => {
@@ -181,11 +242,11 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.value).toBe(45);
+    expect(result.score?.value).toBe(37);
     expect(result.score?.safety).toBe(40);
     expect(result.score?.dataQuality).toBe(80);
     expect(result.score?.total).toBe(
-      Math.round(45 * 0.55 + 40 * 0.35 + 80 * 0.1)
+      Math.round(37 * 0.55 + 40 * 0.35 + 80 * 0.1)
     );
   });
 

@@ -31,10 +31,15 @@ function percentile(
 }
 
 const QUALITY_POINTS = {
-  S: 35,
-  A: 29,
-  B: 23,
-  C: 17
+  S: 27,
+  A: 23,
+  B: 18,
+  C: 14
+} as const;
+const M7_RARE_FINISH_LABELS = {
+  pearl: "珠光 M7",
+  iridescent: "炫彩 M7",
+  candy: "糖果 M7"
 } as const;
 
 function verificationAgeDays(listing: Listing, now: Date): number | null {
@@ -128,10 +133,13 @@ function scoreOne(
     percentile(listing.totalAssetsM, stats.totalAssets) * 6 +
     percentile(listing.hafCoins, stats.hafCoins) * 3 +
     (hasAssets ? 1 : 0);
-  const m7 =
+  const m7Quality =
     listing.m7PrismQuality === null
       ? 0
       : QUALITY_POINTS[listing.m7PrismQuality];
+  const m7RareFinish = listing.m7RareFinishes.length > 0 ? 8 : 0;
+  const combinedM7 = m7Quality + m7RareFinish;
+  const m7 = combinedM7 > 35 ? 35 : combinedM7;
   const scoredRedSkinCount =
     listing.redSkins.length > 5 ? 5 : listing.redSkins.length;
   const redSkins = scoredRedSkinCount * 4;
@@ -164,7 +172,12 @@ function scoreOne(
       ? "验号时间待核验"
       : `验号距今 ${Math.floor(safetyPartValues.verificationAge)} 天`;
   const valueReasons = [
-    `${m7ValueReason(listing)}，价值 ${m7.toFixed(1)}/35`,
+    `${m7ValueReason(listing)}，品质价值 ${m7Quality.toFixed(1)}/27`,
+    listing.m7RareFinishes.length > 0
+      ? `M7 稀有模板：${listing.m7RareFinishes
+          .map((finish) => M7_RARE_FINISH_LABELS[finish])
+          .join(" · ")}，价值 ${m7RareFinish.toFixed(1)}/8`
+      : "M7 稀有模板待核验，价值 0.0/8",
     `${listing.redSkins.length} 个已识别角色红皮，价值 ${redSkins.toFixed(1)}/20`,
     `${julangReason}，价值 ${julang.toFixed(1)}/15`,
     `价格合理性 ${price.toFixed(1)}/20`,
