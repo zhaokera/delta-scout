@@ -8,8 +8,16 @@ import type {
 } from "../../src/domain/listing.js";
 import { createApp } from "../../src/server/app.js";
 import {
+  BROWSER_REFRESH_LIMITS,
+  type BrowserFilterProof,
+  type BrowserListBatch
+} from "../../src/server/browserRefresh/contracts.js";
+import {
   BrowserRefreshRepository
 } from "../../src/server/browserRefresh/repository.js";
+import {
+  JiaoyimaoBrowserTaskService
+} from "../../src/server/browserRefresh/service.js";
 import { createDatabase } from "../../src/server/db.js";
 import {
   RefreshAdmissionController
@@ -25,15 +33,48 @@ function setup() {
     refreshAll: vi.fn(async () => "success" as const)
   };
   const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+  const browserRepository = new BrowserRefreshRepository(database);
   const admission = new RefreshAdmissionController({
-    browserRepository: new BrowserRefreshRepository(database),
+    browserRepository,
     tracker
   });
+  const browserService = new JiaoyimaoBrowserTaskService(
+    browserRepository,
+    {
+      publisher: repository,
+      releaseAdmission: (jobId) => admission.releaseBrowser(jobId)
+    }
+  );
   return {
     repository,
     coordinator,
     tracker,
-    app: createApp({ repository, coordinator, tracker, admission })
+    app: createApp({
+      repository,
+      coordinator,
+      tracker,
+      admission,
+      browserRepository,
+      browserService
+    })
+  };
+}
+
+function browserAppExtras(
+  database: ReturnType<typeof createDatabase>,
+  repository: ListingRepository,
+  admission: RefreshAdmissionController
+) {
+  const browserRepository = new BrowserRefreshRepository(database);
+  return {
+    browserRepository,
+    browserService: new JiaoyimaoBrowserTaskService(
+      browserRepository,
+      {
+        publisher: repository,
+        releaseAdmission: (jobId) => admission.releaseBrowser(jobId)
+      }
+    )
   };
 }
 
@@ -96,6 +137,155 @@ function seedCandidateUniverse(repository: ListingRepository): void {
       "success"
     );
   }
+}
+
+const browserBaseTime = new Date("2026-07-30T10:00:00.000Z");
+const browserFilterUrl =
+  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/";
+
+function browserProof(
+  overrides: Partial<BrowserFilterProof> = {}
+): BrowserFilterProof {
+  return {
+    currentUrl: browserFilterUrl,
+    gameLabel: "三角洲行动",
+    platformLabel: "QQ",
+    categoryLabel: "账号",
+    m7FilterLabels: [
+      "M7棱镜攻势极品S",
+      "M7棱镜攻势极品A",
+      "M7棱镜攻势极品B",
+      "M7棱镜攻势极品C"
+    ],
+    observedAt: browserBaseTime.toISOString(),
+    ...overrides
+  };
+}
+
+function browserBatch(
+  items: Array<[string, number | null]>,
+  sequence = 1
+): BrowserListBatch {
+  return {
+    sequence,
+    observedAt: browserBaseTime.toISOString(),
+    items: items.map(([sourceListingId, priceCny]) => ({
+      sourceListingId,
+      url:
+        `https://www.jiaoyimao.com/jg2007840/${sourceListingId}.html`,
+      title: `商品 ${sourceListingId}`,
+      rawText: "M7棱镜攻势 极品S",
+      priceCny
+    }))
+  };
+}
+
+function sizedUnicodeBrowserBatch(
+  targetBytes: number,
+  sequence: number
+): BrowserListBatch {
+  const batch = browserBatch(
+    Array.from({ length: 25 }, (_, index) => [
+      String(sequence * 100 + index + 1),
+      7_000
+    ]),
+    sequence
+  );
+  for (const item of batch.items) item.rawText = "";
+  const baseBytes = Buffer.byteLength(JSON.stringify(batch), "utf8");
+  let remaining = targetBytes - baseBytes;
+  if (remaining < 0) {
+    throw new Error("Target payload is smaller than its JSON envelope");
+  }
+  for (const item of batch.items) {
+    const characters = Math.min(
+      BROWSER_REFRESH_LIMITS.maxCardTextChars,
+      Math.floor(remaining / 3)
+    );
+    item.rawText = "界".repeat(characters);
+    remaining -= characters * 3;
+  }
+  const remainderItem = batch.items.find(
+    ({ rawText }) =>
+      rawText.length + remaining <=
+      BROWSER_REFRESH_LIMITS.maxCardTextChars
+  );
+  if (!remainderItem) {
+    throw new Error("No list item can hold the payload byte remainder");
+  }
+  remainderItem.rawText += "x".repeat(remaining);
+  expect(Buffer.byteLength(JSON.stringify(batch), "utf8")).toBe(
+    targetBytes
+  );
+  return batch;
+}
+
+function browserApiSetup() {
+  const database = createDatabase(":memory:");
+  const repository = new ListingRepository(database);
+  const browserRepository = new BrowserRefreshRepository(database);
+  const coordinator = {
+    refreshAll: vi.fn(async () => "success" as const)
+  };
+  const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+  let now = browserBaseTime.getTime();
+  const admission = new RefreshAdmissionController({
+    browserRepository,
+    tracker,
+    now: () => new Date(now)
+  });
+  const browserService = new JiaoyimaoBrowserTaskService(
+    browserRepository,
+    {
+      now: () => new Date(now),
+      random: () => 0,
+      publisher: repository,
+      releaseAdmission: (jobId) => admission.releaseBrowser(jobId)
+    }
+  );
+  const app = createApp({
+    repository,
+    coordinator,
+    tracker,
+    admission,
+    browserRepository,
+    browserService
+  });
+  return {
+    app,
+    database,
+    repository,
+    browserRepository,
+    browserService,
+    coordinator,
+    tracker,
+    admission,
+    advance(milliseconds: number) {
+      now += milliseconds;
+    }
+  };
+}
+
+async function createAndClaimBrowserJob(
+  f: ReturnType<typeof browserApiSetup>
+) {
+  const created = await request(f.app)
+    .post("/api/sources/jiaoyimao/browser-refresh")
+    .send({});
+  expect(created.status).toBe(202);
+  const claimed = await request(f.app)
+    .post(`/api/browser-refresh/${created.body.jobId}/claim`)
+    .send({ claimCode: created.body.claimCode });
+  expect(claimed.status).toBe(200);
+  return {
+    id: created.body.jobId as string,
+    claimCode: created.body.claimCode as string,
+    token: claimed.body.bridgeToken as string
+  };
+}
+
+function bearer(token: string): string {
+  return `Bearer ${token}`;
 }
 
 describe("listing API", () => {
@@ -776,7 +966,8 @@ describe("listing API", () => {
       repository,
       coordinator,
       tracker,
-      admission
+      admission,
+      ...browserAppExtras(database, repository, admission)
     });
 
     const refresh = request(app).post("/api/refresh");
@@ -874,7 +1065,8 @@ describe("listing API", () => {
       repository,
       coordinator,
       tracker,
-      admission
+      admission,
+      ...browserAppExtras(database, repository, admission)
     });
 
     const first = await request(app).post("/api/refresh");
@@ -934,7 +1126,8 @@ describe("listing API", () => {
       repository,
       coordinator,
       tracker,
-      admission
+      admission,
+      ...browserAppExtras(database, repository, admission)
     });
 
     const response = await request(app).post("/api/refresh");
@@ -973,7 +1166,8 @@ describe("listing API", () => {
       repository,
       coordinator,
       tracker,
-      admission
+      admission,
+      ...browserAppExtras(database, repository, admission)
     });
 
     const first = await request(app).post("/api/refresh");
@@ -1017,7 +1211,8 @@ describe("listing API", () => {
       repository,
       coordinator,
       tracker,
-      admission
+      admission,
+      ...browserAppExtras(database, repository, admission)
     });
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => {
@@ -1070,7 +1265,8 @@ describe("listing API", () => {
       repository,
       coordinator,
       tracker,
-      admission
+      admission,
+      ...browserAppExtras(database, repository, admission)
     });
 
     const response = await request(app).post("/api/refresh");
@@ -1145,13 +1341,22 @@ describe("listing API", () => {
       browserRepository,
       tracker
     });
+    const browserService = new JiaoyimaoBrowserTaskService(
+      browserRepository,
+      {
+        publisher: repository,
+        releaseAdmission: (jobId) => admission.releaseBrowser(jobId)
+      }
+    );
     const app = createApp({
       repository,
       coordinator: {
         refreshAll: vi.fn(async () => "success" as const)
       },
       tracker,
-      admission
+      admission,
+      browserRepository,
+      browserService
     });
     const created = browserRepository.createJob(
       new Date("2026-07-30T10:00:00.000Z")
@@ -1192,4 +1397,473 @@ describe("listing API", () => {
       })
     ]);
   });
+});
+
+describe("browser refresh API", () => {
+  it("creates, redacts, and one-time claims a browser refresh job", async () => {
+    const f = browserApiSetup();
+
+    const created = await request(f.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .send({});
+
+    expect(created.status).toBe(202);
+    expect(created.body).toEqual({
+      jobId: expect.any(String),
+      state: "awaiting_codex",
+      claimCode: expect.any(String),
+      expiresAt: expect.any(String)
+    });
+    expect(created.body.jobId).not.toBe(created.body.claimCode);
+    const current = await request(f.app)
+      .get("/api/sources/jiaoyimao/browser-refresh/current");
+    expect(current.status).toBe(200);
+    expect(current.body).toMatchObject({
+      id: created.body.jobId,
+      state: "awaiting_codex",
+      scanRunId: null,
+      publishedRunId: null
+    });
+    expect(JSON.stringify(current.body)).not.toMatch(
+      /claimCode|bridgeToken|credential|_hash|Hash/
+    );
+    expect(JSON.stringify(current.body)).not.toContain(
+      created.body.claimCode
+    );
+
+    const wrong = await request(f.app)
+      .post(`/api/browser-refresh/${created.body.jobId}/claim`)
+      .send({ claimCode: "wrong-claim-code" });
+    expect(wrong.status).toBe(401);
+    expect(wrong.body).toEqual({
+      error: "bridge_unauthorized",
+      message: expect.any(String)
+    });
+
+    const claimed = await request(f.app)
+      .post(`/api/browser-refresh/${created.body.jobId}/claim`)
+      .send({ claimCode: created.body.claimCode });
+    expect(claimed.status).toBe(200);
+    expect(claimed.body).toMatchObject({
+      id: created.body.jobId,
+      state: "collecting_list",
+      bridgeToken: expect.any(String)
+    });
+    expect(claimed.body.bridgeToken).not.toBe(created.body.claimCode);
+
+    const replay = await request(f.app)
+      .post(`/api/browser-refresh/${created.body.jobId}/claim`)
+      .send({ claimCode: created.body.claimCode });
+    expect(replay.status).toBe(409);
+    expect(JSON.stringify(replay.body)).not.toContain(
+      created.body.claimCode
+    );
+    expect(JSON.stringify(replay.body)).not.toContain(
+      claimed.body.bridgeToken
+    );
+  });
+
+  it("requires a valid unexpired Bearer credential on every bridge route", async () => {
+    const f = browserApiSetup();
+    const job = await createAndClaimBrowserJob(f);
+
+    const missing = await request(f.app)
+      .get(`/api/browser-refresh/${job.id}/work`);
+    expect(missing.status).toBe(401);
+    const wrong = await request(f.app)
+      .get(`/api/browser-refresh/${job.id}/work`)
+      .set("Authorization", bearer("wrong-token"));
+    expect(wrong.status).toBe(401);
+
+    f.database.prepare(`
+      UPDATE browser_refresh_jobs SET expires_at = ?
+      WHERE id = ?
+    `).run(
+      new Date(browserBaseTime.getTime() - 1).toISOString(),
+      job.id
+    );
+    const expired = await request(f.app)
+      .get(`/api/browser-refresh/${job.id}/work`)
+      .set("Authorization", bearer(job.token));
+    expect(expired.status).toBe(401);
+    expect(expired.body.error).toBe("bridge_unauthorized");
+    expect(JSON.stringify(expired.body)).not.toContain(job.token);
+  });
+
+  it.each([
+    ["get", "work"],
+    ["post", "filter-proof"],
+    ["post", "list-batches"],
+    ["post", "load-events"],
+    ["post", "details"],
+    ["post", "pause"],
+    ["post", "resume"],
+    ["post", "cooldown"],
+    ["post", "complete"]
+  ] as const)(
+    "rejects missing Bearer credentials for %s %s",
+    async (method, suffix) => {
+      const f = browserApiSetup();
+      const job = await createAndClaimBrowserJob(f);
+      const response = method === "get"
+        ? await request(f.app)
+            .get(`/api/browser-refresh/${job.id}/${suffix}`)
+        : await request(f.app)
+            .post(`/api/browser-refresh/${job.id}/${suffix}`)
+            .send({});
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({
+        error: "bridge_unauthorized",
+        message: expect.any(String)
+      });
+      expect(JSON.stringify(response.body)).not.toContain(job.token);
+    }
+  );
+
+  it("exposes all collection commands with strict bodies and state mapping", async () => {
+    const f = browserApiSetup();
+    const job = await createAndClaimBrowserJob(f);
+    const auth = { Authorization: bearer(job.token) };
+
+    const work = await request(f.app)
+      .get(`/api/browser-refresh/${job.id}/work`)
+      .set(auth);
+    expect(work.status).toBe(200);
+    expect(work.body).toMatchObject({
+      id: job.id,
+      kind: "list",
+      nextListBatchSequence: 1,
+      nextLoadSequence: 1
+    });
+
+    const invalidProof = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/filter-proof`)
+      .set(auth)
+      .send(browserProof({
+        currentUrl: "https://evil.example/jg2007840/"
+      }));
+    expect(invalidProof.status).toBe(400);
+    expect(invalidProof.body.error).toBe("invalid_browser_payload");
+
+    await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/filter-proof`)
+      .set(auth)
+      .send(browserProof())
+      .expect(200);
+
+    const list = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/list-batches`)
+      .set(auth)
+      .send(browserBatch([["101", 5_000]]));
+    expect(list.status).toBe(200);
+    expect(list.body).toMatchObject({
+      acceptedCount: 1,
+      uniqueItemCount: 1,
+      nextSequence: 2
+    });
+
+    const load = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/load-events`)
+      .set(auth)
+      .send({
+        sequence: 1,
+        observedUniqueCount: 1,
+        newItemCount: 1,
+        visibleTotalCount: 1,
+        endMarkerVisible: true,
+        loadingVisible: false,
+        blockingState: "none",
+        observedAt: browserBaseTime.toISOString()
+      });
+    expect(load.status).toBe(200);
+    expect(load.body.nextSequence).toBe(2);
+
+    f.advance(2_000);
+    const details = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/details`)
+      .set(auth)
+      .send({
+        sequence: 1,
+        items: [{
+          sourceListingId: "101",
+          url:
+            "https://www.jiaoyimao.com/jg2007840/101.html",
+          observedAt: browserBaseTime.toISOString(),
+          sections: {
+            head: "三角洲行动 QQ账号 ¥5000",
+            report: "验号报告 M7棱镜攻势 极品S",
+            safety: "可二次实名 找回包赔",
+            description: "M7珠光"
+          }
+        }]
+      });
+    expect(details.status).toBe(200);
+    expect(details.body).toMatchObject({
+      acceptedCount: 1,
+      detailCompletedCount: 1,
+      detailRequiredCount: 1
+    });
+
+    const invalidSequence = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/list-batches`)
+      .set(auth)
+      .send(browserBatch([["102", 7_000]], 3));
+    expect(invalidSequence.status).toBe(409);
+  });
+
+  it("supports pause, resume, cooldown, keep-waiting, and cancel", async () => {
+    const f = browserApiSetup();
+    const job = await createAndClaimBrowserJob(f);
+    const auth = { Authorization: bearer(job.token) };
+
+    const paused = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/pause`)
+      .set(auth)
+      .send({
+        reason: "captcha_required",
+        message: "等待用户完成验证码"
+      });
+    expect(paused.status).toBe(200);
+    expect(paused.body).toMatchObject({
+      state: "awaiting_user_verification",
+      reason: "captcha_required"
+    });
+
+    const resumed = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/resume`)
+      .set(auth)
+      .send({});
+    expect(resumed.status).toBe(200);
+
+    const cooldown = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/cooldown`)
+      .set(auth)
+      .send({ reason: "rate_limited" });
+    expect(cooldown.status).toBe(200);
+    expect(cooldown.body).toMatchObject({
+      state: "cooling_down",
+      cooldownAttempt: 1
+    });
+
+    const tooSoon = await request(f.app)
+      .get(`/api/browser-refresh/${job.id}/work`)
+      .set(auth);
+    expect(tooSoon.status).toBe(409);
+    expect(tooSoon.body).toMatchObject({
+      error: "cooldown_active",
+      retryAt: expect.any(String)
+    });
+
+    await request(f.app)
+      .post(
+        `/api/sources/jiaoyimao/browser-refresh/${job.id}/keep-waiting`
+      )
+      .send({})
+      .expect(200);
+    const cancelled = await request(f.app)
+      .post(`/api/sources/jiaoyimao/browser-refresh/${job.id}/cancel`)
+      .send({});
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.state).toBe("cancelled");
+
+    const afterCancel = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/resume`)
+      .set(auth)
+      .send({});
+    expect(afterCancel.status).toBe(401);
+  });
+
+  it("enforces the 128 KiB limit by UTF-8 bytes at the exact boundary", async () => {
+    const f = browserApiSetup();
+    const job = await createAndClaimBrowserJob(f);
+    const auth = { Authorization: bearer(job.token) };
+    await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/filter-proof`)
+      .set(auth)
+      .send(browserProof())
+      .expect(200);
+
+    const accepted = sizedUnicodeBrowserBatch(
+      BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes - 1,
+      1
+    );
+    const under = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/list-batches`)
+      .set(auth)
+      .send(accepted);
+    expect(under.status).toBe(200);
+    expect(under.body.acceptedCount).toBe(25);
+
+    const rejected = sizedUnicodeBrowserBatch(
+      BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes + 1,
+      2
+    );
+    const over = await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/list-batches`)
+      .set(auth)
+      .send(rejected);
+    expect(over.status).toBe(413);
+    expect(over.body).toEqual({
+      error: "browser_payload_too_large",
+      message: expect.any(String)
+    });
+    expect(JSON.stringify(over.body)).not.toContain("界");
+  });
+
+  it("keeps the existing larger JSON limit outside browser refresh routes", async () => {
+    const { app } = setup();
+    const response = await request(app)
+      .post("/api/refresh")
+      .send({ padding: "x".repeat(140 * 1_024) });
+
+    expect(response.status).toBe(202);
+  });
+
+  it("arbitrates browser and ordinary refreshes before creating either record", async () => {
+    let releaseAll!: () => void;
+    const allWaiting = new Promise<void>((resolve) => {
+      releaseAll = resolve;
+    });
+    const allFirst = browserApiSetup();
+    allFirst.coordinator.refreshAll.mockImplementationOnce(async () => {
+      await allWaiting;
+      return "success";
+    });
+    const ordinary = await request(allFirst.app).post("/api/refresh");
+    expect(ordinary.status).toBe(202);
+    const browserConflict = await request(allFirst.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .send({});
+    expect(browserConflict.status).toBe(409);
+    expect(browserConflict.body).toMatchObject({
+      error: "refresh_conflict",
+      activeKind: "all_sources"
+    });
+    expect(allFirst.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
+    releaseAll();
+
+    const browserFirst = browserApiSetup();
+    const browser = await request(browserFirst.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .send({});
+    expect(browser.status).toBe(202);
+    const ordinaryConflict = await request(browserFirst.app)
+      .post("/api/refresh");
+    expect(ordinaryConflict.status).toBe(409);
+    expect(ordinaryConflict.body).toMatchObject({
+      error: "refresh_conflict",
+      activeKind: "browser"
+    });
+    expect(browserFirst.repository.getScanHistory(10)).toEqual([]);
+  });
+
+  it("cancels staging without changing formal listings", async () => {
+    const f = browserApiSetup();
+    const formal = listingFor("jiaoyimao", 90, {
+      title: "正式候选"
+    });
+    f.repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      [formal],
+      "success",
+      browserBaseTime
+    );
+    const job = await createAndClaimBrowserJob(f);
+    await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/filter-proof`)
+      .set("Authorization", bearer(job.token))
+      .send(browserProof())
+      .expect(200);
+    await request(f.app)
+      .post(`/api/browser-refresh/${job.id}/list-batches`)
+      .set("Authorization", bearer(job.token))
+      .send(browserBatch([["901", 5_000]]))
+      .expect(200);
+
+    const cancelled = await request(f.app)
+      .post(`/api/sources/jiaoyimao/browser-refresh/${job.id}/cancel`)
+      .send({});
+
+    expect(cancelled.status).toBe(200);
+    expect(f.repository.getListings()).toEqual([formal]);
+    expect(f.admission.snapshot()).toEqual({ activeKind: "none" });
+  });
+
+  it.each([
+    { baselineCount: 0, expectedState: "success" },
+    { baselineCount: 100, expectedState: "quarantined" }
+  ])(
+    "completes as $expectedState with redacted scan linkage",
+    async ({ baselineCount, expectedState }) => {
+      const f = browserApiSetup();
+      if (baselineCount > 0) {
+        f.repository.replaceSourceSnapshot(
+          "jiaoyimao",
+          Array.from({ length: baselineCount }, (_, index) =>
+            listingFor("jiaoyimao", index + 1, {
+              score: makeScore(50)
+            })
+          ),
+          "success",
+          browserBaseTime,
+          { pagesScanned: 5, stopReason: "end_of_pages" }
+        );
+      }
+      const job = await createAndClaimBrowserJob(f);
+      const auth = { Authorization: bearer(job.token) };
+      await request(f.app)
+        .post(`/api/browser-refresh/${job.id}/filter-proof`)
+        .set(auth)
+        .send(browserProof())
+        .expect(200);
+      await request(f.app)
+        .post(`/api/browser-refresh/${job.id}/list-batches`)
+        .set(auth)
+        .send(browserBatch([["9901", 7_000]]))
+        .expect(200);
+      await request(f.app)
+        .post(`/api/browser-refresh/${job.id}/load-events`)
+        .set(auth)
+        .send({
+          sequence: 1,
+          observedUniqueCount: 1,
+          newItemCount: 1,
+          visibleTotalCount: 1,
+          endMarkerVisible: true,
+          loadingVisible: false,
+          blockingState: "none",
+          observedAt: browserBaseTime.toISOString()
+        })
+        .expect(200);
+
+      const completed = await request(f.app)
+        .post(`/api/browser-refresh/${job.id}/complete`)
+        .set(auth)
+        .send({});
+
+      expect(completed.status).toBe(200);
+      expect(completed.body).toEqual({
+        state: expectedState,
+        scanRunId: expect.any(Number),
+        publishedRunId:
+          expectedState === "success" ? expect.any(Number) : null
+      });
+      const current = await request(f.app)
+        .get("/api/sources/jiaoyimao/browser-refresh/current");
+      expect(current.status).toBe(200);
+      expect(current.body).toMatchObject({
+        id: job.id,
+        state: expectedState,
+        scanRunId: completed.body.scanRunId,
+        publishedRunId: completed.body.publishedRunId
+      });
+      expect(JSON.stringify(current.body)).not.toMatch(
+        /claimCode|bridgeToken|credential|_hash|Hash/
+      );
+      expect(JSON.stringify(current.body)).not.toContain(job.claimCode);
+      expect(JSON.stringify(current.body)).not.toContain(job.token);
+      expect(f.admission.snapshot()).toEqual({ activeKind: "none" });
+    }
+  );
 });

@@ -1,5 +1,9 @@
-import express, { type Express } from "express";
-import { z } from "zod";
+import express, {
+  type ErrorRequestHandler,
+  type Express,
+  type Response
+} from "express";
+import { z, ZodError } from "zod";
 import {
   selectBalancedCandidatePool,
   selectGlobalCandidatePool
@@ -10,6 +14,23 @@ import {
   type SourceId
 } from "../domain/listing.js";
 import { compareRecommendations } from "../domain/score.js";
+import {
+  BROWSER_REFRESH_LIMITS,
+  BrowserCooldownSchema,
+  BrowserDetailBatchSchema,
+  BrowserFilterProofSchema,
+  BrowserListBatchSchema,
+  BrowserLoadEventSchema,
+  BrowserPauseSchema
+} from "./browserRefresh/contracts.js";
+import type {
+  BrowserRefreshRepository
+} from "./browserRefresh/repository.js";
+import {
+  BrowserRefreshServiceError,
+  type BrowserRefreshServiceErrorCode,
+  type JiaoyimaoBrowserTaskService
+} from "./browserRefresh/service.js";
 import type {
   ListingRepository,
   ScanState,
@@ -35,12 +56,82 @@ interface AppDependencies {
   coordinator: RefreshCoordinator;
   tracker: RefreshTracker;
   admission: RefreshAdmissionController;
+  browserRepository: BrowserRefreshRepository;
+  browserService: JiaoyimaoBrowserTaskService;
 }
 
 const ListingViewSchema = z.enum(["pool", "all"]);
 const PoolModeSchema = z.enum(["balanced", "global"]);
 const HistoryLimitSchema = z.coerce.number().int().min(1).max(50);
+const EmptyBodySchema = z.strictObject({});
+const ClaimBodySchema = z.strictObject({
+  claimCode: z.string().min(1)
+    .max(BROWSER_REFRESH_LIMITS.maxClaimCodeChars)
+});
 type PoolMode = z.infer<typeof PoolModeSchema>;
+
+const BROWSER_ERROR_MESSAGES: Record<
+  BrowserRefreshServiceErrorCode,
+  string
+> = {
+  browser_job_not_found: "交易猫浏览器刷新任务不存在",
+  browser_job_conflict: "交易猫浏览器刷新任务已存在",
+  browser_job_expired: "交易猫浏览器刷新任务已过期",
+  bridge_unauthorized: "浏览器桥接凭据无效或已过期",
+  invalid_transition: "当前任务状态不允许此操作",
+  filter_mismatch: "页面筛选条件与目标不一致",
+  staging_invalid: "浏览器采集数据无效",
+  list_incomplete: "列表采集尚未完成",
+  details_incomplete: "详情采集尚未完成",
+  safety_limit: "浏览器采集已达到安全上限",
+  cooldown_active: "浏览器采集仍在冷却中",
+  action_too_early: "尚未到下一次浏览器操作时间",
+  action_permit_required: "本次操作需要一次性许可",
+  action_permit_invalid: "一次性操作许可无效或已过期"
+};
+
+function sendBrowserError(
+  response: Response,
+  error: unknown,
+  bridgeRoute = false
+): void {
+  if (error instanceof ZodError) {
+    response.status(400).json({
+      error: "invalid_browser_payload",
+      message: "浏览器刷新请求格式无效"
+    });
+    return;
+  }
+  if (error instanceof BrowserRefreshServiceError) {
+    if (
+      error.code === "bridge_unauthorized" ||
+      (bridgeRoute && error.code === "browser_job_expired")
+    ) {
+      response.status(401).json({
+        error: "bridge_unauthorized",
+        message: BROWSER_ERROR_MESSAGES.bridge_unauthorized
+      });
+      return;
+    }
+    const status = error.code === "browser_job_not_found" ? 404 : 409;
+    response.status(status).json({
+      error: error.code,
+      message: BROWSER_ERROR_MESSAGES[error.code],
+      ...(error.retryAt ? { retryAt: error.retryAt } : {})
+    });
+    return;
+  }
+  response.status(500).json({
+    error: "browser_refresh_failed",
+    message: "交易猫浏览器刷新操作失败"
+  });
+}
+
+function readBearerToken(authorization: string | undefined): string | null {
+  if (!authorization) return null;
+  const match = authorization.match(/^Bearer ([A-Za-z0-9_-]{16,256})$/);
+  return match?.[1] ?? null;
+}
 
 interface CurrentListingSnapshot {
   statuses: SourceStatus[];
@@ -129,6 +220,11 @@ function derivedSourceStatuses(
 export function createApp(dependencies?: AppDependencies): Express {
   const app = express();
 
+  const browserJson = express.json({
+    limit: BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes
+  });
+  app.use("/api/browser-refresh", browserJson);
+  app.use("/api/sources/jiaoyimao/browser-refresh", browserJson);
   app.use(express.json({ limit: "256kb" }));
   app.get("/api/health", (_request, response) => {
     response.json({
@@ -143,8 +239,241 @@ export function createApp(dependencies?: AppDependencies): Express {
     repository,
     coordinator,
     tracker,
-    admission
+    admission,
+    browserRepository,
+    browserService
   } = dependencies;
+
+  const bridgeToken = (
+    authorization: string | undefined,
+    response: Response
+  ): string | null => {
+    const token = readBearerToken(authorization);
+    if (token !== null) return token;
+    response.status(401).json({
+      error: "bridge_unauthorized",
+      message: BROWSER_ERROR_MESSAGES.bridge_unauthorized
+    });
+    return null;
+  };
+
+  app.post(
+    "/api/sources/jiaoyimao/browser-refresh",
+    (request, response) => {
+      try {
+        EmptyBodySchema.parse(request.body ?? {});
+        const acquired = admission.withBrowserLease(
+          () => browserService.create()
+        );
+        if (acquired.kind === "conflict") {
+          response.status(409).json({
+            error: "refresh_conflict",
+            message: "另一个刷新任务正在进行",
+            activeKind: acquired.activeKind,
+            ...(acquired.jobId ? { jobId: acquired.jobId } : {})
+          });
+          return;
+        }
+        response.status(202).json({
+          jobId: acquired.value.id,
+          state: acquired.value.state,
+          claimCode: acquired.value.claimCode,
+          expiresAt: acquired.value.expiresAt
+        });
+      } catch (error) {
+        sendBrowserError(response, error);
+      }
+    }
+  );
+
+  app.get(
+    "/api/sources/jiaoyimao/browser-refresh/current",
+    (_request, response) => {
+      try {
+        response.json(browserRepository.getCurrentJob());
+      } catch (error) {
+        sendBrowserError(response, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/sources/jiaoyimao/browser-refresh/:id/cancel",
+    (request, response) => {
+      try {
+        EmptyBodySchema.parse(request.body ?? {});
+        const job = browserService.cancel(request.params.id);
+        admission.releaseBrowser(request.params.id);
+        response.json(job);
+      } catch (error) {
+        sendBrowserError(response, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/sources/jiaoyimao/browser-refresh/:id/keep-waiting",
+    (request, response) => {
+      try {
+        EmptyBodySchema.parse(request.body ?? {});
+        response.json(browserService.keepWaiting(request.params.id));
+      } catch (error) {
+        sendBrowserError(response, error);
+      }
+    }
+  );
+
+  app.post("/api/browser-refresh/:id/claim", (request, response) => {
+    try {
+      const body = ClaimBodySchema.parse(request.body);
+      response.json(
+        browserService.claim(request.params.id, body.claimCode)
+      );
+    } catch (error) {
+      sendBrowserError(response, error);
+    }
+  });
+
+  app.get("/api/browser-refresh/:id/work", (request, response) => {
+    const token = bridgeToken(request.get("authorization"), response);
+    if (token === null) return;
+    try {
+      response.json(browserService.getWork(request.params.id, token));
+    } catch (error) {
+      sendBrowserError(response, error, true);
+    }
+  });
+
+  app.post(
+    "/api/browser-refresh/:id/filter-proof",
+    (request, response) => {
+      const token = bridgeToken(request.get("authorization"), response);
+      if (token === null) return;
+      try {
+        const body = BrowserFilterProofSchema.parse(request.body);
+        response.json(
+          browserService.saveFilterProof(
+            request.params.id,
+            token,
+            body
+          )
+        );
+      } catch (error) {
+        sendBrowserError(response, error, true);
+      }
+    }
+  );
+
+  app.post(
+    "/api/browser-refresh/:id/list-batches",
+    (request, response) => {
+      const token = bridgeToken(request.get("authorization"), response);
+      if (token === null) return;
+      try {
+        const body = BrowserListBatchSchema.parse(request.body);
+        response.json(
+          browserService.submitListBatch(
+            request.params.id,
+            token,
+            body
+          )
+        );
+      } catch (error) {
+        sendBrowserError(response, error, true);
+      }
+    }
+  );
+
+  app.post(
+    "/api/browser-refresh/:id/load-events",
+    (request, response) => {
+      const token = bridgeToken(request.get("authorization"), response);
+      if (token === null) return;
+      try {
+        const body = BrowserLoadEventSchema.parse(request.body);
+        response.json(
+          browserService.submitLoadEvent(
+            request.params.id,
+            token,
+            body
+          )
+        );
+      } catch (error) {
+        sendBrowserError(response, error, true);
+      }
+    }
+  );
+
+  app.post(
+    "/api/browser-refresh/:id/details",
+    (request, response) => {
+      const token = bridgeToken(request.get("authorization"), response);
+      if (token === null) return;
+      try {
+        const body = BrowserDetailBatchSchema.parse(request.body);
+        response.json(
+          browserService.submitDetails(
+            request.params.id,
+            token,
+            body
+          )
+        );
+      } catch (error) {
+        sendBrowserError(response, error, true);
+      }
+    }
+  );
+
+  app.post("/api/browser-refresh/:id/pause", (request, response) => {
+    const token = bridgeToken(request.get("authorization"), response);
+    if (token === null) return;
+    try {
+      const body = BrowserPauseSchema.parse(request.body);
+      response.json(
+        browserService.pause(request.params.id, token, body)
+      );
+    } catch (error) {
+      sendBrowserError(response, error, true);
+    }
+  });
+
+  app.post("/api/browser-refresh/:id/resume", (request, response) => {
+    const token = bridgeToken(request.get("authorization"), response);
+    if (token === null) return;
+    try {
+      EmptyBodySchema.parse(request.body ?? {});
+      response.json(browserService.resume(request.params.id, token));
+    } catch (error) {
+      sendBrowserError(response, error, true);
+    }
+  });
+
+  app.post(
+    "/api/browser-refresh/:id/cooldown",
+    (request, response) => {
+      const token = bridgeToken(request.get("authorization"), response);
+      if (token === null) return;
+      try {
+        BrowserCooldownSchema.parse(request.body);
+        response.json(
+          browserService.startCooldown(request.params.id, token)
+        );
+      } catch (error) {
+        sendBrowserError(response, error, true);
+      }
+    }
+  );
+
+  app.post("/api/browser-refresh/:id/complete", (request, response) => {
+    const token = bridgeToken(request.get("authorization"), response);
+    if (token === null) return;
+    try {
+      EmptyBodySchema.parse(request.body ?? {});
+      response.json(browserService.complete(request.params.id, token));
+    } catch (error) {
+      sendBrowserError(response, error, true);
+    }
+  });
 
   app.get("/api/sources", (request, response) => {
     const parsedMode =
@@ -331,6 +660,37 @@ export function createApp(dependencies?: AppDependencies): Express {
       state: "running"
     });
   });
+
+  const jsonErrorHandler: ErrorRequestHandler = (
+    error,
+    _request,
+    response,
+    next
+  ) => {
+    const type = (
+      typeof error === "object" &&
+      error !== null &&
+      "type" in error
+    )
+      ? String(error.type)
+      : "";
+    if (type === "entity.too.large") {
+      response.status(413).json({
+        error: "browser_payload_too_large",
+        message: "浏览器刷新请求超过 128 KiB 限制"
+      });
+      return;
+    }
+    if (type === "entity.parse.failed") {
+      response.status(400).json({
+        error: "invalid_browser_payload",
+        message: "浏览器刷新请求格式无效"
+      });
+      return;
+    }
+    next(error);
+  };
+  app.use(jsonErrorHandler);
 
   return app;
 }
