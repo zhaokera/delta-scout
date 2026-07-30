@@ -684,6 +684,34 @@ describe("jiaoyimao adapter", () => {
     );
     expect(evidence.join(" ")).not.toContain("M7-优品B");
   });
+
+  it("keeps visible product-description rare finishes in detail evidence", () => {
+    const summary = {
+      source: "jiaoyimao" as const,
+      sourceListingId: "1784435272636913",
+      url: "https://www.jiaoyimao.com/jg2007840/1784435272636913.html",
+      title: "M7稀有外观账号",
+      rawText: "M7棱镜攻势(极品S)",
+      priceCny: 3600
+    };
+    const result = jiaoyimaoAdapter.parseDetail(
+      `
+        <div class="item-head-info-card">QQ双端帐号 M7-极品S</div>
+        <div class="cmp-elevator-container">总资产91.9M</div>
+        <div class="safe-report-container">永久包赔</div>
+        <div id="cmp-elevator-content-商品描述">
+          M7棱镜攻势S2 珠光
+        </div>
+      `,
+      summary
+    );
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected parsed detail");
+    expect(result.detail.evidence.map(({ text }) => text)).toContain(
+      "M7棱镜攻势S2 珠光"
+    );
+  });
 });
 
 describe("pxb7 adapter", () => {
