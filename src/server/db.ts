@@ -143,6 +143,169 @@ export function createDatabase(path: string): DatabaseSync {
     );
   }
 
+  const scanRunColumns = new Set(
+    (
+      database.prepare("PRAGMA table_info(scan_runs)").all() as {
+        name: string;
+      }[]
+    ).map(({ name }) => name)
+  );
+  if (!scanRunColumns.has("scope")) {
+    database.exec(
+      "ALTER TABLE scan_runs ADD COLUMN scope TEXT NOT NULL DEFAULT 'all_sources'"
+    );
+  }
+  if (!scanRunColumns.has("requested_source")) {
+    database.exec(
+      "ALTER TABLE scan_runs ADD COLUMN requested_source TEXT"
+    );
+  }
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS browser_refresh_jobs (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL DEFAULT 'jiaoyimao'
+        CHECK(source = 'jiaoyimao'),
+      state TEXT NOT NULL
+        CHECK(state IN (
+          'awaiting_codex', 'collecting_list', 'collecting_details',
+          'awaiting_user_verification', 'cooling_down', 'validating',
+          'committing', 'success', 'quarantined', 'paused', 'failed',
+          'cancelled', 'expired'
+        )),
+      stage TEXT NOT NULL,
+      reason TEXT,
+      claim_code_hash TEXT,
+      bridge_token_hash TEXT,
+      claimed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT,
+      expires_at TEXT NOT NULL,
+      list_batch_cursor INTEGER NOT NULL DEFAULT 0
+        CHECK(list_batch_cursor >= 0),
+      detail_completed_count INTEGER NOT NULL DEFAULT 0
+        CHECK(detail_completed_count >= 0),
+      detail_required_count INTEGER NOT NULL DEFAULT 0
+        CHECK(detail_required_count >= 0),
+      unique_item_count INTEGER NOT NULL DEFAULT 0
+        CHECK(unique_item_count >= 0),
+      item_count INTEGER NOT NULL DEFAULT 0
+        CHECK(item_count >= 0),
+      load_action_count INTEGER NOT NULL DEFAULT 0
+        CHECK(load_action_count >= 0),
+      cooldown_attempt INTEGER NOT NULL DEFAULT 0
+        CHECK(cooldown_attempt >= 0),
+      cooldown_until TEXT,
+      next_action_at TEXT,
+      action_permit_hash TEXT,
+      action_permit_expires_at TEXT,
+      action_permit_consumed_at TEXT,
+      filter_url TEXT,
+      last_error TEXT,
+      scan_run_id INTEGER,
+      published_run_id INTEGER,
+      CHECK(
+        detail_completed_count <= detail_required_count
+        OR detail_required_count = 0
+      ),
+      CHECK(
+        published_run_id IS NULL
+        OR published_run_id = scan_run_id
+      ),
+      FOREIGN KEY (scan_run_id)
+        REFERENCES scan_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (published_run_id)
+        REFERENCES scan_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      browser_refresh_one_active_jiaoyimao
+      ON browser_refresh_jobs (source)
+      WHERE state NOT IN (
+        'success', 'quarantined', 'failed', 'cancelled', 'expired'
+      );
+    CREATE INDEX IF NOT EXISTS browser_refresh_jobs_state_idx
+      ON browser_refresh_jobs (state, updated_at);
+    CREATE INDEX IF NOT EXISTS browser_refresh_jobs_scan_run_idx
+      ON browser_refresh_jobs (scan_run_id);
+
+    CREATE TABLE IF NOT EXISTS browser_refresh_filter_proofs (
+      job_id TEXT PRIMARY KEY,
+      current_url TEXT NOT NULL,
+      game_label TEXT NOT NULL,
+      platform_label TEXT NOT NULL,
+      category_label TEXT NOT NULL,
+      m7_filter_labels_json TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      FOREIGN KEY (job_id)
+        REFERENCES browser_refresh_jobs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS browser_refresh_load_events (
+      job_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK(sequence > 0),
+      payload_hash TEXT NOT NULL,
+      observed_unique_count INTEGER NOT NULL
+        CHECK(observed_unique_count >= 0),
+      new_item_count INTEGER NOT NULL CHECK(new_item_count >= 0),
+      visible_total_count INTEGER
+        CHECK(visible_total_count IS NULL OR visible_total_count >= 0),
+      end_marker_visible INTEGER NOT NULL
+        CHECK(end_marker_visible IN (0, 1)),
+      loading_visible INTEGER NOT NULL
+        CHECK(loading_visible IN (0, 1)),
+      blocking_state TEXT NOT NULL
+        CHECK(blocking_state IN (
+          'none', 'login', 'captcha', 'rate_limited', 'error'
+        )),
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY (job_id, sequence),
+      FOREIGN KEY (job_id)
+        REFERENCES browser_refresh_jobs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS browser_refresh_list_items (
+      job_id TEXT NOT NULL,
+      source_listing_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      title TEXT NOT NULL,
+      raw_text TEXT NOT NULL,
+      price_cny REAL CHECK(price_cny IS NULL OR price_cny >= 0),
+      last_batch_sequence INTEGER NOT NULL
+        CHECK(last_batch_sequence > 0),
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY (job_id, source_listing_id),
+      FOREIGN KEY (job_id)
+        REFERENCES browser_refresh_jobs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS browser_refresh_details (
+      job_id TEXT NOT NULL,
+      source_listing_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY (job_id, source_listing_id),
+      FOREIGN KEY (job_id, source_listing_id)
+        REFERENCES browser_refresh_list_items(job_id, source_listing_id)
+        ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS browser_refresh_batches (
+      job_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('list', 'detail')),
+      sequence INTEGER NOT NULL CHECK(sequence > 0),
+      payload_hash TEXT NOT NULL,
+      accepted_count INTEGER NOT NULL CHECK(accepted_count >= 0),
+      accepted_result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (job_id, kind, sequence),
+      FOREIGN KEY (job_id)
+        REFERENCES browser_refresh_jobs(id) ON DELETE CASCADE
+    );
+  `);
+
   const observationColumns = new Set(
     (
       database.prepare("PRAGMA table_info(listing_observations)").all() as {
