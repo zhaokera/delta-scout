@@ -1711,6 +1711,128 @@ describe("browser refresh API", () => {
     expect(JSON.stringify(over.body)).not.toContain("界");
   });
 
+  it.each([
+    { route: "create", path: "/api/sources/jiaoyimao/browser-refresh" },
+    { route: "cancel", path: "cancel" },
+    { route: "keep-waiting", path: "keep-waiting" },
+    { route: "claim", path: "claim" },
+    { route: "filter-proof", path: "filter-proof" },
+    { route: "list-batches", path: "list-batches" },
+    { route: "load-events", path: "load-events" },
+    { route: "details", path: "details" },
+    { route: "pause", path: "pause" },
+    { route: "resume", path: "resume" },
+    { route: "cooldown", path: "cooldown" },
+    { route: "complete", path: "complete" }
+  ])(
+    "requires application/json for the $route browser refresh body",
+    async ({ route, path }) => {
+      const f = browserApiSetup();
+      const created = route === "create"
+        ? null
+        : await request(f.app)
+            .post("/api/sources/jiaoyimao/browser-refresh")
+            .send({});
+      if (created) expect(created.status).toBe(202);
+      let token: string | null = null;
+      if (route !== "create" && route !== "claim") {
+        const claimed = await request(f.app)
+          .post(`/api/browser-refresh/${created!.body.jobId}/claim`)
+          .send({ claimCode: created!.body.claimCode });
+        expect(claimed.status).toBe(200);
+        token = claimed.body.bridgeToken;
+      }
+      const url = route === "create"
+        ? path
+        : route === "cancel" || route === "keep-waiting"
+          ? `/api/sources/jiaoyimao/browser-refresh/${
+              created!.body.jobId
+            }/${path}`
+          : `/api/browser-refresh/${created!.body.jobId}/${path}`;
+      let operation = request(f.app)
+        .post(url)
+        .set("Content-Type", "text/plain");
+      if (token !== null) {
+        operation = operation.set("Authorization", bearer(token));
+      }
+      const response = await operation.send("not-json");
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({
+        error: "invalid_browser_payload",
+        message: expect.any(String)
+      });
+      if (created) {
+        expect(f.browserRepository.getJobRecord(
+          created.body.jobId,
+          browserBaseTime
+        )?.state).not.toBe("cancelled");
+      } else {
+        expect(
+          f.browserRepository.getCurrentJob(browserBaseTime)
+        ).toBeNull();
+      }
+    }
+  );
+
+  it.each([
+    { route: "create", path: "/api/sources/jiaoyimao/browser-refresh" },
+    { route: "cancel", path: "cancel" }
+  ])(
+    "applies the browser byte limit to oversized text/plain $route",
+    async ({ route, path }) => {
+      const f = browserApiSetup();
+      const created = route === "create"
+        ? null
+        : await request(f.app)
+            .post("/api/sources/jiaoyimao/browser-refresh")
+            .send({});
+      const url = route === "create"
+        ? path
+        : `/api/sources/jiaoyimao/browser-refresh/${
+            created!.body.jobId
+          }/${path}`;
+      const response = await request(f.app)
+        .post(url)
+        .set("Content-Type", "text/plain")
+        .send("界".repeat(70_000));
+
+      expect(response.status).toBe(413);
+      expect(response.body).toEqual({
+        error: "browser_payload_too_large",
+        message: expect.stringContaining("128 KiB")
+      });
+      if (created) {
+        expect(f.browserRepository.getJobRecord(
+          created.body.jobId,
+          browserBaseTime
+        )?.state).toBe("awaiting_codex");
+      } else {
+        expect(
+          f.browserRepository.getCurrentJob(browserBaseTime)
+        ).toBeNull();
+      }
+    }
+  );
+
+  it("accepts standard application/json charset and rejects an empty JSON body", async () => {
+    const charset = browserApiSetup();
+    const accepted = await request(charset.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .send("{}");
+    expect(accepted.status).toBe(202);
+
+    const empty = browserApiSetup();
+    const rejected = await request(empty.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .send();
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toBe("invalid_browser_payload");
+    expect(empty.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
+  });
+
   it("keeps the existing larger JSON limit outside browser refresh routes", async () => {
     const { app } = setup();
     const response = await request(app)
@@ -1718,6 +1840,19 @@ describe("browser refresh API", () => {
       .send({ padding: "x".repeat(140 * 1_024) });
 
     expect(response.status).toBe(202);
+  });
+
+  it("keeps oversized ordinary JSON errors distinct from browser limits", async () => {
+    const { app } = setup();
+    const response = await request(app)
+      .post("/api/refresh")
+      .send({ padding: "x".repeat(300 * 1_024) });
+
+    expect(response.status).toBe(413);
+    expect(response.body.error).not.toBe("browser_payload_too_large");
+    expect(JSON.stringify(response.body)).not.toMatch(
+      /browser|浏览器|128 KiB/
+    );
   });
 
   it("arbitrates browser and ordinary refreshes before creating either record", async () => {

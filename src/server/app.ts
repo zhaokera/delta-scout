@@ -1,6 +1,7 @@
 import express, {
   type ErrorRequestHandler,
   type Express,
+  type RequestHandler,
   type Response
 } from "express";
 import { z, ZodError } from "zod";
@@ -133,6 +134,68 @@ function readBearerToken(authorization: string | undefined): string | null {
   return match?.[1] ?? null;
 }
 
+const BROWSER_REFRESH_PATH_PREFIXES = [
+  "/api/browser-refresh",
+  "/api/sources/jiaoyimao/browser-refresh"
+] as const;
+
+function isBrowserRefreshPath(path: string): boolean {
+  return BROWSER_REFRESH_PATH_PREFIXES.some((prefix) =>
+    path === prefix || path.startsWith(`${prefix}/`)
+  );
+}
+
+function hasJsonContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false;
+  const [mediaType, ...parameters] = contentType
+    .split(";")
+    .map((part) => part.trim().toLowerCase());
+  if (mediaType !== "application/json") return false;
+  return parameters.every((parameter) => {
+    const [name, value] = parameter
+      .split("=")
+      .map((part) => part.trim());
+    return name === "charset" &&
+      value?.replace(/^"|"$/g, "") === "utf-8";
+  });
+}
+
+const decodeBrowserJson: RequestHandler = (
+  request,
+  response,
+  next
+) => {
+  if (request.method === "GET" || request.method === "HEAD") {
+    next();
+    return;
+  }
+  if (!hasJsonContentType(request.get("content-type"))) {
+    response.status(400).json({
+      error: "invalid_browser_payload",
+      message: "浏览器刷新请求必须使用 application/json"
+    });
+    return;
+  }
+  if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
+    response.status(400).json({
+      error: "invalid_browser_payload",
+      message: "浏览器刷新请求格式无效"
+    });
+    return;
+  }
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true })
+      .decode(request.body);
+    request.body = JSON.parse(text);
+    next();
+  } catch {
+    response.status(400).json({
+      error: "invalid_browser_payload",
+      message: "浏览器刷新请求格式无效"
+    });
+  }
+};
+
 interface CurrentListingSnapshot {
   statuses: SourceStatus[];
   listings: Listing[];
@@ -220,11 +283,13 @@ function derivedSourceStatuses(
 export function createApp(dependencies?: AppDependencies): Express {
   const app = express();
 
-  const browserJson = express.json({
-    limit: BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes
+  const browserBody = express.raw({
+    limit: BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes,
+    type: () => true
   });
-  app.use("/api/browser-refresh", browserJson);
-  app.use("/api/sources/jiaoyimao/browser-refresh", browserJson);
+  for (const prefix of BROWSER_REFRESH_PATH_PREFIXES) {
+    app.use(prefix, browserBody, decodeBrowserJson);
+  }
   app.use(express.json({ limit: "256kb" }));
   app.get("/api/health", (_request, response) => {
     response.json({
@@ -261,7 +326,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     "/api/sources/jiaoyimao/browser-refresh",
     (request, response) => {
       try {
-        EmptyBodySchema.parse(request.body ?? {});
+        EmptyBodySchema.parse(request.body);
         const acquired = admission.withBrowserLease(
           () => browserService.create()
         );
@@ -301,7 +366,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     "/api/sources/jiaoyimao/browser-refresh/:id/cancel",
     (request, response) => {
       try {
-        EmptyBodySchema.parse(request.body ?? {});
+        EmptyBodySchema.parse(request.body);
         const job = browserService.cancel(request.params.id);
         admission.releaseBrowser(request.params.id);
         response.json(job);
@@ -315,7 +380,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     "/api/sources/jiaoyimao/browser-refresh/:id/keep-waiting",
     (request, response) => {
       try {
-        EmptyBodySchema.parse(request.body ?? {});
+        EmptyBodySchema.parse(request.body);
         response.json(browserService.keepWaiting(request.params.id));
       } catch (error) {
         sendBrowserError(response, error);
@@ -441,7 +506,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     const token = bridgeToken(request.get("authorization"), response);
     if (token === null) return;
     try {
-      EmptyBodySchema.parse(request.body ?? {});
+      EmptyBodySchema.parse(request.body);
       response.json(browserService.resume(request.params.id, token));
     } catch (error) {
       sendBrowserError(response, error, true);
@@ -468,7 +533,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     const token = bridgeToken(request.get("authorization"), response);
     if (token === null) return;
     try {
-      EmptyBodySchema.parse(request.body ?? {});
+      EmptyBodySchema.parse(request.body);
       response.json(browserService.complete(request.params.id, token));
     } catch (error) {
       sendBrowserError(response, error, true);
@@ -663,7 +728,7 @@ export function createApp(dependencies?: AppDependencies): Express {
 
   const jsonErrorHandler: ErrorRequestHandler = (
     error,
-    _request,
+    request,
     response,
     next
   ) => {
@@ -674,18 +739,35 @@ export function createApp(dependencies?: AppDependencies): Express {
     )
       ? String(error.type)
       : "";
+    const browserPath = isBrowserRefreshPath(
+      request.originalUrl.split("?")[0] ?? request.path
+    );
     if (type === "entity.too.large") {
-      response.status(413).json({
-        error: "browser_payload_too_large",
-        message: "浏览器刷新请求超过 128 KiB 限制"
-      });
+      response.status(413).json(
+        browserPath
+          ? {
+              error: "browser_payload_too_large",
+              message: "浏览器刷新请求超过 128 KiB 限制"
+            }
+          : {
+              error: "payload_too_large",
+              message: "请求体超过 256 KiB 限制"
+            }
+      );
       return;
     }
     if (type === "entity.parse.failed") {
-      response.status(400).json({
-        error: "invalid_browser_payload",
-        message: "浏览器刷新请求格式无效"
-      });
+      response.status(400).json(
+        browserPath
+          ? {
+              error: "invalid_browser_payload",
+              message: "浏览器刷新请求格式无效"
+            }
+          : {
+              error: "invalid_json",
+              message: "请求 JSON 格式无效"
+            }
+      );
       return;
     }
     next(error);
