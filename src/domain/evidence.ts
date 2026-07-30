@@ -220,9 +220,23 @@ function matchRanges(text: string, pattern: RegExp): Array<{
   );
 }
 
-function isM7SeasonSuffix(text: string, start: number, token: string): boolean {
-  if (token.toUpperCase() !== "S2") return false;
-  return /棱镜攻势\s*$/i.test(text.slice(Math.max(0, start - 16), start));
+function isNonSubjectAttribute(
+  text: string,
+  start: number,
+  end: number,
+  token: string
+): boolean {
+  const normalized = token.toUpperCase();
+  if (
+    normalized === "S2" &&
+    /棱镜攻势\s*$/i.test(text.slice(Math.max(0, start - 16), start))
+  ) {
+    return true;
+  }
+  return (
+    /^[SABC]?T0$/.test(normalized) &&
+    /^\s*模板/i.test(text.slice(end, end + 6))
+  );
 }
 
 function rareFinishSubjects(text: string): RareFinishSubject[] {
@@ -236,7 +250,7 @@ function rareFinishSubjects(text: string): RareFinishSubject[] {
     ...matchRanges(text, GENERIC_MODEL_SUBJECT)
   ]) {
     if (token.toUpperCase() === "M7") continue;
-    if (isM7SeasonSuffix(text, start, token)) continue;
+    if (isNonSubjectAttribute(text, start, end, token)) continue;
     const existing = subjects.find(
       (subject) => subject.start === start && subject.end === end
     );
@@ -283,6 +297,21 @@ function hasRareFinishNegation(
   );
 }
 
+function hasM7QualityBridge(
+  text: string,
+  subject: RareFinishSubject,
+  keyword: { start: number; end: number }
+): boolean {
+  if (subject.kind !== "m7") return false;
+  const between =
+    subject.end <= keyword.start
+      ? text.slice(subject.end, keyword.start)
+      : text.slice(keyword.end, subject.start);
+  return /^[\s—–·•・_：:()（）[\]【】-]*(?:极品|优品)?[SABC]?[\s—–·•・_：:()（）[\]【】-]*$/i.test(
+    between
+  );
+}
+
 function parseM7RareFinishesUnsafe(records: EvidenceRecord[]): {
   finishes: M7RareFinish[];
   evidence: EvidenceRecord[];
@@ -307,18 +336,24 @@ function parseM7RareFinishesUnsafe(records: EvidenceRecord[]): {
             .sort((left, right) => left.distance - right.distance);
           const nearest = candidates[0];
           if (!nearest) continue;
-          if (
-            candidates.filter(
-              ({ distance }) => distance === nearest.distance
-            ).length !== 1
-          ) {
-            continue;
-          }
-          if (nearest.subject.kind !== "m7") continue;
+          const tied = candidates.filter(
+            ({ distance }) => distance === nearest.distance
+          );
+          const selected =
+            tied.length === 1
+              ? nearest
+              : tied.filter(({ subject }) =>
+                  hasM7QualityBridge(clause, subject, keyword)
+                ).length === 1
+                ? tied.find(({ subject }) =>
+                    hasM7QualityBridge(clause, subject, keyword)
+                  )
+                : undefined;
+          if (!selected || selected.subject.kind !== "m7") continue;
           if (
             hasRareFinishNegation(
               clause,
-              nearest.subject,
+              selected.subject,
               keyword
             )
           ) {

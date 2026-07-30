@@ -191,6 +191,11 @@ describe("M7 rare-finish evidence", () => {
     ["M7战斗步枪-棱镜攻势S2极品A 全炫彩", ["iridescent"]],
     ["棱镜攻势M7—极品B糖果纸", ["candy"]],
     [
+      "棱镜攻势M7—极品B糖果纸 电玩高手M250—极品A黑红闪烁 电玩高手MP7—极品A白彩RBG",
+      ["candy"]
+    ],
+    ["m7极品sT0模板珠光粉", ["pearl"]],
+    [
       "白灯糖果纸m7，珠光粉M7，全炫彩M7",
       ["pearl", "iridescent", "candy"]
     ]
