@@ -129,11 +129,29 @@ export interface RequiredDetailWork {
 export interface BrowserRefreshOutcomeTransition {
   next: BrowserRefreshJobState;
   patch: BrowserRefreshTransitionPatch;
+  commandError?: BrowserRefreshStoredCommandError;
 }
+
+export interface BrowserRefreshStoredCommandError {
+  code: "staging_invalid";
+  message: string;
+}
+
+export type ReplayedLoadCommandOutcome =
+  | {
+      kind: "accepted";
+      accepted: AcceptedLoadEventView;
+    }
+  | {
+      kind: "error";
+      accepted: AcceptedLoadEventView;
+      error: BrowserRefreshStoredCommandError;
+    };
 
 export interface AcceptedLoadOutcomeView {
   accepted: AcceptedLoadEventView;
   job: BrowserRefreshJobView;
+  commandError?: BrowserRefreshStoredCommandError;
 }
 
 export interface AcceptedDetailOutcomeView {
@@ -157,6 +175,21 @@ const AcceptedLoadEventViewSchema = z.strictObject({
   nextSequence: z.number().int().positive()
     .max(BROWSER_REFRESH_LIMITS.maxLoadEvents + 1)
 });
+
+const StoredLoadCommandOutcomeSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("accepted"),
+    accepted: AcceptedLoadEventViewSchema
+  }),
+  z.strictObject({
+    kind: z.literal("error"),
+    accepted: AcceptedLoadEventViewSchema,
+    error: z.strictObject({
+      code: z.literal("staging_invalid"),
+      message: z.string().min(1).max(500)
+    })
+  })
+]);
 
 const DetailProgressViewSchema = z.strictObject({
   acceptedCount: z.number().int().nonnegative()
@@ -319,6 +352,25 @@ function parseStoredResult<T>(
     throw new BrowserRefreshRepositoryError(
       "browser_refresh_corrupt_replay",
       "Stored browser refresh replay result is corrupt"
+    );
+  }
+}
+
+function parseStoredLoadCommandOutcome(
+  json: string
+): ReplayedLoadCommandOutcome {
+  try {
+    const value: unknown = JSON.parse(json);
+    const stored = StoredLoadCommandOutcomeSchema.safeParse(value);
+    if (stored.success) return stored.data;
+    return {
+      kind: "accepted",
+      accepted: AcceptedLoadEventViewSchema.parse(value)
+    };
+  } catch {
+    throw new BrowserRefreshRepositoryError(
+      "browser_refresh_corrupt_replay",
+      "Stored browser refresh load replay is corrupt"
     );
   }
 }
@@ -674,7 +726,7 @@ export class BrowserRefreshRepository {
     id: string,
     event: BrowserLoadEvent,
     now = new Date()
-  ): AcceptedLoadEventView | null {
+  ): ReplayedLoadCommandOutcome | null {
     this.expireJobs(now);
     this.requireActiveRow(id);
     const parsed = BrowserLoadEventSchema.parse(event);
@@ -693,10 +745,7 @@ export class BrowserRefreshRepository {
         "Load event sequence was already used with a different hash"
       );
     }
-    return parseStoredResult(
-      row.accepted_result_json,
-      AcceptedLoadEventViewSchema
-    );
+    return parseStoredLoadCommandOutcome(row.accepted_result_json);
   }
 
   replayDetailBatch(
@@ -731,12 +780,30 @@ export class BrowserRefreshRepository {
       const replay = this.replayLoadEvent(id, event, now);
       if (replay) {
         return {
-          accepted: replay,
-          job: toView(this.requireRow(id))
+          accepted: replay.accepted,
+          job: toView(this.requireRow(id)),
+          ...(replay.kind === "error"
+            ? { commandError: replay.error }
+            : {})
         };
       }
       const expectedState = this.requireActiveRow(id).state;
       const accepted = this.acceptLoadEvent(id, event, now);
+      if (outcome.commandError) {
+        this.database.prepare(`
+          UPDATE browser_refresh_load_events
+          SET accepted_result_json = ?
+          WHERE job_id = ? AND sequence = ?
+        `).run(
+          JSON.stringify({
+            kind: "error",
+            accepted,
+            error: outcome.commandError
+          }),
+          id,
+          event.sequence
+        );
+      }
       const job = this.transition(
         id,
         [expectedState],
@@ -744,7 +811,13 @@ export class BrowserRefreshRepository {
         outcome.patch,
         now
       );
-      return { accepted, job };
+      return {
+        accepted,
+        job,
+        ...(outcome.commandError
+          ? { commandError: outcome.commandError }
+          : {})
+      };
     });
   }
 
@@ -971,10 +1044,9 @@ export class BrowserRefreshRepository {
               loadActionCount: parsed.sequence,
               nextSequence: parsed.sequence + 1
             }
-          : parseStoredResult<AcceptedLoadEventView>(
-              existing.accepted_result_json,
-              AcceptedLoadEventViewSchema
-            );
+          : parseStoredLoadCommandOutcome(
+              existing.accepted_result_json
+            ).accepted;
         return result;
       }
       const previous = this.database.prepare(`
@@ -1031,7 +1103,10 @@ export class BrowserRefreshRepository {
         id,
         parsed.sequence,
         hash,
-        JSON.stringify(result),
+        JSON.stringify({
+          kind: "accepted",
+          accepted: result
+        }),
         parsed.observedUniqueCount,
         parsed.newItemCount,
         parsed.visibleTotalCount,

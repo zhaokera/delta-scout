@@ -134,7 +134,6 @@ export interface JiaoyimaoBrowserTaskServiceOptions {
 
 interface PlannedOutcome {
   transition: BrowserRefreshOutcomeTransition;
-  errorAfterCommit?: BrowserRefreshServiceError;
 }
 
 const COOLDOWN_DELAYS_MS = [30_000, 120_000, 300_000, 900_000] as const;
@@ -375,7 +374,15 @@ export class JiaoyimaoBrowserTaskService {
     this.authenticate(id, bridgeToken, now);
     try {
       const replay = this.repository.replayLoadEvent(id, event, now);
-      if (replay) return replay;
+      if (replay) {
+        if (replay.kind === "error") {
+          throw new BrowserRefreshServiceError(
+            replay.error.code,
+            replay.error.message
+          );
+        }
+        return replay.accepted;
+      }
       const job = this.repository.getJob(id, now)!;
       this.assertCommand(job, "submitLoadEvent");
       this.assertActionPermitForOutcome(job, event.actionPermit, now);
@@ -387,7 +394,12 @@ export class JiaoyimaoBrowserTaskService {
         outcome.transition,
         now
       );
-      if (outcome.errorAfterCommit) throw outcome.errorAfterCommit;
+      if (result.commandError) {
+        throw new BrowserRefreshServiceError(
+          result.commandError.code,
+          result.commandError.message
+        );
+      }
       return result.accepted;
     } catch (error) {
       if (error instanceof BrowserRefreshServiceError) throw error;
@@ -677,20 +689,19 @@ export class JiaoyimaoBrowserTaskService {
         },
         now
       );
-      const result = this.completeJobCallback(id);
-      if (result instanceof Promise) {
-        return result.catch((error: unknown) => {
-          throw new BrowserRefreshServiceError(
-            "staging_invalid",
-            error instanceof Error
-              ? `Completion failed: ${error.message}`
-              : "Completion failed"
-          );
-        });
-      }
     } catch (error) {
       if (error instanceof BrowserRefreshServiceError) throw error;
       throw this.mapError(error);
+    }
+    try {
+      const result = this.completeJobCallback(id);
+      if (result instanceof Promise) {
+        return result.catch((error: unknown) => {
+          throw this.mapCompletionError(error);
+        });
+      }
+    } catch (error) {
+      throw this.mapCompletionError(error);
     }
   }
 
@@ -730,12 +741,46 @@ export class JiaoyimaoBrowserTaskService {
         }
       };
     }
-    if (event.blockingState === "rate_limited" || event.loadingVisible) {
+    if (
+      event.blockingState === "rate_limited" &&
+      job.cooldownAttempt === 0 &&
+      job.actionPermitExpiresAt === null
+    ) {
+      return {
+        transition: {
+          next: "cooling_down",
+          patch: {
+            stage: resumeTarget,
+            reason: "rate_limited",
+            lastError: "rate_limited",
+            cooldownAttempt: 1,
+            cooldownUntil: new Date(
+              now.getTime() + COOLDOWN_DELAYS_MS[0]
+            ).toISOString(),
+            nextActionAt: null,
+            actionPermit: null,
+            actionPermitExpiresAt: null
+          }
+        }
+      };
+    }
+    if (event.blockingState === "rate_limited") {
       return {
         transition: {
           next: job.state,
           patch: {
             stage: job.stage
+          }
+        }
+      };
+    }
+    if (event.loadingVisible) {
+      return {
+        transition: {
+          next: job.state,
+          patch: {
+            stage: job.stage,
+            nextActionAt: this.nextActionTimestamp("list", now)
           }
         }
       };
@@ -775,12 +820,13 @@ export class JiaoyimaoBrowserTaskService {
               nextActionAt: null,
               actionPermit: null,
               actionPermitExpiresAt: null
+            },
+            commandError: {
+              code: "staging_invalid",
+              message:
+                "The staged list count does not match the visible unique count"
             }
-          },
-          errorAfterCommit: new BrowserRefreshServiceError(
-            "staging_invalid",
-            "The staged list count does not match the visible unique count"
-          )
+          }
         };
       }
       const requiredCount = detailRequiredIds(items).length;
@@ -1005,7 +1051,17 @@ export class JiaoyimaoBrowserTaskService {
     }
     return new BrowserRefreshServiceError(
       "staging_invalid",
-      error instanceof Error ? error.message : "Browser refresh failed"
+      "Browser refresh persistence failed"
+    );
+  }
+
+  private mapCompletionError(
+    error: unknown
+  ): BrowserRefreshServiceError {
+    if (error instanceof BrowserRefreshServiceError) return error;
+    return new BrowserRefreshServiceError(
+      "staging_invalid",
+      "Browser refresh publish failed"
     );
   }
 }

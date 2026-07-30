@@ -140,6 +140,16 @@ function expectCode(operation: () => unknown, code: string): void {
   }
 }
 
+function captureServiceError(operation: () => unknown): BrowserRefreshServiceError {
+  try {
+    operation();
+    throw new Error("Expected operation to throw");
+  } catch (error) {
+    expect(error).toBeInstanceOf(BrowserRefreshServiceError);
+    return error as BrowserRefreshServiceError;
+  }
+}
+
 describe("JiaoyimaoBrowserTaskService", () => {
   it("defines command guards for every contract state", () => {
     expect(Object.keys(BROWSER_REFRESH_STATE_COMMANDS).sort()).toEqual([
@@ -302,6 +312,77 @@ describe("JiaoyimaoBrowserTaskService", () => {
     });
     expect(f.service.resume(f.id, f.token).state).toBe("collecting_list");
   });
+
+  it("automatically starts the first cooldown for a normal rate-limit outcome", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 0, 0, { blockingState: "rate_limited" })
+    );
+    expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
+      state: "cooling_down",
+      reason: "rate_limited",
+      cooldownAttempt: 1,
+      cooldownUntil: new Date(
+        baseTime.getTime() + 30_000
+      ).toISOString(),
+      loadActionCount: 1
+    });
+    expectCode(
+      () => f.service.getWork(f.id, f.token),
+      "cooldown_active"
+    );
+  });
+
+  it("throttles immediate retry while the list is visibly loading", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 0, 0, { loadingVisible: true })
+    );
+    expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
+      state: "collecting_list",
+      nextActionAt: new Date(
+        baseTime.getTime() + 1_200
+      ).toISOString()
+    });
+    expectCode(
+      () => f.service.getWork(f.id, f.token),
+      "action_too_early"
+    );
+  });
+
+  it.each([
+    ["login", "awaiting_user_verification", "login_required"],
+    ["captcha", "awaiting_user_verification", "captcha_required"],
+    ["error", "paused", "structure_changed"]
+  ] as const)(
+    "atomically applies the intended %s blocking transition",
+    (blockingState, state, reason) => {
+      const f = claimed();
+      f.service.saveFilterProof(f.id, f.token, proof());
+      f.service.submitLoadEvent(
+        f.id,
+        f.token,
+        loadEvent(1, 0, 0, { blockingState })
+      );
+      expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
+        state,
+        reason,
+        loadActionCount: 1
+      });
+      expect(
+        f.database.prepare(`
+          SELECT COUNT(*) AS count FROM browser_refresh_load_events
+          WHERE job_id = ?
+        `).get(f.id)
+      ).toEqual({ count: 1 });
+    }
+  );
 
   it("enforces deterministic normal list and detail timing boundaries", () => {
     const list = claimed(fixture(0));
@@ -805,7 +886,9 @@ describe("JiaoyimaoBrowserTaskService", () => {
         blockingState: "rate_limited"
       })
     );
-    expect(f.service.startCooldown(f.id, f.token)).toMatchObject({
+    expect(f.repository.getJob(f.id, new Date(
+      recoveryTime + 1_200
+    ))).toMatchObject({
       state: "cooling_down",
       cooldownAttempt: 1,
       cooldownUntil: new Date(
@@ -897,6 +980,47 @@ describe("JiaoyimaoBrowserTaskService", () => {
     });
   });
 
+  it("replays the same stable error after a count-mismatch commit", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    const mismatch = loadEvent(1, 0, 0, {
+      visibleTotalCount: 0,
+      endMarkerVisible: true
+    });
+    const first = captureServiceError(
+      () => f.service.submitLoadEvent(f.id, f.token, mismatch)
+    );
+    expect(first.code).toBe("staging_invalid");
+    const firstJob = f.repository.getJob(f.id, baseTime);
+    expect(firstJob).toMatchObject({
+      state: "paused",
+      reason: "staging_invalid",
+      loadActionCount: 1
+    });
+    expect(
+      f.database.prepare(`
+        SELECT COUNT(*) AS count FROM browser_refresh_load_events
+        WHERE job_id = ?
+      `).get(f.id)
+    ).toEqual({ count: 1 });
+
+    const replay = captureServiceError(
+      () => f.service.submitLoadEvent(f.id, f.token, mismatch)
+    );
+    expect(replay).toMatchObject({
+      code: first.code,
+      message: first.message
+    });
+    expect(f.repository.getJob(f.id, baseTime)).toEqual(firstJob);
+    expect(
+      f.database.prepare(`
+        SELECT COUNT(*) AS count FROM browser_refresh_load_events
+        WHERE job_id = ?
+      `).get(f.id)
+    ).toEqual({ count: 1 });
+  });
+
   it("rolls back detail evidence if its validation transition fails", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
@@ -983,6 +1107,67 @@ describe("JiaoyimaoBrowserTaskService", () => {
     await f.service.complete(f.id, f.token);
     expect(f.completed).toEqual([f.id]);
     expect(f.repository.getJob(f.id, baseTime)?.state).toBe("committing");
+  });
+
+  it("does not expose unexpected SQLite error details", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.database.exec(`
+      CREATE TRIGGER inject_private_storage_failure
+      BEFORE INSERT ON browser_refresh_batches
+      WHEN NEW.kind = 'list'
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'PRIVATE_SQL table=browser_refresh_batches secret=bridge-token'
+        );
+      END;
+    `);
+    const error = captureServiceError(
+      () => f.service.submitListBatch(
+        f.id,
+        f.token,
+        listBatch([["1", 100]])
+      )
+    );
+    expect(error).toMatchObject({
+      code: "staging_invalid",
+      message: "Browser refresh persistence failed"
+    });
+    expect(error.message).not.toMatch(/PRIVATE_SQL|table=|bridge-token/);
+  });
+
+  it("does not expose unexpected completion callback details", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 6_001]]));
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+    const failing = new JiaoyimaoBrowserTaskService(f.repository, {
+      now: () => baseTime,
+      random: () => 0,
+      completeJob: () => {
+        throw new Error(
+          "PRIVATE_CALLBACK SQL=/tmp/private.sqlite token=bridge-secret"
+        );
+      }
+    });
+    const error = captureServiceError(
+      () => failing.complete(f.id, f.token)
+    );
+    expect(error).toMatchObject({
+      code: "staging_invalid",
+      message: "Browser refresh publish failed"
+    });
+    expect(error.message).not.toMatch(
+      /PRIVATE_CALLBACK|private\.sqlite|bridge-secret/
+    );
   });
 
   it("cancels terminally without changing formal listings", () => {
