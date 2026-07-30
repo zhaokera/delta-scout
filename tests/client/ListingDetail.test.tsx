@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { ListingDetail } from "../../src/client/components/ListingDetail";
 import type { ListingHistoryView } from "../../src/client/api";
-import { makeListing } from "../domain/listingFactory";
+import { makeListing, makeScore } from "../domain/listingFactory";
 
 describe("ListingDetail", () => {
   it("prominently flags a peak M7 whose grade is missing", () => {
@@ -69,11 +69,76 @@ describe("ListingDetail", () => {
     expect(screen.getByText("数据完整度 80 / 100")).toBeInTheDocument();
     expect(screen.getByText("中风险")).toBeInTheDocument();
     expect(screen.getByText("安全证据 2 / 3")).toBeInTheDocument();
-    expect(screen.getByText("M7 品质 35 / 35")).toBeInTheDocument();
+    expect(screen.getByText("M7 综合价值 35 / 35")).toBeInTheDocument();
     expect(screen.getByText("角色红皮 16 / 20")).toBeInTheDocument();
     expect(screen.getByText("巨浪 15 / 15")).toBeInTheDocument();
     expect(screen.getByText("价格 18 / 20")).toBeInTheDocument();
     expect(screen.getByText("资产 9 / 10")).toBeInTheDocument();
+  });
+
+  it("shows trusted M7 finish tags, source evidence, and combined value", () => {
+    const score = makeScore(88, { m7: 31 });
+    score.valueReasons = [
+      "M7 极品A，品质价值 23.0/27",
+      "M7 稀有模板：珠光 M7 · 糖果 M7，价值 8.0/8"
+    ];
+
+    render(
+      <ListingDetail
+        listing={makeListing({
+          m7RareFinishes: ["pearl", "candy"],
+          m7RareFinishEvidence: [
+            {
+              text: "市场价5万+三角券的珠光粉M7",
+              truncated: false
+            },
+            {
+              text: "棱镜攻势M7—极品B糖果纸",
+              truncated: false
+            }
+          ],
+          score
+        })}
+        loading={false}
+      />
+    );
+
+    expect(screen.getByText("高价值模板")).toBeInTheDocument();
+    expect(screen.getByText("珠光 M7")).toBeInTheDocument();
+    expect(screen.getByText("糖果 M7")).toBeInTheDocument();
+    expect(screen.getByText("M7 综合价值 31 / 35")).toBeInTheDocument();
+    expect(
+      screen.getByText("M7 极品A，品质价值 23.0/27")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("M7 稀有模板：珠光 M7 · 糖果 M7，价值 8.0/8")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(
+        "M7 稀有模板证据：市场价5万+三角券的珠光粉M7"
+      )
+    ).toHaveTextContent("市场价5万+三角券的珠光粉M7");
+    expect(
+      screen.getByLabelText(
+        "M7 稀有模板证据：棱镜攻势M7—极品B糖果纸"
+      )
+    ).toHaveTextContent("棱镜攻势M7—极品B糖果纸");
+    expect(screen.getAllByText(/珠光|糖果/).length).toBeGreaterThan(2);
+  });
+
+  it("keeps an untagged M7 finish explicitly pending verification", () => {
+    render(
+      <ListingDetail
+        listing={makeListing({
+          m7RareFinishes: [],
+          m7RareFinishEvidence: []
+        })}
+        loading={false}
+      />
+    );
+
+    expect(screen.getByText("稀有模板待核验")).toBeInTheDocument();
+    expect(screen.queryByText("没有稀有模板")).not.toBeInTheDocument();
   });
 
   it("shows the listing scan stability and unchanged run count", () => {

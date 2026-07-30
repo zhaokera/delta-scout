@@ -15,6 +15,12 @@ const RISK_LABELS = {
   unknown: "风险待核验"
 } as const;
 
+const M7_RARE_FINISH_LABELS = {
+  pearl: "珠光 M7",
+  iridescent: "炫彩 M7",
+  candy: "糖果 M7"
+} as const;
+
 const VIEW_LABELS: Record<Exclude<ListingView, "pool">, string> = {
   eligible: "全部合格",
   needs_verification: "待人工核验",
@@ -193,6 +199,18 @@ export function ListingTable({
                   : `${listing.redSkinCount} 角色红皮`}
               </span>
               <span>{m7Label(listing)}</span>
+              {listing.m7RareFinishes.length > 0 ? (
+                <span
+                  className="m7-finish-tags"
+                  aria-label="M7 高价值模板"
+                >
+                  {listing.m7RareFinishes.map((finish) => (
+                    <span className="m7-finish-tag" key={finish}>
+                      {M7_RARE_FINISH_LABELS[finish]}
+                    </span>
+                  ))}
+                </span>
+              ) : null}
               <span>{julangLabel(listing)}</span>
               <span
                 className={`stability-badge stability-badge--${listing.scanStability}`}

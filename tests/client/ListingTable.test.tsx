@@ -19,6 +19,40 @@ describe("ListingTable", () => {
     expect(screen.getByText("M7 · 极品S")).toBeInTheDocument();
   });
 
+  it("highlights every trusted M7 rare finish without fabricating empty tags", () => {
+    const { rerender } = render(
+      <ListingTable
+        listings={[
+          makeListing({
+            m7RareFinishes: ["pearl", "iridescent", "candy"]
+          })
+        ]}
+        selectedKey={null}
+        sort="score"
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("珠光 M7")).toBeInTheDocument();
+    expect(screen.getByText("炫彩 M7")).toBeInTheDocument();
+    expect(screen.getByText("糖果 M7")).toBeInTheDocument();
+
+    rerender(
+      <ListingTable
+        listings={[makeListing({ m7RareFinishes: [] })]}
+        selectedKey={null}
+        sort="score"
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    expect(screen.queryByText("珠光 M7")).not.toBeInTheDocument();
+    expect(screen.queryByText("炫彩 M7")).not.toBeInTheDocument();
+    expect(screen.queryByText("糖果 M7")).not.toBeInTheDocument();
+  });
+
   it("sorts candidates by price without changing the records", async () => {
     const onSelect = vi.fn();
     const listings = [

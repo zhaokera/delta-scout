@@ -10,7 +10,7 @@ export interface EvidenceExcerpt {
 }
 
 const EVIDENCE_KEYWORD =
-  /(?:M7|极品|品质)[\s·|:/-]{0,6}[SABC](?:级|档|品质)?|M7|棱镜攻势|极品/giu;
+  /(?:M7|极品|品质)[\s·|:/-]{0,6}[SABC](?:级|档|品质)?|M7|棱镜攻势|极品|珠光|炫彩|糖果纸?/giu;
 
 function keywordMatches(text: string): Array<{
   index: number;

@@ -8,6 +8,12 @@ const SOURCE_LABELS = {
   pxb7: "螃蟹"
 } as const;
 
+const M7_RARE_FINISH_LABELS = {
+  pearl: "珠光 M7",
+  iridescent: "炫彩 M7",
+  candy: "糖果 M7"
+} as const;
+
 function known<T>(
   value: T | null,
   formatter: (value: T) => string = (item) => String(item)
@@ -81,6 +87,10 @@ export function ListingDetail({
   const m7Excerpt = buildEvidenceExcerpt(
     listing.m7Evidence[0]?.text ?? "待人工核验"
   );
+  const rareM7Excerpts = listing.m7RareFinishEvidence.map((record) => ({
+    record,
+    excerpt: buildEvidenceExcerpt(record.text)
+  }));
   const prices =
     history?.observations.filter(
       (
@@ -162,6 +172,41 @@ export function ListingDetail({
           )}
           {m7Excerpt.trailingEllipsis ? "…" : null}
         </blockquote>
+        <div className="m7-finish-detail">
+          <span className="m7-finish-detail__label">高价值模板</span>
+          {listing.m7RareFinishes.length > 0 ? (
+            <div className="m7-finish-tags" aria-label="M7 高价值模板">
+              {listing.m7RareFinishes.map((finish) => (
+                <span className="m7-finish-tag" key={finish}>
+                  {M7_RARE_FINISH_LABELS[finish]}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="m7-finish-pending">稀有模板待核验</p>
+          )}
+          {rareM7Excerpts.map(({ record, excerpt }) => (
+            <blockquote
+              className="m7-finish-evidence"
+              aria-label={`M7 稀有模板证据：${record.text}`}
+              key={record.text}
+            >
+              {excerpt.leadingEllipsis ? "…" : null}
+              {excerpt.segments.map((segment, index) =>
+                segment.highlighted ? (
+                  <mark key={`${index}:${segment.text}`}>
+                    {segment.text}
+                  </mark>
+                ) : (
+                  <span key={`${index}:${segment.text}`}>
+                    {segment.text}
+                  </span>
+                )
+              )}
+              {excerpt.trailingEllipsis ? "…" : null}
+            </blockquote>
+          ))}
+        </div>
       </section>
 
       <section className="detail-grid">
@@ -263,7 +308,9 @@ export function ListingDetail({
             </small>
           </div>
           <div className="score-parts">
-            <p>M7 品质 {scorePart(listing.score.parts.m7)} / 35</p>
+            <p>
+              M7 综合价值 {scorePart(listing.score.parts.m7)} / 35
+            </p>
             <p>
               角色红皮 {scorePart(listing.score.parts.redSkins)} / 20
             </p>
