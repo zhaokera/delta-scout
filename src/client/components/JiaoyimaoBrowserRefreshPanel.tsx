@@ -277,8 +277,8 @@ export function JiaoyimaoBrowserRefreshPanel({
 
         <div
           className="browser-refresh-panel__status"
-          role="status"
           aria-live="polite"
+          aria-atomic="true"
         >
           <span className="browser-refresh-panel__signal" aria-hidden="true" />
           <div>

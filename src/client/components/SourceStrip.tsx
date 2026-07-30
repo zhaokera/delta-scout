@@ -64,9 +64,13 @@ function formatTime(value: string | null): string {
 }
 
 export function SourceStrip({
-  statuses
+  statuses,
+  jiaoyimaoRefreshDisabled = false,
+  onJiaoyimaoRefresh
 }: {
   statuses: SourceStatusView[];
+  jiaoyimaoRefreshDisabled?: boolean;
+  onJiaoyimaoRefresh?: () => void;
 }) {
   return (
     <section className="source-strip" aria-label="平台采集状态">
@@ -145,6 +149,17 @@ export function SourceStrip({
             </div>
             {status.stale ? (
               <span className="source-card__stale">旧快照已过期</span>
+            ) : null}
+            {status.source === "jiaoyimao" && onJiaoyimaoRefresh ? (
+              <button
+                className="source-card__browser-refresh"
+                type="button"
+                disabled={jiaoyimaoRefreshDisabled}
+                onClick={onJiaoyimaoRefresh}
+              >
+                <span>刷新交易猫</span>
+                <small>OPEN BROWSER BRIDGE ↗</small>
+              </button>
             ) : null}
           </article>
         );

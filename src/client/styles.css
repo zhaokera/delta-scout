@@ -702,6 +702,41 @@ button {
   font: 700 9px/1 var(--mono);
 }
 
+.source-card__browser-refresh {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  min-height: 40px;
+  margin-top: 11px;
+  padding: 0 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #11150d;
+  background: var(--acid);
+  border: 1px solid var(--acid);
+  font: 800 11px/1 var(--mono);
+  cursor: pointer;
+}
+
+.source-card__browser-refresh small {
+  color: rgba(17, 21, 13, 0.65);
+  font: 750 8px/1 var(--mono);
+  letter-spacing: 0.08em;
+}
+
+.source-card__browser-refresh:disabled {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.025);
+  border-color: var(--line);
+  cursor: not-allowed;
+}
+
+.source-card__browser-refresh:disabled small {
+  color: #686f69;
+}
+
 .filter-panel {
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);

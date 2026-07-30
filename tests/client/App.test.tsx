@@ -6,10 +6,12 @@ import {
   waitFor,
   within
 } from "@testing-library/react";
+import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { App } from "../../src/client/App";
 import type {
+  JiaoyimaoBrowserRefreshJob,
   RefreshStatusView,
   ScoutApi,
   SourceStatusView
@@ -157,6 +159,41 @@ function makeRefreshStatus(
     message: null,
     error: null,
     lastSnapshotAt: "2026-07-28T10:00:00.000Z",
+    ...overrides
+  };
+}
+
+function makeBrowserRefreshJob(
+  overrides: Partial<JiaoyimaoBrowserRefreshJob> = {}
+): JiaoyimaoBrowserRefreshJob {
+  return {
+    id: "browser-job-1",
+    source: "jiaoyimao",
+    state: "collecting_list",
+    stage: "list",
+    reason: null,
+    claimedAt: "2026-07-31T01:00:00.000Z",
+    createdAt: "2026-07-31T00:59:00.000Z",
+    updatedAt: "2026-07-31T01:01:00.000Z",
+    finishedAt: null,
+    expiresAt: "2026-07-31T02:00:00.000Z",
+    listBatchCursor: 1,
+    detailCompletedCount: 0,
+    detailRequiredCount: 2,
+    uniqueItemCount: 8,
+    itemCount: 8,
+    loadActionCount: 1,
+    cooldownAttempt: 0,
+    cooldownUntil: null,
+    nextActionAt: "2026-07-31T01:01:02.000Z",
+    actionPermitExpiresAt: null,
+    actionPermitConsumedAt: null,
+    filterUrl:
+      "https://www.jiaoyimao.com/jg2007840/" +
+      "f8845003-c8845004/o110/",
+    lastError: null,
+    scanRunId: null,
+    publishedRunId: null,
     ...overrides
   };
 }
@@ -1761,6 +1798,475 @@ describe("App shell", () => {
       )).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("browser refresh discovers on load and focus, polling active jobs at 1s and idle at 5s", async () => {
+    vi.useFakeTimers();
+    try {
+      let currentCall = 0;
+      const active = makeBrowserRefreshJob();
+      const success = makeBrowserRefreshJob({
+        state: "success",
+        stage: "success",
+        updatedAt: "2026-07-31T01:02:00.000Z",
+        finishedAt: "2026-07-31T01:02:00.000Z",
+        publishedRunId: 71,
+        scanRunId: 71
+      });
+      const api = makeApi({
+        sources: [makeSourceStatus({ source: "jiaoyimao" })],
+        getListings: async () => [makeListing()],
+        getCurrentJiaoyimaoBrowserRefresh: async () => {
+          currentCall += 1;
+          return currentCall === 1 ? active : success;
+        }
+      });
+
+      render(<App api={api} />);
+      await act(async () => undefined);
+
+      expect(screen.getByTestId("browser-refresh-state"))
+        .toHaveTextContent("正在采集列表");
+      expect(screen.getByRole("button", {
+        name: "刷新公开数据"
+      })).toBeDisabled();
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(999);
+      });
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(screen.getByTestId("browser-refresh-state"))
+        .toHaveTextContent("刷新完成");
+      expect(screen.getByRole("button", {
+        name: "刷新公开数据"
+      })).toBeEnabled();
+
+      const callsAtTerminal =
+        vi.mocked(api.getCurrentJiaoyimaoBrowserRefresh).mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_999);
+      });
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(callsAtTerminal);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(callsAtTerminal + 1);
+
+      window.dispatchEvent(new Event("focus"));
+      await act(async () => undefined);
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(callsAtTerminal + 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("browser refresh exposes an entry only on JYM and blocks it during all-source refresh", async () => {
+    const api = makeApi({
+      sources: [
+        makeSourceStatus({ source: "jiaoyimao" }),
+        makeSourceStatus({ source: "panzhi" }),
+        makeSourceStatus({ source: "pxb7" })
+      ],
+      getRefreshStatus: async () =>
+        makeRefreshStatus({
+          runId: 81,
+          state: "running",
+          source: "panzhi",
+          phase: "list"
+        })
+    });
+
+    render(<App api={api} />);
+
+    const jymCard = (await screen.findByText("交易猫")).closest("article");
+    const panzhiCard = screen.getByText("盼之代售").closest("article");
+    const pxbCard = screen.getByText("螃蟹账号").closest("article");
+    expect(jymCard).not.toBeNull();
+    expect(within(jymCard!).getByRole("button", {
+      name: /刷新交易猫/
+    })).toBeDisabled();
+    expect(within(panzhiCard!).queryByRole("button", {
+      name: /刷新交易猫/
+    })).not.toBeInTheDocument();
+    expect(within(pxbCard!).queryByRole("button", {
+      name: /刷新交易猫/
+    })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", {
+      name: "交易猫浏览器刷新"
+    })).getByRole("button", {
+      name: "刷新交易猫"
+    })).toBeDisabled();
+  });
+
+  it("browser refresh recovers an active job after a create conflict without clearing candidates", async () => {
+    const listing = makeListing({ sourceListingId: "CONFLICT-KEPT" });
+    let currentCall = 0;
+    const active = makeBrowserRefreshJob({
+      state: "collecting_details",
+      stage: "details"
+    });
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getListings: async () => [listing],
+      getCurrentJiaoyimaoBrowserRefresh: async () => {
+        currentCall += 1;
+        return currentCall === 1 ? null : active;
+      },
+      startJiaoyimaoBrowserRefresh: async () => {
+        throw new Error("另一个刷新任务正在进行");
+      }
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    expect(await screen.findByRole("button", {
+      name: /CONFLICT-KEPT/
+    })).toBeInTheDocument();
+    const jymCard = screen.getByText("交易猫").closest("article");
+    await user.click(within(jymCard!).getByRole("button", {
+      name: /刷新交易猫/
+    }));
+
+    expect(await screen.findByTestId("browser-refresh-state"))
+      .toHaveTextContent("正在核验详情");
+    expect(screen.getByRole("alert"))
+      .toHaveTextContent("另一个刷新任务正在进行");
+    expect(screen.getByRole("button", {
+      name: /CONFLICT-KEPT/
+    })).toBeInTheDocument();
+    expect(api.getCurrentJiaoyimaoBrowserRefresh)
+      .toHaveBeenCalledTimes(2);
+  });
+
+  it("browser refresh keeps claim codes local and broadcasts mutations without echo", async () => {
+    const channels = new Map<string, BroadcastChannelStub>();
+    class BroadcastChannelStub {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      messages: unknown[] = [];
+      closed = false;
+      constructor(readonly name: string) {
+        channels.set(name, this);
+      }
+      postMessage(message: unknown) {
+        this.messages.push(message);
+      }
+      close() {
+        this.closed = true;
+      }
+    }
+    vi.stubGlobal("BroadcastChannel", BroadcastChannelStub);
+    let currentCall = 0;
+    const awaiting = makeBrowserRefreshJob({
+      state: "awaiting_codex",
+      stage: "awaiting_codex"
+    });
+    const collecting = makeBrowserRefreshJob({
+      state: "collecting_details",
+      stage: "details",
+      updatedAt: "2026-07-31T01:02:00.000Z"
+    });
+    let remoteCurrent = collecting;
+    const api = makeApi({
+      getCurrentJiaoyimaoBrowserRefresh: async () => {
+        currentCall += 1;
+        if (currentCall === 1) return null;
+        if (currentCall === 2) return awaiting;
+        return remoteCurrent;
+      }
+    });
+    const user = userEvent.setup();
+
+    try {
+      render(<App api={api} />);
+      const panel = await screen.findByRole("region", {
+        name: "交易猫浏览器刷新"
+      });
+      await user.click(within(panel).getByRole("button", {
+        name: "刷新交易猫"
+      }));
+
+      expect(await screen.findByText("one-time-code"))
+        .toBeInTheDocument();
+      const browserChannel = channels.get(
+        "jiaoyimao-browser-refresh-changed"
+      );
+      expect(browserChannel).toBeDefined();
+      expect(JSON.stringify(browserChannel?.messages))
+        .not.toContain("one-time-code");
+      const postsBeforeMessage = browserChannel!.messages.length;
+
+      await act(async () => {
+        browserChannel?.onmessage?.(
+          new MessageEvent("message", {
+            data: {
+              type: "browser-refresh-changed",
+              jobId: collecting.id,
+              state: collecting.state,
+              updatedAt: collecting.updatedAt
+            }
+          })
+        );
+      });
+
+      expect(screen.getByTestId("browser-refresh-state"))
+        .toHaveTextContent("正在核验详情");
+      expect(screen.queryByText("one-time-code"))
+        .not.toBeInTheDocument();
+      expect(browserChannel?.messages).toHaveLength(postsBeforeMessage);
+
+      remoteCurrent = makeBrowserRefreshJob({
+        state: "validating",
+        stage: "validating",
+        updatedAt: "2026-07-31T01:03:00.000Z"
+      });
+      window.dispatchEvent(new Event("focus"));
+      await act(async () => undefined);
+
+      expect(browserChannel?.messages)
+        .toHaveLength(postsBeforeMessage + 1);
+      expect(JSON.stringify(browserChannel?.messages))
+        .not.toContain("one-time-code");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("browser refresh preserves selected data on pause, failure, quarantine, and transport errors", async () => {
+    const listing = makeListing({
+      sourceListingId: "BROWSER-PRESERVED",
+      totalAssetsM: 909
+    });
+    let currentCall = 0;
+    const jobs = [
+      makeBrowserRefreshJob({
+        state: "paused",
+        stage: "list"
+      }),
+      new Error("浏览器任务状态暂不可达"),
+      makeBrowserRefreshJob({
+        state: "failed",
+        stage: "failed",
+        updatedAt: "2026-07-31T01:02:00.000Z",
+        finishedAt: "2026-07-31T01:02:00.000Z"
+      }),
+      makeBrowserRefreshJob({
+        state: "quarantined",
+        stage: "quarantined",
+        updatedAt: "2026-07-31T01:03:00.000Z",
+        finishedAt: "2026-07-31T01:03:00.000Z"
+      })
+    ];
+    const api = makeApi({
+      getListings: async () => [listing],
+      getListing: async () => listing,
+      getCurrentJiaoyimaoBrowserRefresh: async () => {
+        const result = jobs[Math.min(currentCall, jobs.length - 1)]!;
+        currentCall += 1;
+        if (result instanceof Error) throw result;
+        return result;
+      }
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", {
+      name: /BROWSER-PRESERVED/
+    }));
+    expect(screen.getByRole("complementary", {
+      name: "候选详情"
+    })).toHaveTextContent("909M");
+
+    for (const expectedState of [
+      "任务已暂停",
+      "刷新失败",
+      "新结果已隔离"
+    ]) {
+      window.dispatchEvent(new Event("focus"));
+      await act(async () => undefined);
+      if (expectedState !== "任务已暂停") {
+        expect(screen.getByTestId("browser-refresh-state"))
+          .toHaveTextContent(expectedState);
+      }
+      expect(screen.getByRole("button", {
+        name: /BROWSER-PRESERVED/
+      })).toBeInTheDocument();
+      expect(screen.getByRole("complementary", {
+        name: "候选详情"
+      })).toHaveTextContent("909M");
+    }
+
+    expect(api.getListings).toHaveBeenCalledTimes(1);
+    expect(api.getListingHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("browser refresh reloads published data and selected history once per success version", async () => {
+    const listing = makeListing({
+      key: "panzhi:browser-success",
+      sourceListingId: "BROWSER-SUCCESS"
+    });
+    let current = makeBrowserRefreshJob();
+    const api = makeApi({
+      getListings: async () => [listing],
+      getListing: async () => listing,
+      getCurrentJiaoyimaoBrowserRefresh: async () => current
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", {
+      name: /BROWSER-SUCCESS/
+    }));
+    expect(api.getListingHistory).toHaveBeenCalledTimes(1);
+
+    current = makeBrowserRefreshJob({
+      state: "success",
+      stage: "success",
+      updatedAt: "2026-07-31T01:02:00.000Z",
+      finishedAt: "2026-07-31T01:02:00.000Z",
+      scanRunId: 91,
+      publishedRunId: 91
+    });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(api.getListings).toHaveBeenCalledTimes(2)
+    );
+    expect(api.getSources).toHaveBeenCalledTimes(2);
+    expect(api.getScanHistory).toHaveBeenCalledTimes(1);
+    expect(api.getListingHistory).toHaveBeenCalledTimes(2);
+
+    window.dispatchEvent(new Event("focus"));
+    await act(async () => undefined);
+    expect(api.getListings).toHaveBeenCalledTimes(2);
+    expect(api.getScanHistory).toHaveBeenCalledTimes(1);
+
+    current = {
+      ...current,
+      updatedAt: "2026-07-31T01:03:00.000Z",
+      scanRunId: 92,
+      publishedRunId: 92
+    };
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(api.getListings).toHaveBeenCalledTimes(3)
+    );
+    expect(api.getScanHistory).toHaveBeenCalledTimes(2);
+    expect(api.getListingHistory).toHaveBeenCalledTimes(3);
+  });
+
+  it("browser refresh ignores stale out-of-order polls after a terminal state", async () => {
+    const older = deferred<JiaoyimaoBrowserRefreshJob | null>();
+    const newer = deferred<JiaoyimaoBrowserRefreshJob | null>();
+    let currentCall = 0;
+    const api = makeApi({
+      getCurrentJiaoyimaoBrowserRefresh: async () => {
+        currentCall += 1;
+        if (currentCall === 1) return makeBrowserRefreshJob();
+        if (currentCall === 2) return older.promise;
+        return newer.promise;
+      }
+    });
+
+    render(<App api={api} />);
+    expect(await screen.findByTestId("browser-refresh-state"))
+      .toHaveTextContent("正在采集列表");
+
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("focus"));
+    await act(async () => {
+      newer.resolve(makeBrowserRefreshJob({
+        state: "success",
+        stage: "success",
+        updatedAt: "2026-07-31T01:03:00.000Z",
+        finishedAt: "2026-07-31T01:03:00.000Z",
+        scanRunId: 101,
+        publishedRunId: 101
+      }));
+    });
+    expect(screen.getByTestId("browser-refresh-state"))
+      .toHaveTextContent("刷新完成");
+
+    await act(async () => {
+      older.resolve(makeBrowserRefreshJob({
+        state: "collecting_details",
+        stage: "details",
+        updatedAt: "2026-07-31T01:02:00.000Z"
+      }));
+    });
+    expect(screen.getByTestId("browser-refresh-state"))
+      .toHaveTextContent("刷新完成");
+    expect(screen.getByRole("button", {
+      name: "刷新公开数据"
+    })).toBeEnabled();
+  });
+
+  it("browser refresh fails closed on unknown state and cleans polling resources in StrictMode", async () => {
+    vi.useFakeTimers();
+    const channels: BroadcastChannelStub[] = [];
+    class BroadcastChannelStub {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      close = vi.fn();
+      constructor(readonly name: string) {
+        channels.push(this);
+      }
+      postMessage() {}
+    }
+    vi.stubGlobal("BroadcastChannel", BroadcastChannelStub);
+    const unknown = {
+      ...makeBrowserRefreshJob(),
+      state: "future_server_state"
+    } as unknown as JiaoyimaoBrowserRefreshJob;
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getCurrentJiaoyimaoBrowserRefresh: async () => unknown
+    });
+    const consoleError = vi.spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    try {
+      const { unmount } = render(
+        <StrictMode>
+          <App api={api} />
+        </StrictMode>
+      );
+      await act(async () => undefined);
+      expect(screen.getByTestId("browser-refresh-state"))
+        .toHaveTextContent("未知状态");
+      expect(screen.getByRole("button", {
+        name: "刷新公开数据"
+      })).toBeDisabled();
+      const jymCard = screen.getByText("交易猫").closest("article");
+      expect(within(jymCard!).getByRole("button", {
+        name: /刷新交易猫/
+      })).toBeDisabled();
+
+      const callsBeforeUnmount =
+        vi.mocked(api.getCurrentJiaoyimaoBrowserRefresh).mock.calls.length;
+      unmount();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(callsBeforeUnmount);
+      expect(channels.length).toBeGreaterThan(0);
+      expect(channels.every((channel) =>
+        channel.close.mock.calls.length === 1
+      )).toBe(true);
+      expect(consoleError.mock.calls.join(" "))
+        .not.toMatch(/unmounted|state update/i);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+      consoleError.mockRestore();
     }
   });
 

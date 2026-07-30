@@ -25,8 +25,12 @@ import { DetailDrawer } from "./components/DetailDrawer";
 import { ListingDetail } from "./components/ListingDetail";
 import { ListingTable } from "./components/ListingTable";
 import { PoolModeToggle } from "./components/PoolModeToggle";
+import { JiaoyimaoBrowserRefreshPanel } from
+  "./components/JiaoyimaoBrowserRefreshPanel";
 import { RefreshProgress } from "./components/RefreshProgress";
 import { SourceStrip } from "./components/SourceStrip";
+import { useJiaoyimaoBrowserRefresh } from
+  "./useJiaoyimaoBrowserRefresh";
 
 const DEFAULT_FILTERS: AdvancedFilters = {
   source: "all",
@@ -229,6 +233,32 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       }
     },
     [api]
+  );
+
+  const reloadBrowserPublishedData = useCallback(async () => {
+    const [, historyResult] = await Promise.allSettled([
+      load(activeView.current, activePoolMode.current, {
+        preserveOnError: true,
+        refreshSelection: true
+      }),
+      api.getScanHistory(10)
+    ]);
+    if (
+      historyResult.status === "rejected" &&
+      mounted.current
+    ) {
+      setTransportWarning(
+        historyResult.reason instanceof Error
+          ? historyResult.reason.message
+          : "扫描历史暂不可达"
+      );
+    }
+  }, [api, load]);
+
+  const browserRefresh = useJiaoyimaoBrowserRefresh(
+    api,
+    refreshing,
+    reloadBrowserPublishedData
   );
 
   function clearPollTimer() {
@@ -467,7 +497,13 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   }
 
   async function refresh() {
-    if (!mounted.current || refreshInFlight.current) return;
+    if (
+      !mounted.current ||
+      refreshInFlight.current ||
+      browserRefresh.blocksAllSourceRefresh
+    ) {
+      return;
+    }
     refreshInFlight.current = true;
     detailSequence.current += 1;
     setRefreshing(true);
@@ -540,7 +576,9 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           <button
             className="refresh-button"
             type="button"
-            disabled={refreshing}
+            disabled={
+              refreshing || browserRefresh.blocksAllSourceRefresh
+            }
             aria-busy={refreshing}
             onClick={() => void refresh()}
           >
@@ -553,6 +591,17 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       <RefreshProgress
         status={refreshStatus}
         transportWarning={transportWarning}
+      />
+
+      <JiaoyimaoBrowserRefreshPanel
+        job={browserRefresh.job}
+        claimCode={browserRefresh.claimCode}
+        conflict={browserRefresh.conflict}
+        busy={browserRefresh.busy || refreshing}
+        error={browserRefresh.error}
+        onStart={browserRefresh.start}
+        onCancel={browserRefresh.cancel}
+        onKeepWaiting={browserRefresh.keepWaiting}
       />
 
       <section className="mission-brief" aria-label="固定筛选条件">
@@ -578,7 +627,17 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         </div>
       </section>
 
-      <SourceStrip statuses={sources} />
+      <SourceStrip
+        statuses={sources}
+        jiaoyimaoRefreshDisabled={
+          browserRefresh.busy ||
+          refreshing ||
+          browserRefresh.blocksAllSourceRefresh
+        }
+        onJiaoyimaoRefresh={() => {
+          void browserRefresh.start();
+        }}
+      />
 
       <PoolModeToggle
         mode={poolMode}
@@ -685,7 +744,9 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               </div>
               <button
                 type="button"
-                disabled={refreshing}
+                disabled={
+                  refreshing || browserRefresh.blocksAllSourceRefresh
+                }
                 aria-busy={refreshing}
                 onClick={() => void refresh()}
               >
