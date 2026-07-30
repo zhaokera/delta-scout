@@ -669,4 +669,61 @@ describe("httpScoutApi Jiaoyimao browser refresh", () => {
     expect((error as Error).message).toBe("请求失败（500）");
     expect((error as Error).cause).toBeUndefined();
   });
+
+  it.each([200, 512])(
+    "fails closed when message contains a prefix of a %i-character sensitive value",
+    async (length) => {
+      const bridgeToken = `9${"x".repeat(length - 1)}`;
+      const exposedPrefix = bridgeToken.slice(0, 80);
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({
+          error: "unexpected_failure",
+          message: `任务失败 ${exposedPrefix}`,
+          bridgeToken
+        }), {
+          status: 500,
+          headers: { "content-type": "application/json" }
+        })
+      );
+
+      const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+        .catch((caught: unknown) => caught);
+      expect((error as Error).message).toBe("请求失败（500）");
+      expect((error as Error).message).not.toContain(exposedPrefix);
+    }
+  );
+
+  it("fails closed for a non-string value under a sensitive key", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        error: "unexpected_failure",
+        message: "任务失败 4815162342",
+        credential: 4_815_162_342
+      }), {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect((error as Error).message).toBe("请求失败（500）");
+  });
+
+  it("ignores an empty sensitive value without hiding a safe message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        error: "unexpected_failure",
+        message: "普通读取失败",
+        credential: ""
+      }), {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect((error as Error).message).toBe("普通读取失败");
+  });
 });

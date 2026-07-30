@@ -289,16 +289,33 @@ function collectSensitiveErrorValues(payload: object): {
     visitedNodes += 1;
     if (typeof value === "string") {
       const candidate = value.trim();
-      if (
-        inheritedSensitive &&
-        candidate.length > 0 &&
-        candidate.length <= 160
-      ) {
-        values.push(candidate);
+      if (inheritedSensitive && candidate.length > 0) {
+        if (candidate.length > 160) {
+          incomplete = true;
+        } else {
+          values.push(candidate);
+        }
       }
       return;
     }
-    if (value === null || typeof value !== "object") return;
+    if (value === null || value === undefined) return;
+    if (typeof value !== "object") {
+      if (inheritedSensitive) incomplete = true;
+      return;
+    }
+    if (inheritedSensitive) {
+      if (Array.isArray(value)) {
+        if (value.length > 0) incomplete = true;
+        return;
+      }
+      for (const key in value) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          incomplete = true;
+          return;
+        }
+      }
+      return;
+    }
     if (seen.has(value)) {
       incomplete = true;
       return;
