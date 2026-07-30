@@ -1,6 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { ZodError } from "zod";
 import {
+  buildListing
+} from "../collector/buildListing.js";
+import type { ListingSummary } from "../collector/types.js";
+import type {
+  CommitBrowserSourceRefreshInput,
+  CommitBrowserSourceRefreshResult,
+  ListingRepository
+} from "../repository.js";
+import {
   type BrowserDetailBatch,
   type BrowserFilterProof,
   type BrowserListBatch,
@@ -25,6 +34,7 @@ import {
   type CreatedBrowserRefreshJob,
   type DetailProgressView
 } from "./repository.js";
+import { parseJiaoyimaoVisibleDetail } from "./visibleDetail.js";
 
 export type BrowserRefreshCommand =
   | "claim"
@@ -129,6 +139,8 @@ export interface JiaoyimaoBrowserTaskServiceOptions {
   now?: () => Date;
   random?: () => number;
   completeJob?: (jobId: string) => void | Promise<void>;
+  publisher?: Pick<ListingRepository, "commitBrowserSourceRefresh">;
+  releaseAdmission?: (jobId: string) => void;
   permitFactory?: () => string;
 }
 
@@ -145,6 +157,12 @@ export class JiaoyimaoBrowserTaskService {
   private readonly completeJobCallback:
     | ((jobId: string) => void | Promise<void>)
     | undefined;
+  private readonly publisher:
+    | Pick<ListingRepository, "commitBrowserSourceRefresh">
+    | undefined;
+  private readonly releaseAdmission:
+    | ((jobId: string) => void)
+    | undefined;
   private readonly permitFactory: () => string;
 
   constructor(
@@ -154,6 +172,8 @@ export class JiaoyimaoBrowserTaskService {
     this.now = options.now ?? (() => new Date());
     this.random = options.random ?? Math.random;
     this.completeJobCallback = options.completeJob;
+    this.publisher = options.publisher;
+    this.releaseAdmission = options.releaseAdmission;
     this.permitFactory = options.permitFactory ??
       (() => randomBytes(24).toString("base64url"));
   }
@@ -653,9 +673,14 @@ export class JiaoyimaoBrowserTaskService {
   complete(
     id: string,
     bridgeToken: string
-  ): void | Promise<void> {
+  ):
+    | void
+    | Promise<void>
+    | CommitBrowserSourceRefreshResult
+    | Promise<CommitBrowserSourceRefreshResult> {
     const now = this.now();
     const job = this.authenticate(id, bridgeToken, now);
+    let stagedInput: CommitBrowserSourceRefreshInput | null = null;
     const readiness = evaluatePublishReadiness(
       this.repository.getFilterProof(id, now),
       this.repository.getLoadEvents(id, now),
@@ -669,11 +694,96 @@ export class JiaoyimaoBrowserTaskService {
       );
     }
     this.assertCommand(job, "complete");
-    if (!this.completeJobCallback) {
+    if (!this.publisher && !this.completeJobCallback) {
       throw new BrowserRefreshServiceError(
         "staging_invalid",
         "No browser refresh completion callback is configured"
       );
+    }
+    if (this.publisher) {
+      try {
+        const details = new Map(
+          this.repository.getDetails(id, now).map((detail) => [
+            detail.sourceListingId,
+            detail
+          ])
+        );
+        const listings = this.repository.getListItems(id, now).map(
+          (item) => {
+            const summary: ListingSummary = {
+              source: "jiaoyimao",
+              sourceListingId: item.sourceListingId,
+              url: item.url,
+              title: item.title,
+              rawText: item.rawText,
+              priceCny: item.priceCny,
+              detailFetchHint: "m7_prism_query"
+            };
+            const requiresDetail =
+              item.priceCny === null || item.priceCny <= 6_000;
+            const stagedDetail = details.get(item.sourceListingId);
+            if (requiresDetail && !stagedDetail) {
+              throw new BrowserRefreshServiceError(
+                "details_incomplete",
+                `Required detail ${item.sourceListingId} is missing`
+              );
+            }
+            const parsedDetail = stagedDetail
+              ? parseJiaoyimaoVisibleDetail(
+                  stagedDetail.sections,
+                  summary
+                )
+              : null;
+            if (
+              requiresDetail &&
+              parsedDetail?.kind !== "ok"
+            ) {
+              throw new BrowserRefreshServiceError(
+                "staging_invalid",
+                `Staged detail ${item.sourceListingId} could not be parsed`
+              );
+            }
+            return buildListing(
+              {
+                summary,
+                detail:
+                  parsedDetail?.kind === "ok"
+                    ? parsedDetail.detail
+                    : null,
+                detailAttempted: requiresDetail,
+                warnings: []
+              },
+              now
+            );
+          }
+        );
+        const naturalEnd = evaluateNaturalEnd(
+          this.repository.getLoadEvents(id, now)
+        );
+        if (naturalEnd.kind !== "complete") {
+          throw new BrowserRefreshServiceError(
+            "list_incomplete",
+            "Browser refresh list has no trusted natural end"
+          );
+        }
+        stagedInput = {
+          jobId: id,
+          source: "jiaoyimao",
+          listings,
+          attemptedAt: now,
+          pagesScanned:
+            this.repository.getLoadEvents(id, now).length,
+          stopReason: naturalEnd.reason === "no_growth_twice"
+            ? "no_growth_twice"
+            : "end_of_pages"
+        };
+      } catch (error) {
+        if (error instanceof BrowserRefreshServiceError) throw error;
+        throw new BrowserRefreshServiceError(
+          "staging_invalid",
+          "Staged browser details could not be parsed"
+        );
+      }
     }
     try {
       this.repository.transition(
@@ -693,8 +803,30 @@ export class JiaoyimaoBrowserTaskService {
       if (error instanceof BrowserRefreshServiceError) throw error;
       throw this.mapError(error);
     }
+    if (this.publisher && stagedInput) {
+      try {
+        const result =
+          this.publisher.commitBrowserSourceRefresh(stagedInput);
+        if (result instanceof Promise) {
+          return result
+            .catch((error: unknown) => {
+              this.markCommitFailedBestEffort(id, now);
+              throw this.mapCompletionError(error);
+            })
+            .finally(() => {
+              this.releaseAdmissionBestEffort(id);
+            });
+        }
+        this.releaseAdmissionBestEffort(id);
+        return result;
+      } catch (error) {
+        this.markCommitFailedBestEffort(id, now);
+        this.releaseAdmissionBestEffort(id);
+        throw this.mapCompletionError(error);
+      }
+    }
     try {
-      const result = this.completeJobCallback(id);
+      const result = this.completeJobCallback!(id);
       if (result instanceof Promise) {
         return result.catch((error: unknown) => {
           throw this.mapCompletionError(error);
@@ -702,6 +834,24 @@ export class JiaoyimaoBrowserTaskService {
       }
     } catch (error) {
       throw this.mapCompletionError(error);
+    }
+  }
+
+  private markCommitFailedBestEffort(id: string, now: Date): void {
+    try {
+      this.repository.markCommitFailed(id, "commit_failed", now);
+    } catch {
+      // The original publisher failure remains actionable. Startup recovery
+      // handles any job that is still persisted as committing.
+    }
+  }
+
+  private releaseAdmissionBestEffort(id: string): void {
+    try {
+      this.releaseAdmission?.(id);
+    } catch {
+      // A terminal database state remains the source of truth. Admission
+      // reconciliation will release the in-memory lease on the next check.
     }
   }
 

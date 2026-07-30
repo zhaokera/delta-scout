@@ -37,7 +37,13 @@ export function createDatabase(path: string): DatabaseSync {
         CHECK(state IN ('running', 'success', 'partial', 'failed')),
       error TEXT,
       is_baseline INTEGER NOT NULL DEFAULT 0
-        CHECK(is_baseline IN (0, 1))
+        CHECK(is_baseline IN (0, 1)),
+      scope TEXT NOT NULL DEFAULT 'all_sources'
+        CHECK(scope IN ('all_sources', 'single_source')),
+      requested_source TEXT
+        CHECK(requested_source IS NULL OR requested_source IN (
+          'jiaoyimao', 'panzhi', 'pxb7'
+        ))
     );
 
     CREATE TABLE IF NOT EXISTS scan_source_results (

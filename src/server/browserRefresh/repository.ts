@@ -14,6 +14,7 @@ import {
   BrowserListBatchSchema,
   BrowserLoadEventSchema,
   BrowserRefreshJobStateSchema,
+  BrowserVisibleSectionsSchema,
   type BrowserDetailBatch,
   type BrowserFilterProof,
   type BrowserListItem,
@@ -21,6 +22,7 @@ import {
   type BrowserLoadEvent,
   type BrowserRefreshJobState
 } from "./contracts.js";
+import type { JiaoyimaoVisibleSections } from "./visibleDetail.js";
 
 const JOB_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const TERMINAL_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1_000;
@@ -124,6 +126,13 @@ export interface DetailProgressView {
 export interface RequiredDetailWork {
   sourceListingId: string;
   url: string;
+}
+
+export interface StagedBrowserDetail {
+  sourceListingId: string;
+  url: string;
+  sections: JiaoyimaoVisibleSections;
+  observedAt: string;
 }
 
 export interface BrowserRefreshOutcomeTransition {
@@ -658,6 +667,33 @@ export class BrowserRefreshRepository {
       WHERE job_id = ?
     `).all(id) as Array<{ source_listing_id: string }>;
     return new Set(rows.map((row) => row.source_listing_id));
+  }
+
+  getDetails(
+    id: string,
+    now = new Date()
+  ): StagedBrowserDetail[] {
+    this.expireJobs(now);
+    this.requireRow(id);
+    const rows = this.database.prepare(`
+      SELECT source_listing_id, url, evidence_json, observed_at
+      FROM browser_refresh_details
+      WHERE job_id = ?
+      ORDER BY rowid
+    `).all(id) as Array<{
+      source_listing_id: string;
+      url: string;
+      evidence_json: string;
+      observed_at: string;
+    }>;
+    return rows.map((row) => ({
+      sourceListingId: row.source_listing_id,
+      url: row.url,
+      sections: BrowserVisibleSectionsSchema.parse(
+        JSON.parse(row.evidence_json)
+      ),
+      observedAt: row.observed_at
+    }));
   }
 
   getNextRequiredDetail(
@@ -1473,6 +1509,28 @@ export class BrowserRefreshRepository {
       );
       return toView(this.requireRow(id));
     });
+  }
+
+  markCommitFailed(
+    id: string,
+    reason = "commit_failed",
+    now = new Date()
+  ): BrowserRefreshJobView {
+    return this.transition(
+      id,
+      ["committing"],
+      "failed",
+      {
+        stage: "failed",
+        reason,
+        lastError: reason,
+        nextActionAt: null,
+        cooldownUntil: null,
+        actionPermit: null,
+        actionPermitExpiresAt: null
+      },
+      now
+    );
   }
 
   recoverInterruptedJobs(now = new Date()): void {

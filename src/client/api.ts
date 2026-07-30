@@ -93,6 +93,8 @@ export interface ScanHistoryResponse {
     finishedAt: string | null;
     state: "running" | "success" | "partial" | "failed";
     error: string | null;
+    scope: "all_sources" | "single_source";
+    requestedSource: SourceId | null;
     sources: Array<{
       source: SourceId;
       state: Exclude<SourceState, "idle">;

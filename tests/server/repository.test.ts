@@ -11,6 +11,9 @@ import {
   type SourceRefreshStatusUpdate
 } from "../../src/server/repository.js";
 import {
+  BrowserRefreshRepository
+} from "../../src/server/browserRefresh/repository.js";
+import {
   makeListing,
   makeScore
 } from "../domain/listingFactory.js";
@@ -65,7 +68,376 @@ function failureUpdate(
   };
 }
 
+function createCommittingBrowserJob(
+  database: ReturnType<typeof createDatabase>,
+  now = scanTime
+) {
+  const browserRepository = new BrowserRefreshRepository(database);
+  const created = browserRepository.createJob(now);
+  browserRepository.transition(
+    created.id,
+    ["awaiting_codex"],
+    "committing",
+    { stage: "committing" },
+    now
+  );
+  return { browserRepository, jobId: created.id };
+}
+
 describe("ListingRepository", () => {
+  it("single-source browser publish preserves other sources and records only Jiaoyimao history", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const oldJiaoyimao = makeListing({
+      source: "jiaoyimao",
+      key: "jiaoyimao:old",
+      sourceListingId: "old",
+      url: "https://www.jiaoyimao.com/jg2007840/100.html",
+      title: "旧交易猫账号"
+    });
+    const panzhi = makeListing({
+      source: "panzhi",
+      key: "panzhi:keep",
+      sourceListingId: "keep",
+      url: "https://www.pzds.com/item/keep",
+      title: "盼之保留字段"
+    });
+    const pxb7 = makeListing({
+      source: "pxb7",
+      key: "pxb7:keep",
+      sourceListingId: "keep",
+      url: "https://www.pxb7.com/item/keep",
+      title: "螃蟹保留字段"
+    });
+    const initialRun = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      initialRun,
+      [oldJiaoyimao, panzhi, pxb7],
+      [
+        successUpdate("jiaoyimao", 1),
+        successUpdate("panzhi", 1),
+        successUpdate("pxb7", 1)
+      ],
+      scanTime
+    );
+    const beforePanzhi = repository.getListing(panzhi.key)!;
+    const beforePxb7 = repository.getListing(pxb7.key)!;
+    const beforeOtherStatuses = database.prepare(`
+      SELECT * FROM source_status
+      WHERE source IN ('panzhi', 'pxb7')
+      ORDER BY source
+    `).all();
+    const { browserRepository, jobId } =
+      createCommittingBrowserJob(database);
+    const attemptedAt = new Date(scanTime.getTime() + 1_000);
+    const freshJiaoyimao = makeListing({
+      source: "jiaoyimao",
+      key: "jiaoyimao:fresh",
+      sourceListingId: "fresh",
+      url: "https://www.jiaoyimao.com/jg2007840/101.html",
+      title: "新交易猫账号",
+      score: makeScore(1),
+      possibleDuplicateKeys: []
+    });
+
+    const result = repository.commitBrowserSourceRefresh({
+      jobId,
+      source: "jiaoyimao",
+      listings: [freshJiaoyimao],
+      attemptedAt,
+      pagesScanned: 3,
+      stopReason: "end_of_pages"
+    });
+
+    expect(result).toEqual({
+      state: "success",
+      scanRunId: expect.any(Number),
+      publishedRunId: expect.any(Number)
+    });
+    expect(result.publishedRunId).toBe(result.scanRunId);
+    expect(repository.getListing(oldJiaoyimao.key)).toBeNull();
+    const afterPanzhi = repository.getListing(panzhi.key)!;
+    const afterPxb7 = repository.getListing(pxb7.key)!;
+    expect(afterPanzhi).toEqual({
+      ...beforePanzhi,
+      score: expect.any(Object),
+      possibleDuplicateKeys: expect.arrayContaining([
+        freshJiaoyimao.key,
+        pxb7.key
+      ])
+    });
+    expect(afterPanzhi).toMatchObject({
+      key: beforePanzhi.key,
+      title: beforePanzhi.title,
+      sourceListingId: beforePanzhi.sourceListingId,
+      score: expect.any(Object),
+      possibleDuplicateKeys: expect.arrayContaining([
+        freshJiaoyimao.key,
+        pxb7.key
+      ])
+    });
+    expect(afterPxb7).toEqual({
+      ...beforePxb7,
+      score: expect.any(Object),
+      possibleDuplicateKeys: expect.arrayContaining([
+        freshJiaoyimao.key,
+        panzhi.key
+      ])
+    });
+    expect(afterPxb7).toMatchObject({
+      key: beforePxb7.key,
+      title: beforePxb7.title,
+      sourceListingId: beforePxb7.sourceListingId,
+      score: expect.any(Object),
+      possibleDuplicateKeys: expect.arrayContaining([
+        freshJiaoyimao.key,
+        panzhi.key
+      ])
+    });
+    expect(database.prepare(`
+      SELECT * FROM source_status
+      WHERE source IN ('panzhi', 'pxb7')
+      ORDER BY source
+    `).all()).toEqual(beforeOtherStatuses);
+    expect(repository.getListing(freshJiaoyimao.key)).toMatchObject({
+      score: expect.any(Object),
+      possibleDuplicateKeys: expect.arrayContaining([
+        panzhi.key,
+        pxb7.key
+      ])
+    });
+    expect(
+      database.prepare(`
+        SELECT source FROM scan_source_results
+        WHERE run_id = ?
+      `).all(result.scanRunId)
+    ).toEqual([{ source: "jiaoyimao" }]);
+    expect(
+      database.prepare(`
+        SELECT DISTINCT source FROM listing_observations
+        WHERE run_id = ?
+      `).all(result.scanRunId)
+    ).toEqual([{ source: "jiaoyimao" }]);
+    expect(
+      database.prepare(`
+        SELECT listing_key, availability, trusted
+        FROM listing_observations
+        WHERE run_id = ?
+        ORDER BY listing_key
+      `).all(result.scanRunId)
+    ).toEqual([
+      {
+        listing_key: freshJiaoyimao.key,
+        availability: "active",
+        trusted: 1
+      },
+      {
+        listing_key: oldJiaoyimao.key,
+        availability: "removed",
+        trusted: 1
+      }
+    ]);
+    expect(repository.getScanHistory(2)).toEqual([
+      expect.objectContaining({
+        id: result.scanRunId,
+        scope: "single_source",
+        requestedSource: "jiaoyimao"
+      }),
+      expect.objectContaining({
+        id: initialRun,
+        scope: "all_sources",
+        requestedSource: null
+      })
+    ]);
+    expect(
+      repository.getSourceStatuses().find(
+        ({ source }) => source === "jiaoyimao"
+      )
+    ).toMatchObject({
+      state: "success",
+      lastAttemptAt: attemptedAt.toISOString(),
+      lastSuccessAt: attemptedAt.toISOString(),
+      itemCount: 1,
+      pagesScanned: 3,
+      stopReason: "end_of_pages",
+      error: null,
+      anomaly: { state: "clear" }
+    });
+    expect(browserRepository.getJobRecord(jobId, attemptedAt)).toMatchObject({
+      state: "success",
+      scanRunId: result.scanRunId,
+      publishedRunId: result.scanRunId
+    });
+  });
+
+  it("browser quarantine preserves formal bytes and a matching second low result publishes", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      sourceListings("jiaoyimao", 20, "trusted"),
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+    const beforePayloads = database.prepare(`
+      SELECT listing_key, payload FROM listings
+      WHERE source = 'jiaoyimao'
+      ORDER BY listing_key
+    `).all();
+    const first = createCommittingBrowserJob(database);
+    const firstAttempt = new Date(scanTime.getTime() + 1_000);
+
+    const quarantined = repository.commitBrowserSourceRefresh({
+      jobId: first.jobId,
+      source: "jiaoyimao",
+      listings: sourceListings("jiaoyimao", 2, "low-first"),
+      attemptedAt: firstAttempt,
+      pagesScanned: 1,
+      stopReason: "end_of_pages"
+    });
+
+    expect(quarantined).toMatchObject({
+      state: "quarantined",
+      publishedRunId: null
+    });
+    expect(database.prepare(`
+      SELECT listing_key, payload FROM listings
+      WHERE source = 'jiaoyimao'
+      ORDER BY listing_key
+    `).all()).toEqual(beforePayloads);
+    expect(repository.getScanHistory(1)[0]).toMatchObject({
+      state: "partial",
+      scope: "single_source",
+      requestedSource: "jiaoyimao",
+      sources: [
+        expect.objectContaining({
+          source: "jiaoyimao",
+          state: "partial",
+          anomalyState: "suspect",
+          published: false,
+          observedItemCount: 2
+        })
+      ]
+    });
+    expect(
+      repository.getSourceStatuses().find(
+        ({ source }) => source === "jiaoyimao"
+      )
+    ).toMatchObject({
+      state: "partial",
+      lastAttemptAt: firstAttempt.toISOString(),
+      lastSuccessAt: scanTime.toISOString(),
+      itemCount: 20,
+      pagesScanned: 5,
+      stopReason: "anomaly_guard",
+      anomaly: { state: "suspect" }
+    });
+    expect(first.browserRepository.getJobRecord(
+      first.jobId,
+      firstAttempt
+    )).toMatchObject({
+      state: "quarantined",
+      scanRunId: quarantined.scanRunId,
+      publishedRunId: null
+    });
+
+    const second = createCommittingBrowserJob(database);
+    const secondAttempt = new Date(scanTime.getTime() + 2_000);
+    const accepted = repository.commitBrowserSourceRefresh({
+      jobId: second.jobId,
+      source: "jiaoyimao",
+      listings: sourceListings("jiaoyimao", 2, "low-second"),
+      attemptedAt: secondAttempt,
+      pagesScanned: 1,
+      stopReason: "no_growth_twice"
+    });
+    expect(accepted).toMatchObject({
+      state: "success",
+      publishedRunId: accepted.scanRunId
+    });
+    expect(
+      repository.getListings().filter(
+        ({ source }) => source === "jiaoyimao"
+      )
+    ).toHaveLength(2);
+    expect(
+      repository.getSourceStatuses().find(
+        ({ source }) => source === "jiaoyimao"
+      )
+    ).toMatchObject({
+      state: "success",
+      itemCount: 2,
+      pagesScanned: 1,
+      stopReason: "no_growth_twice",
+      anomaly: { state: "clear" }
+    });
+  });
+
+  it("browser quarantine publisher rolls back every write when formal listing insertion fails", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      sourceListings("jiaoyimao", 1, "trusted"),
+      "success",
+      scanTime,
+      { pagesScanned: 1, stopReason: "end_of_pages" }
+    );
+    const beforeListings = database.prepare(`
+      SELECT * FROM listings ORDER BY listing_key
+    `).all();
+    const beforeRuns = database.prepare(`
+      SELECT COUNT(*) AS count FROM scan_runs
+    `).get();
+    const beforeStatus = database.prepare(`
+      SELECT * FROM source_status WHERE source = 'jiaoyimao'
+    `).get();
+    const beforeGuard = database.prepare(`
+      SELECT * FROM source_anomaly_guards WHERE source = 'jiaoyimao'
+    `).get();
+    const { browserRepository, jobId } =
+      createCommittingBrowserJob(database);
+    database.exec(`
+      CREATE TRIGGER fail_browser_listing_insert
+      BEFORE INSERT ON listings
+      WHEN NEW.source = 'jiaoyimao'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected listing failure');
+      END;
+    `);
+
+    expect(() => repository.commitBrowserSourceRefresh({
+      jobId,
+      source: "jiaoyimao",
+      listings: sourceListings("jiaoyimao", 1, "fresh"),
+      attemptedAt: new Date(scanTime.getTime() + 1_000),
+      pagesScanned: 1,
+      stopReason: "end_of_pages"
+    })).toThrow("无法提交交易猫浏览器刷新");
+
+    expect(database.prepare(`
+      SELECT * FROM listings ORDER BY listing_key
+    `).all()).toEqual(beforeListings);
+    expect(database.prepare(`
+      SELECT COUNT(*) AS count FROM scan_runs
+    `).get()).toEqual(beforeRuns);
+    expect(database.prepare(`
+      SELECT * FROM source_status WHERE source = 'jiaoyimao'
+    `).get()).toEqual(beforeStatus);
+    expect(database.prepare(`
+      SELECT * FROM source_anomaly_guards WHERE source = 'jiaoyimao'
+    `).get()).toEqual(beforeGuard);
+    expect(browserRepository.getJobRecord(
+      jobId,
+      new Date(scanTime.getTime() + 1_000)
+    )).toMatchObject({
+      state: "committing",
+      scanRunId: null,
+      publishedRunId: null
+    });
+  });
+
   it("migrates legacy source statuses without destroying rows", () => {
     const directory = mkdtempSync(join(tmpdir(), "sjz-legacy-source-status-"));
     const databasePath = join(directory, "legacy.sqlite");

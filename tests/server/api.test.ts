@@ -1116,6 +1116,8 @@ describe("listing API", () => {
         expect.objectContaining({
           id: runId,
           state: "success",
+          scope: "all_sources",
+          requestedSource: null,
           sources: expect.arrayContaining([
             expect.objectContaining({
               source: "panzhi",
@@ -1132,5 +1134,62 @@ describe("listing API", () => {
       expect(invalid.status).toBe(400);
       expect(invalid.body.error).toBe("invalid_history_limit");
     }
+  });
+
+  it("exposes single-source Jiaoyimao browser scan scope in history", async () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const browserRepository = new BrowserRefreshRepository(database);
+    const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+    const admission = new RefreshAdmissionController({
+      browserRepository,
+      tracker
+    });
+    const app = createApp({
+      repository,
+      coordinator: {
+        refreshAll: vi.fn(async () => "success" as const)
+      },
+      tracker,
+      admission
+    });
+    const created = browserRepository.createJob(
+      new Date("2026-07-30T10:00:00.000Z")
+    );
+    browserRepository.transition(
+      created.id,
+      ["awaiting_codex"],
+      "committing",
+      { stage: "committing" },
+      new Date("2026-07-30T10:00:00.000Z")
+    );
+    const committed = repository.commitBrowserSourceRefresh({
+      jobId: created.id,
+      source: "jiaoyimao",
+      listings: [makeListing({
+        source: "jiaoyimao",
+        key: "jiaoyimao:api-browser",
+        sourceListingId: "api-browser",
+        url:
+          "https://www.jiaoyimao.com/jg2007840/101.html"
+      })],
+      attemptedAt: new Date("2026-07-30T10:01:00.000Z"),
+      pagesScanned: 2,
+      stopReason: "end_of_pages"
+    });
+
+    const response = await request(app).get("/api/scan-history?limit=1");
+
+    expect(response.status).toBe(200);
+    expect(response.body.runs).toEqual([
+      expect.objectContaining({
+        id: committed.scanRunId,
+        scope: "single_source",
+        requestedSource: "jiaoyimao",
+        sources: [
+          expect.objectContaining({ source: "jiaoyimao" })
+        ]
+      })
+    ]);
   });
 });

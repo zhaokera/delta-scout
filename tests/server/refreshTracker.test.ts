@@ -25,6 +25,8 @@ describe("RefreshTracker", () => {
       finishedAt: "2026-07-29T10:05:00.000Z",
       state: "partial",
       error: null,
+      scope: "all_sources",
+      requestedSource: null,
       sources: []
     };
 

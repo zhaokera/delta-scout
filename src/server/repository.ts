@@ -111,7 +111,24 @@ export interface ScanHistoryRun {
   finishedAt: string | null;
   state: "running" | ScanState;
   error: string | null;
+  scope: "all_sources" | "single_source";
+  requestedSource: SourceId | null;
   sources: ScanHistorySource[];
+}
+
+export interface CommitBrowserSourceRefreshInput {
+  jobId: string;
+  source: "jiaoyimao";
+  listings: Listing[];
+  attemptedAt: Date;
+  pagesScanned: number;
+  stopReason: "end_of_pages" | "no_growth_twice";
+}
+
+export interface CommitBrowserSourceRefreshResult {
+  state: "success" | "quarantined";
+  scanRunId: number;
+  publishedRunId: number | null;
 }
 
 export interface ListingHistoryObservation {
@@ -1064,10 +1081,576 @@ export class ListingRepository {
     }
   }
 
+  commitBrowserSourceRefresh(
+    input: CommitBrowserSourceRefreshInput
+  ): CommitBrowserSourceRefreshResult {
+    if (
+      input.source !== "jiaoyimao" ||
+      !Number.isSafeInteger(input.pagesScanned) ||
+      input.pagesScanned < 0 ||
+      !["end_of_pages", "no_growth_twice"].includes(input.stopReason)
+    ) {
+      throw new Error("交易猫浏览器刷新参数无效");
+    }
+    const incoming = input.listings.map((listing) => {
+      const parsed = ListingSchema.parse(listing);
+      if (parsed.source !== input.source) {
+        throw new Error("交易猫浏览器刷新包含其他来源");
+      }
+      return parsed;
+    });
+    const timestamp = input.attemptedAt.toISOString();
+
+    try {
+      this.database.exec("BEGIN IMMEDIATE");
+      const job = this.database.prepare(`
+        SELECT state
+        FROM browser_refresh_jobs
+        WHERE id = ? AND source = 'jiaoyimao'
+      `).get(input.jobId) as { state: string } | undefined;
+      if (!job || job.state !== "committing") {
+        throw new Error("浏览器刷新任务不在提交状态");
+      }
+
+      const run = this.database.prepare(`
+        INSERT INTO scan_runs (
+          started_at, finished_at, state, error, is_baseline,
+          scope, requested_source
+        ) VALUES (?, NULL, 'running', NULL, 0, 'single_source', ?)
+      `).run(timestamp, input.source);
+      const scanRunId = Number(run.lastInsertRowid);
+
+      const status = this.getSourceStatuses(input.attemptedAt).find(
+        ({ source }) => source === input.source
+      );
+      if (!status) throw new Error("交易猫来源状态不存在");
+      const latestComplete = this.database.prepare(`
+        SELECT observed_item_count, pages_scanned
+        FROM scan_source_results
+        WHERE source = ?
+          AND state = 'success'
+          AND published = 1
+        ORDER BY run_id DESC
+        LIMIT 1
+      `).get(input.source) as
+        | { observed_item_count: number; pages_scanned: number }
+        | undefined;
+      const baseline = status.anomaly.state === "suspect"
+        ? {
+            itemCount: status.anomaly.baselineItemCount,
+            pagesScanned: status.anomaly.baselinePagesScanned
+          }
+        : latestComplete
+          ? {
+              itemCount: latestComplete.observed_item_count,
+              pagesScanned: latestComplete.pages_scanned
+            }
+          : status.state === "success"
+            ? {
+                itemCount: status.itemCount,
+                pagesScanned: status.pagesScanned
+              }
+            : { itemCount: 0, pagesScanned: 0 };
+      const pending: SnapshotAnomalyGuard | null =
+        status.anomaly.state === "suspect"
+          ? {
+              baseline: {
+                itemCount: status.anomaly.baselineItemCount,
+                pagesScanned: status.anomaly.baselinePagesScanned
+              },
+              observed: {
+                itemCount: status.anomaly.observedItemCount,
+                pagesScanned: status.anomaly.observedPagesScanned
+              },
+              confirmationCount: status.anomaly.confirmationCount,
+              firstDetectedAt: status.anomaly.firstDetectedAt,
+              lastDetectedAt: status.anomaly.lastDetectedAt,
+              reason:
+                status.anomaly.reason as SnapshotAnomalyGuard["reason"]
+            }
+          : null;
+      const decision = evaluateSnapshotAnomaly({
+        complete: true,
+        baseline,
+        current: {
+          itemCount: incoming.length,
+          pagesScanned: input.pagesScanned
+        },
+        pending,
+        observedAt: timestamp
+      });
+      if (decision.kind === "not_applicable") {
+        throw new Error("完整浏览器快照不能跳过异常判定");
+      }
+
+      const insertResult = this.database.prepare(`
+        INSERT INTO scan_source_results (
+          run_id, source, state, pages_scanned,
+          observed_item_count, eligible_count,
+          balanced_candidate_count, global_candidate_count,
+          anomaly_state, published, stop_reason, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const finishJob = (
+        state: "success" | "quarantined",
+        publishedRunId: number | null,
+        reason: string | null
+      ) => {
+        this.database.prepare(`
+          UPDATE browser_refresh_jobs
+          SET state = ?,
+              stage = ?,
+              reason = ?,
+              updated_at = ?,
+              finished_at = ?,
+              last_error = ?,
+              scan_run_id = ?,
+              published_run_id = ?,
+              claim_code_hash = NULL,
+              bridge_token_hash = NULL,
+              action_permit_hash = NULL,
+              action_permit_expires_at = NULL
+          WHERE id = ? AND state = 'committing'
+        `).run(
+          state,
+          state,
+          reason,
+          timestamp,
+          timestamp,
+          reason,
+          scanRunId,
+          publishedRunId,
+          input.jobId
+        );
+      };
+
+      if (decision.kind === "quarantine") {
+        const error = `数据骤降待确认：观测 ${incoming.length} 条`;
+        const existing = this.getListings();
+        const balancedCounts = countBySource(
+          selectBalancedCandidatePool(existing)
+        );
+        const globalCounts = countBySource(
+          selectGlobalCandidatePool(existing)
+        );
+        this.database.prepare(`
+          UPDATE source_anomaly_guards
+          SET state = 'suspect',
+              baseline_item_count = ?,
+              baseline_pages_scanned = ?,
+              observed_item_count = ?,
+              observed_pages_scanned = ?,
+              confirmation_count = ?,
+              first_detected_at = ?,
+              last_detected_at = ?,
+              reason = ?
+          WHERE source = ?
+        `).run(
+          decision.nextGuard.baseline.itemCount,
+          decision.nextGuard.baseline.pagesScanned,
+          decision.nextGuard.observed.itemCount,
+          decision.nextGuard.observed.pagesScanned,
+          decision.nextGuard.confirmationCount,
+          decision.nextGuard.firstDetectedAt,
+          decision.nextGuard.lastDetectedAt,
+          decision.nextGuard.reason,
+          input.source
+        );
+        this.database.prepare(`
+          UPDATE source_status
+          SET state = 'partial',
+              last_attempt_at = ?,
+              stop_reason = 'anomaly_guard',
+              error = ?
+          WHERE source = ?
+        `).run(timestamp, error, input.source);
+        insertResult.run(
+          scanRunId,
+          input.source,
+          "partial",
+          input.pagesScanned,
+          incoming.length,
+          incoming.filter(
+            ({ eligibility }) => eligibility === "eligible"
+          ).length,
+          balancedCounts.get(input.source) ?? 0,
+          globalCounts.get(input.source) ?? 0,
+          "suspect",
+          0,
+          "anomaly_guard",
+          error
+        );
+        this.database.prepare(`
+          UPDATE scan_runs
+          SET state = 'partial', finished_at = ?, error = NULL
+          WHERE id = ?
+        `).run(timestamp, scanRunId);
+        finishJob("quarantined", null, "anomaly_guard");
+        this.pruneScanHistory();
+        this.database.exec("COMMIT");
+        return {
+          state: "quarantined",
+          scanRunId,
+          publishedRunId: null
+        };
+      }
+
+      const oldListings = this.getListings();
+      const oldSourceListings = oldListings.filter(
+        ({ source }) => source === input.source
+      );
+      const effective = [
+        ...oldListings.filter(({ source }) => source !== input.source),
+        ...incoming
+      ];
+      const activeSources = new Set(
+        this.getSourceStatuses(input.attemptedAt)
+          .filter(
+            ({ source, state }) =>
+              source === input.source ||
+              state === "success" ||
+              state === "partial"
+          )
+          .map(({ source }) => source)
+      );
+      const marked = markPossibleDuplicates(
+        effective
+          .filter(({ source }) => activeSources.has(source))
+          .map((listing) => ({
+            ...listing,
+            score: null,
+            possibleDuplicateKeys: []
+          }))
+      );
+      const scored = scoreEligibleListings(marked, input.attemptedAt);
+      const markedByKey = new Map(
+        marked.map((listing) => [listing.key, listing])
+      );
+      const scoreByKey = new Map(
+        scored.map((listing) => [listing.key, listing.score])
+      );
+      let normalized = effective.map((listing) => {
+        const candidate = markedByKey.get(listing.key);
+        return candidate
+          ? {
+              ...candidate,
+              score: scoreByKey.get(candidate.key) ?? null
+            }
+          : {
+              ...listing,
+              score: null,
+              possibleDuplicateKeys: []
+            };
+      });
+
+      const previousRun = this.database.prepare(`
+        SELECT run_id
+        FROM scan_source_results
+        WHERE source = ?
+          AND state = 'success'
+          AND published = 1
+          AND run_id < ?
+        ORDER BY run_id DESC
+        LIMIT 1
+      `).get(input.source, scanRunId) as
+        | { run_id: number }
+        | undefined;
+      const previousStability = this.database.prepare(`
+        SELECT material_hash, consecutive_unchanged_scans
+        FROM listing_observations
+        WHERE run_id = ?
+          AND listing_key = ?
+          AND availability = 'active'
+      `);
+      normalized = normalized.map((listing) => {
+        if (listing.source !== input.source) return listing;
+        if (!previousRun) {
+          return {
+            ...listing,
+            scanStability: "new" as const,
+            consecutiveUnchangedScans: 1
+          };
+        }
+        const previous = previousStability.get(
+          previousRun.run_id,
+          listing.key
+        ) as
+          | {
+              material_hash: string;
+              consecutive_unchanged_scans: number;
+            }
+          | undefined;
+        if (!previous) {
+          return {
+            ...listing,
+            scanStability: "new" as const,
+            consecutiveUnchangedScans: 1
+          };
+        }
+        if (previous.material_hash !== listingMaterialHash(listing)) {
+          return {
+            ...listing,
+            scanStability: "changed" as const,
+            consecutiveUnchangedScans: 1
+          };
+        }
+        return {
+          ...listing,
+          scanStability: "stable" as const,
+          consecutiveUnchangedScans:
+            previous.consecutive_unchanged_scans + 1
+        };
+      });
+
+      const updateListing = this.database.prepare(`
+        UPDATE listings
+        SET eligibility = ?, payload = ?
+        WHERE listing_key = ?
+      `);
+      for (const listing of normalized) {
+        if (listing.source === input.source) continue;
+        const parsed = ListingSchema.parse(listing);
+        updateListing.run(
+          parsed.eligibility,
+          JSON.stringify(parsed),
+          parsed.key
+        );
+      }
+      this.database.prepare(
+        "DELETE FROM listings WHERE source = ?"
+      ).run(input.source);
+      const insertListing = this.database.prepare(`
+        INSERT INTO listings (listing_key, source, eligibility, payload)
+        VALUES (?, ?, ?, ?)
+      `);
+      const publishedSourceListings = normalized.filter(
+        ({ source }) => source === input.source
+      );
+      for (const listing of publishedSourceListings) {
+        const parsed = ListingSchema.parse(listing);
+        insertListing.run(
+          parsed.key,
+          parsed.source,
+          parsed.eligibility,
+          JSON.stringify(parsed)
+        );
+      }
+
+      const balancedCounts = countBySource(
+        selectBalancedCandidatePool(normalized)
+      );
+      const globalCounts = countBySource(
+        selectGlobalCandidatePool(normalized)
+      );
+      this.database.prepare(`
+        UPDATE source_status
+        SET state = 'success',
+            last_attempt_at = ?,
+            last_success_at = ?,
+            item_count = ?,
+            pages_scanned = ?,
+            stop_reason = ?,
+            error = NULL
+        WHERE source = ?
+      `).run(
+        timestamp,
+        timestamp,
+        incoming.length,
+        input.pagesScanned,
+        input.stopReason,
+        input.source
+      );
+      this.database.prepare(`
+        UPDATE source_anomaly_guards
+        SET state = 'clear',
+            baseline_item_count = NULL,
+            baseline_pages_scanned = NULL,
+            observed_item_count = NULL,
+            observed_pages_scanned = NULL,
+            confirmation_count = 0,
+            first_detected_at = NULL,
+            last_detected_at = NULL,
+            reason = NULL
+        WHERE source = ?
+      `).run(input.source);
+      insertResult.run(
+        scanRunId,
+        input.source,
+        "success",
+        input.pagesScanned,
+        incoming.length,
+        publishedSourceListings.filter(
+          ({ eligibility }) => eligibility === "eligible"
+        ).length,
+        balancedCounts.get(input.source) ?? 0,
+        globalCounts.get(input.source) ?? 0,
+        decision.reason === "confirmed"
+          ? "confirmed"
+          : decision.reason === "recovered"
+            ? "recovered"
+            : "none",
+        1,
+        input.stopReason,
+        null
+      );
+
+      const insertObservation = this.database.prepare(`
+        INSERT INTO listing_observations (
+          run_id, listing_key, source, observed_at, eligibility,
+          material_hash, stability, consecutive_unchanged_scans,
+          snapshot_json, changes_json, availability, trusted
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `);
+      const previousTrustedObservation = this.database.prepare(`
+        SELECT snapshot_json, availability
+        FROM listing_observations
+        WHERE listing_key = ?
+          AND trusted = 1
+          AND snapshot_json IS NOT NULL
+          AND run_id < ?
+        ORDER BY run_id DESC
+        LIMIT 1
+      `);
+      const currentKeys = new Set(
+        publishedSourceListings.map(({ key }) => key)
+      );
+      for (const listing of publishedSourceListings) {
+        const snapshot = buildListingHistorySnapshot(listing);
+        const previous = previousTrustedObservation.get(
+          listing.key,
+          scanRunId
+        ) as
+          | {
+              snapshot_json: string;
+              availability: "active" | "removed";
+            }
+          | undefined;
+        const changes: ListingFieldChange[] = previous
+          ? [
+              ...(previous.availability === "removed"
+                ? [{
+                    field: "availability" as const,
+                    label: "在售状态",
+                    before: "已下架",
+                    after: "在售"
+                  }]
+                : []),
+              ...diffListingSnapshots(
+                normalizeListingHistorySnapshot(
+                  JSON.parse(previous.snapshot_json)
+                ),
+                snapshot
+              )
+            ]
+          : [{
+              field: "availability",
+              label: "在售状态",
+              before: "未记录",
+              after: "在售"
+            }];
+        insertObservation.run(
+          scanRunId,
+          listing.key,
+          listing.source,
+          timestamp,
+          listing.eligibility,
+          listingMaterialHash(listing),
+          listing.scanStability,
+          listing.consecutiveUnchangedScans,
+          JSON.stringify(snapshot),
+          JSON.stringify(changes),
+          "active"
+        );
+      }
+      const previousTrustedRun = this.database.prepare(`
+        SELECT run_id
+        FROM scan_source_results
+        WHERE source = ?
+          AND state = 'success'
+          AND published = 1
+          AND run_id < ?
+        ORDER BY run_id DESC
+        LIMIT 1
+      `).get(input.source, scanRunId) as
+        | { run_id: number }
+        | undefined;
+      const previousRows = previousTrustedRun
+        ? (this.database.prepare(`
+            SELECT listing_key, eligibility, material_hash, snapshot_json
+            FROM listing_observations
+            WHERE run_id = ?
+              AND source = ?
+              AND trusted = 1
+              AND availability = 'active'
+              AND snapshot_json IS NOT NULL
+          `).all(
+            previousTrustedRun.run_id,
+            input.source
+          ) as unknown as Array<{
+            listing_key: string;
+            eligibility: Eligibility;
+            material_hash: string;
+            snapshot_json: string;
+          }>)
+        : oldSourceListings.map((listing) => ({
+            listing_key: listing.key,
+            eligibility: listing.eligibility,
+            material_hash: listingMaterialHash(listing),
+            snapshot_json: JSON.stringify(
+              buildListingHistorySnapshot(listing)
+            )
+          }));
+      for (const previous of previousRows) {
+        if (currentKeys.has(previous.listing_key)) continue;
+        insertObservation.run(
+          scanRunId,
+          previous.listing_key,
+          input.source,
+          timestamp,
+          previous.eligibility,
+          previous.material_hash,
+          "changed",
+          0,
+          previous.snapshot_json,
+          JSON.stringify([{
+            field: "availability",
+            label: "在售状态",
+            before: "在售",
+            after: "已下架"
+          }]),
+          "removed"
+        );
+      }
+
+      this.database.prepare(`
+        UPDATE scan_runs
+        SET state = 'success', finished_at = ?, error = NULL
+        WHERE id = ?
+      `).run(timestamp, scanRunId);
+      finishJob("success", scanRunId, null);
+      this.pruneScanHistory();
+      this.database.exec("COMMIT");
+      return {
+        state: "success",
+        scanRunId,
+        publishedRunId: scanRunId
+      };
+    } catch (cause) {
+      try {
+        this.database.exec("ROLLBACK");
+      } catch {
+        // Preserve the original validation or write failure.
+      }
+      throw new Error("无法提交交易猫浏览器刷新", { cause });
+    }
+  }
+
   getScanHistory(limit: number): ScanHistoryRun[] {
     const rows = this.database
       .prepare(`
-        SELECT id, started_at, finished_at, state, error
+        SELECT id, started_at, finished_at, state, error,
+               COALESCE(scope, 'all_sources') AS scope,
+               requested_source
         FROM scan_runs
         WHERE is_baseline = 0
         ORDER BY id DESC
@@ -1079,6 +1662,8 @@ export class ListingRepository {
         finished_at: string | null;
         state: "running" | ScanState;
         error: string | null;
+        scope: "all_sources" | "single_source";
+        requested_source: SourceId | null;
       }>;
     const sourceQuery = this.database.prepare(`
       SELECT source, state, pages_scanned, observed_item_count,
@@ -1095,6 +1680,8 @@ export class ListingRepository {
       finishedAt: row.finished_at,
       state: row.state,
       error: row.error,
+      scope: row.scope,
+      requestedSource: row.requested_source,
       sources: (
         sourceQuery.all(row.id) as unknown as Array<{
           source: SourceId;

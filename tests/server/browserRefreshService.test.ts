@@ -16,6 +16,9 @@ import {
   BrowserRefreshServiceError,
   JiaoyimaoBrowserTaskService
 } from "../../src/server/browserRefresh/service.js";
+import { ListingRepository } from "../../src/server/repository.js";
+import { RefreshAdmissionController } from "../../src/server/refreshAdmission.js";
+import { RefreshTracker } from "../../src/server/refreshTracker.js";
 
 const baseTime = new Date("2026-07-30T10:00:00.000Z");
 const filterUrl =
@@ -1199,6 +1202,315 @@ describe("JiaoyimaoBrowserTaskService", () => {
     await f.service.complete(f.id, f.token);
     expect(f.completed).toEqual([f.id]);
     expect(f.repository.getJob(f.id, baseTime)?.state).toBe("committing");
+  });
+
+  it("builds trusted listings locally and publishes one scoped snapshot exactly once", async () => {
+    const database = createDatabase(":memory:");
+    const browserRepository = new BrowserRefreshRepository(database);
+    const listingRepository = new ListingRepository(database);
+    const releaseAdmission = vi.fn();
+    let time = baseTime.getTime();
+    const publish = vi.spyOn(
+      listingRepository,
+      "commitBrowserSourceRefresh"
+    );
+    const service = new JiaoyimaoBrowserTaskService(browserRepository, {
+      now: () => new Date(time),
+      random: () => 0,
+      publisher: listingRepository,
+      releaseAdmission
+    });
+    const created = service.create();
+    const claim = service.claim(created.id, created.claimCode);
+    service.saveFilterProof(created.id, claim.bridgeToken, proof());
+    service.submitListBatch(
+      created.id,
+      claim.bridgeToken,
+      {
+        ...listBatch([["101", 5_000]]),
+        items: [{
+          sourceListingId: "101",
+          url:
+            "https://www.jiaoyimao.com/jg2007840/101.html",
+          title: "M7 棱镜攻势 极品A",
+          rawText: "QQ 官服 M7 棱镜攻势 极品A",
+          priceCny: 5_000
+        }]
+      }
+    );
+    service.submitLoadEvent(
+      created.id,
+      claim.bridgeToken,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+    time += 2_000;
+    service.submitDetails(
+      created.id,
+      claim.bridgeToken,
+      {
+        sequence: 1,
+        items: [{
+          sourceListingId: "101",
+          url:
+            "https://www.jiaoyimao.com/jg2007840/101.html",
+          observedAt: baseTime.toISOString(),
+          sections: {
+            head: "QQ双端帐号 M7 棱镜攻势 极品A",
+            report:
+              "M7 棱镜攻势 极品A 可二次实名 永久包赔 验号时间：2026-07-30 17:00:00",
+            safety: "安全保障 永久包赔",
+            description: "威龙 红皮 巨浪 极品 总资产：2.66亿 哈夫币：28880000"
+          }
+        }]
+      }
+    );
+
+    const result = await service.complete(
+      created.id,
+      claim.bridgeToken
+    );
+
+    expect(result).toMatchObject({
+      state: "success",
+      scanRunId: expect.any(Number),
+      publishedRunId: expect.any(Number)
+    });
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: created.id,
+        source: "jiaoyimao",
+        pagesScanned: 1,
+        stopReason: "end_of_pages",
+        listings: [
+          expect.objectContaining({
+            key: "jiaoyimao:101",
+            source: "jiaoyimao",
+            loginPlatform: "qq",
+            service: "official",
+            m7PrismStatus: "peak",
+            m7PrismQuality: "A",
+            eligibility: "eligible"
+          })
+        ]
+      })
+    );
+    expect(releaseAdmission).toHaveBeenCalledOnce();
+    expect(releaseAdmission).toHaveBeenCalledWith(created.id);
+  });
+
+  it("refuses completion when staged visible detail cannot be parsed", () => {
+    const database = createDatabase(":memory:");
+    const browserRepository = new BrowserRefreshRepository(database);
+    const listingRepository = new ListingRepository(database);
+    const releaseAdmission = vi.fn();
+    let time = baseTime.getTime();
+    const service = new JiaoyimaoBrowserTaskService(browserRepository, {
+      now: () => new Date(time),
+      random: () => 0,
+      publisher: listingRepository,
+      releaseAdmission
+    });
+    const created = service.create();
+    const claim = service.claim(created.id, created.claimCode);
+    service.saveFilterProof(created.id, claim.bridgeToken, proof());
+    service.submitListBatch(
+      created.id,
+      claim.bridgeToken,
+      listBatch([["101", 5_000]])
+    );
+    service.submitLoadEvent(
+      created.id,
+      claim.bridgeToken,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+    time += 2_000;
+    service.submitDetails(
+      created.id,
+      claim.bridgeToken,
+      details(["101"])
+    );
+    database.prepare(`
+      UPDATE browser_refresh_details
+      SET evidence_json = ?
+      WHERE job_id = ? AND source_listing_id = '101'
+    `).run(
+      JSON.stringify({
+        head: "详情标题",
+        report: "",
+        safety: "",
+        description: ""
+      }),
+      created.id
+    );
+
+    const error = captureServiceError(
+      () => service.complete(created.id, claim.bridgeToken)
+    );
+    expect(error).toMatchObject({
+      code: "staging_invalid",
+      message: "Staged detail 101 could not be parsed"
+    });
+    expect(
+      browserRepository.getJobRecord(created.id, baseTime)
+    ).toMatchObject({ state: "validating" });
+    expect(releaseAdmission).not.toHaveBeenCalled();
+  });
+
+  it("marks a failed publish in a second transaction and always releases admission", async () => {
+    const database = createDatabase(":memory:");
+    const browserRepository = new BrowserRefreshRepository(database);
+    const listingRepository = new ListingRepository(database);
+    const tracker = new RefreshTracker(
+      listingRepository.getRefreshSnapshot()
+    );
+    const admission = new RefreshAdmissionController({
+      browserRepository,
+      tracker,
+      now: () => baseTime
+    });
+    const service = new JiaoyimaoBrowserTaskService(browserRepository, {
+      now: () => baseTime,
+      random: () => 0,
+      publisher: {
+        commitBrowserSourceRefresh: vi.fn(() => {
+          throw new Error("PRIVATE publisher failure");
+        })
+      },
+      releaseAdmission: (jobId) => admission.releaseBrowser(jobId)
+    });
+    const acquired = admission.withBrowserLease(() => service.create());
+    expect(acquired.kind).toBe("acquired");
+    if (acquired.kind !== "acquired") throw new Error("expected lease");
+    const claim = service.claim(
+      acquired.value.id,
+      acquired.value.claimCode
+    );
+    service.saveFilterProof(
+      acquired.value.id,
+      claim.bridgeToken,
+      proof()
+    );
+    service.submitListBatch(
+      acquired.value.id,
+      claim.bridgeToken,
+      listBatch([["101", 6_001]])
+    );
+    service.submitLoadEvent(
+      acquired.value.id,
+      claim.bridgeToken,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+
+    await expect(
+      Promise.resolve().then(() =>
+        service.complete(acquired.value.id, claim.bridgeToken)
+      )
+    ).rejects.toMatchObject({
+      code: "staging_invalid",
+      message: "Browser refresh publish failed"
+    });
+    expect(browserRepository.getJobRecord(
+      acquired.value.id,
+      baseTime
+    )).toMatchObject({
+      state: "failed",
+      reason: "commit_failed",
+      lastError: "commit_failed"
+    });
+    expect(
+      admission.withAllSourcesLease(() => 42)
+    ).toMatchObject({ kind: "acquired", value: 42 });
+  });
+
+  it("releases admission even if recording commit_failed throws and restart recovers committing", async () => {
+    const database = createDatabase(":memory:");
+    const browserRepository = new BrowserRefreshRepository(database);
+    const listingRepository = new ListingRepository(database);
+    const tracker = new RefreshTracker(
+      listingRepository.getRefreshSnapshot()
+    );
+    const admission = new RefreshAdmissionController({
+      browserRepository,
+      tracker,
+      now: () => baseTime
+    });
+    const service = new JiaoyimaoBrowserTaskService(browserRepository, {
+      now: () => baseTime,
+      random: () => 0,
+      publisher: {
+        commitBrowserSourceRefresh: vi.fn(() => {
+          throw new Error("publish failed");
+        })
+      },
+      releaseAdmission: (jobId) => admission.releaseBrowser(jobId)
+    });
+    const acquired = admission.withBrowserLease(() => service.create());
+    if (acquired.kind !== "acquired") throw new Error("expected lease");
+    const claim = service.claim(
+      acquired.value.id,
+      acquired.value.claimCode
+    );
+    service.saveFilterProof(
+      acquired.value.id,
+      claim.bridgeToken,
+      proof()
+    );
+    service.submitListBatch(
+      acquired.value.id,
+      claim.bridgeToken,
+      listBatch([["101", 6_001]])
+    );
+    service.submitLoadEvent(
+      acquired.value.id,
+      claim.bridgeToken,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+    database.exec(`
+      CREATE TRIGGER fail_commit_failed_transition
+      BEFORE UPDATE ON browser_refresh_jobs
+      WHEN NEW.state = 'failed' AND NEW.reason = 'commit_failed'
+      BEGIN
+        SELECT RAISE(ABORT, 'cannot record failure');
+      END;
+    `);
+
+    await expect(
+      Promise.resolve().then(() =>
+        service.complete(acquired.value.id, claim.bridgeToken)
+      )
+    ).rejects.toMatchObject({ code: "staging_invalid" });
+    expect(admission.snapshot()).toEqual({ activeKind: "none" });
+    expect(browserRepository.getJobRecord(
+      acquired.value.id,
+      baseTime
+    )).toMatchObject({ state: "committing" });
+    database.exec("DROP TRIGGER fail_commit_failed_transition");
+    browserRepository.recoverInterruptedJobs(
+      new Date(baseTime.getTime() + 1_000)
+    );
+    expect(browserRepository.getJobRecord(
+      acquired.value.id,
+      new Date(baseTime.getTime() + 1_000)
+    )).toMatchObject({
+      state: "failed",
+      reason: "process_interrupted"
+    });
+    expect(
+      admission.withAllSourcesLease(() => 42)
+    ).toMatchObject({ kind: "acquired", value: 42 });
   });
 
   it("does not expose unexpected SQLite error details", () => {
