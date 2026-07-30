@@ -253,18 +253,21 @@ export function useJiaoyimaoBrowserRefresh(
           origin !== "broadcast" &&
           stateChanged
       });
-      const currentIsKnownActive =
-        current !== null &&
-        KNOWN_STATES.has(current.state) &&
-        !isTerminal(current);
-      const authoritativeIdle =
-        (current === null || isTerminal(current)) &&
-        allSourceStatus?.state === "idle";
+      const browserCurrentIsInactive =
+        current === null || isTerminal(current);
+      const allSourceConflictResolved =
+        conflictAtRequest?.activeKind === "all_sources" &&
+        browserCurrentIsInactive &&
+        allSourceStatus !== null &&
+        allSourceStatus.state !== "running";
+      const browserConflictResolved =
+        conflictAtRequest?.activeKind === "browser" &&
+        browserCurrentIsInactive;
       if (
         applied &&
         conflictAtRequest !== null &&
         conflictRef.current === conflictAtRequest &&
-        (currentIsKnownActive || authoritativeIdle)
+        (allSourceConflictResolved || browserConflictResolved)
       ) {
         conflictRef.current = null;
         setConflict(null);

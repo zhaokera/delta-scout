@@ -1915,12 +1915,19 @@ describe("App shell", () => {
       state: "collecting_details",
       stage: "details"
     });
+    let current = active;
     const api = makeApi({
       sources: [makeSourceStatus({ source: "jiaoyimao" })],
       getListings: async () => [listing],
+      getRefreshStatus: async () =>
+        makeRefreshStatus({
+          runId: 81,
+          state: "success",
+          finishedAt: "2026-07-31T01:00:00.000Z"
+        }),
       getCurrentJiaoyimaoBrowserRefresh: async () => {
         currentCall += 1;
-        return currentCall === 1 ? null : active;
+        return currentCall === 1 ? null : current;
       },
       startJiaoyimaoBrowserRefresh: async () => {
         throw new Error("另一个刷新任务正在进行");
@@ -1946,9 +1953,87 @@ describe("App shell", () => {
     })).toBeInTheDocument();
     expect(api.getCurrentJiaoyimaoBrowserRefresh)
       .toHaveBeenCalledTimes(2);
+
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(3)
+    );
+    expect(screen.getByRole("alert"))
+      .toHaveTextContent("另一个刷新任务正在进行");
+
+    current = makeBrowserRefreshJob({
+      state: "failed",
+      stage: "failed",
+      updatedAt: "2026-07-31T01:02:00.000Z",
+      finishedAt: "2026-07-31T01:02:00.000Z"
+    });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(4)
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("browser refresh blocks repeat starts after an external all-source conflict and restores them after an idle sync", async () => {
+  it.each(["success", "partial", "failed"] as const)(
+    "browser refresh restores starts after an external all-source conflict reaches %s",
+    async (terminalState) => {
+      let allSourceStatus = makeRefreshStatus();
+      const api = makeApi({
+        sources: [makeSourceStatus({ source: "jiaoyimao" })],
+        getRefreshStatus: async () => allSourceStatus,
+        getCurrentJiaoyimaoBrowserRefresh: async () => null,
+        startJiaoyimaoBrowserRefresh: async () => {
+          allSourceStatus = makeRefreshStatus({
+            runId: 82,
+            state: "running",
+            source: "panzhi",
+            phase: "list"
+          });
+          throw new Error("另一个刷新任务正在进行");
+        }
+      });
+      const user = userEvent.setup();
+
+      render(<App api={api} />);
+      const jymCard = (await screen.findByText("交易猫"))
+        .closest("article");
+      const sourceButton = within(jymCard!).getByRole("button", {
+        name: /刷新交易猫/
+      });
+      const panel = screen.getByRole("region", {
+        name: "交易猫浏览器刷新"
+      });
+      const panelButton = within(panel).getByRole("button", {
+        name: "刷新交易猫"
+      });
+
+      await user.click(sourceButton);
+
+      expect(await screen.findByRole("alert"))
+        .toHaveTextContent("另一个刷新任务正在进行");
+      expect(sourceButton).toBeDisabled();
+      expect(panelButton).toBeDisabled();
+      await user.click(sourceButton);
+      await user.click(panelButton);
+      expect(api.startJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
+
+      allSourceStatus = makeRefreshStatus({
+        runId: 82,
+        state: terminalState,
+        finishedAt: "2026-07-31T01:10:00.000Z"
+      });
+      window.dispatchEvent(new Event("focus"));
+
+      await waitFor(() => expect(sourceButton).toBeEnabled());
+      expect(panelButton).toBeEnabled();
+      expect(within(panel).queryByRole("alert"))
+        .not.toBeInTheDocument();
+    }
+  );
+
+  it("browser refresh keeps starts blocked while the conflicting all-source tracker is running", async () => {
     let allSourceStatus = makeRefreshStatus();
     const api = makeApi({
       sources: [makeSourceStatus({ source: "jiaoyimao" })],
@@ -1956,7 +2041,7 @@ describe("App shell", () => {
       getCurrentJiaoyimaoBrowserRefresh: async () => null,
       startJiaoyimaoBrowserRefresh: async () => {
         allSourceStatus = makeRefreshStatus({
-          runId: 82,
+          runId: 83,
           state: "running",
           source: "panzhi",
           phase: "list"
@@ -1971,29 +2056,17 @@ describe("App shell", () => {
     const sourceButton = within(jymCard!).getByRole("button", {
       name: /刷新交易猫/
     });
-    const panel = screen.getByRole("region", {
-      name: "交易猫浏览器刷新"
-    });
-    const panelButton = within(panel).getByRole("button", {
-      name: "刷新交易猫"
-    });
-
     await user.click(sourceButton);
-
     expect(await screen.findByRole("alert"))
       .toHaveTextContent("另一个刷新任务正在进行");
-    expect(sourceButton).toBeDisabled();
-    expect(panelButton).toBeDisabled();
-    await user.click(sourceButton);
-    await user.click(panelButton);
-    expect(api.startJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
 
-    allSourceStatus = makeRefreshStatus();
     window.dispatchEvent(new Event("focus"));
+    await act(async () => undefined);
 
-    await waitFor(() => expect(sourceButton).toBeEnabled());
-    expect(panelButton).toBeEnabled();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(sourceButton).toBeDisabled();
+    expect(screen.getByRole("alert"))
+      .toHaveTextContent("另一个刷新任务正在进行");
+    expect(api.startJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
   });
 
   it("browser refresh keeps claim codes local and broadcasts mutations without echo", async () => {
