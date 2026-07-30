@@ -3,7 +3,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import {
-  BrowserRefreshRepository
+  BrowserRefreshRepository,
+  BrowserRefreshRepositoryError
 } from "../../src/server/browserRefresh/repository.js";
 import { createDatabase } from "../../src/server/db.js";
 import {
@@ -228,6 +229,60 @@ describe("RefreshAdmissionController", () => {
       1
     );
     expect(rowCount(database, "browser_refresh_jobs")).toBe(1);
+  });
+
+  it("releases its reservation when the persisted active-job recheck loses a race", () => {
+    const { database, browserRepository, controller } = setup();
+    let originalJobId: string | null = null;
+    let conflict: unknown;
+
+    try {
+      controller.withBrowserLease(() => {
+        const original = browserRepository.createJob(now);
+        originalJobId = original.id;
+        return browserRepository.createJob(now);
+      });
+    } catch (error) {
+      conflict = error;
+    }
+
+    expect(conflict).toBeInstanceOf(BrowserRefreshRepositoryError);
+    expect(conflict).toMatchObject({ code: "active_job_exists" });
+    expect(originalJobId).not.toBeNull();
+    expect(controller.snapshot()).toEqual({ activeKind: "none" });
+    expect(rowCount(database, "browser_refresh_jobs")).toBe(1);
+    expect(browserRepository.getJobRecord(originalJobId!, now)).toMatchObject({
+      id: originalJobId,
+      state: "awaiting_codex"
+    });
+
+    browserRepository.transition(
+      originalJobId!,
+      ["awaiting_codex"],
+      "cancelled",
+      { reason: "user_cancelled" },
+      now
+    );
+    expect(controller.withAllSourcesLease(() => 3)).toMatchObject({
+      kind: "acquired",
+      value: 3
+    });
+  });
+
+  it("releases its reservation when a generic browser creation callback throws", () => {
+    const { controller } = setup();
+
+    expect(() =>
+      controller.withBrowserLease(() => {
+        throw new Error("generic creation failure");
+      })
+    ).toThrow(/generic creation failure/);
+
+    expect(controller.snapshot()).toEqual({ activeKind: "none" });
+    expect(controller.withAllSourcesLease(() => 4)).toMatchObject({
+      kind: "acquired",
+      value: 4
+    });
   });
 
   it("reconciles a held job that another repository read already expired", () => {
