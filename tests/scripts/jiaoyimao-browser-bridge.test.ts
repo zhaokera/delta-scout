@@ -166,7 +166,8 @@ describe("Jiaoyimao Codex browser bridge", () => {
         cooldownUntil: null,
         actionPermit: "permit-1",
         nextListBatchSequence: 1,
-        nextLoadSequence: 1
+        nextLoadSequence: 1,
+        debugInfo: "server-internal"
       })
     );
 
@@ -193,6 +194,7 @@ describe("Jiaoyimao Codex browser bridge", () => {
       actionPermitAvailable: true
     });
     expect(work).not.toHaveProperty("actionPermit");
+    expect(work).not.toHaveProperty("debugInfo");
     expect(JSON.stringify(work)).not.toContain("permit-1");
     expect(JSON.stringify(client)).toBe("{}");
     expect(JSON.stringify(client)).not.toContain(bridgeToken);
@@ -504,6 +506,162 @@ describe("Jiaoyimao Codex browser bridge", () => {
       "confirmed-list-permit"
     );
     expect(bodyOf(fetch, 3)).not.toHaveProperty("actionPermit");
+  });
+
+  it("rejects a 2xx outcome containing an unexpected action permit without exposing it", async () => {
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        actionPermit: "request-action-permit",
+        nextListBatchSequence: 1,
+        nextLoadSequence: 1
+      }),
+      jsonResponse({
+        acceptedCount: 1,
+        loadActionCount: 1,
+        nextSequence: 2,
+        actionPermit: "unexpected-response-permit"
+      }),
+      acceptedLoadResponse(3)
+    );
+    const client = await claimWith(fetch);
+
+    await client.getWork();
+    let failure: unknown;
+    try {
+      await client.submitLoadEvent(loadEvent());
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: "invalid_server_response"
+    });
+    expect(JSON.stringify(failure)).not.toContain(
+      "unexpected-response-permit"
+    );
+
+    await client.submitLoadEvent({ ...loadEvent(), sequence: 2 });
+    expect(bodyOf(fetch, 2)).toHaveProperty(
+      "actionPermit",
+      "request-action-permit"
+    );
+    expect(bodyOf(fetch, 3)).not.toHaveProperty("actionPermit");
+  });
+
+  it("rebuilds non-work success responses from their public whitelist", async () => {
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({
+        acceptedCount: 1,
+        uniqueItemCount: 1,
+        nextSequence: 2,
+        debugInfo: "server-internal"
+      })
+    );
+    const client = await claimWith(fetch);
+
+    await expect(
+      client.submitListBatch(listBatch())
+    ).resolves.toEqual({
+      acceptedCount: 1,
+      uniqueItemCount: 1,
+      nextSequence: 2
+    });
+  });
+
+  it("redacts pending permits echoed by HTTP and network errors while preserving retry state", async () => {
+    const pendingPermit = "pending-permit-must-not-leak";
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        actionPermit: pendingPermit,
+        nextListBatchSequence: 1,
+        nextLoadSequence: 1
+      }),
+      jsonResponse(
+        {
+          error: "staging_invalid",
+          message: `invalid outcome for ${pendingPermit}`
+        },
+        409
+      ),
+      new Error(`socket reset for ${pendingPermit}`),
+      acceptedLoadResponse(4)
+    );
+    const client = await claimWith(fetch);
+
+    await client.getWork();
+    for (const [sequence, code] of [
+      [1, "staging_invalid"],
+      [2, "browser_bridge_network_error"]
+    ] as const) {
+      let failure: unknown;
+      try {
+        await client.submitLoadEvent({
+          ...loadEvent(),
+          sequence
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ code });
+      expect(JSON.stringify(failure)).not.toContain(pendingPermit);
+      expect((failure as Error).message).toBe("浏览器桥接请求失败");
+    }
+
+    await client.submitLoadEvent({ ...loadEvent(), sequence: 3 });
+    for (const index of [2, 3, 4]) {
+      expect(bodyOf(fetch, index)).toHaveProperty(
+        "actionPermit",
+        pendingPermit
+      );
+    }
+  });
+
+  it("redacts a pending permit before a terminal error clears it", async () => {
+    const pendingPermit = "terminal-pending-permit";
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        actionPermit: pendingPermit,
+        nextListBatchSequence: 1,
+        nextLoadSequence: 1
+      }),
+      jsonResponse(
+        {
+          error: "bridge_unauthorized",
+          message: `expired ${pendingPermit}`
+        },
+        401
+      )
+    );
+    const client = await claimWith(fetch);
+
+    await client.getWork();
+    let failure: unknown;
+    try {
+      await client.submitLoadEvent(loadEvent());
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      code: "bridge_unauthorized",
+      message: "浏览器桥接请求失败"
+    });
+    expect(JSON.stringify(failure)).not.toContain(pendingPermit);
+    await expect(client.getWork()).rejects.toMatchObject({
+      code: "bridge_client_closed"
+    });
   });
 
   it("rejects unknown or sensitive fields before serializing or fetching", async () => {

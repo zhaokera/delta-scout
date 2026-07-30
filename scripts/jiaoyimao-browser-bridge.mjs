@@ -67,6 +67,7 @@ const FORBIDDEN_FIELD_NAMES = new Set([
   "networkauthheader",
   "networkauthheaders",
   "requestheaders",
+  "actionpermit",
   "claimcode",
   "bridgetoken",
   "credential",
@@ -145,6 +146,28 @@ function assertNoForbiddenFields(value, seen = new WeakSet()) {
     }
     assertNoForbiddenFields(nested, seen);
   }
+}
+
+function sensitiveValues(value, seen = new WeakSet(), found = []) {
+  if (value === null || typeof value !== "object") return found;
+  if (seen.has(value)) return found;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) sensitiveValues(item, seen, found);
+    return found;
+  }
+  if (!isPlainObject(value)) return found;
+  for (const [key, nested] of Object.entries(value)) {
+    if (
+      FORBIDDEN_FIELD_NAMES.has(normalizedFieldName(key)) &&
+      typeof nested === "string" &&
+      nested.length > 0
+    ) {
+      found.push(nested);
+    }
+    sensitiveValues(nested, seen, found);
+  }
+  return found;
 }
 
 function assertExactObject(value, keys) {
@@ -467,6 +490,19 @@ function assertSafeServerPayload(value) {
   return value;
 }
 
+function extractWorkPayload(value) {
+  if (!isPlainObject(value)) throw invalidServerResponse();
+  const actionPermit = value.actionPermit;
+  delete value.actionPermit;
+  const payload = assertSafeServerPayload(value);
+  validateServerShape(() => {
+    if (actionPermit !== undefined) {
+      assertString(actionPermit, 1, 128);
+    }
+  });
+  return { payload, actionPermit };
+}
+
 function normalizeBaseUrl(value) {
   const text = value ?? DEFAULT_API_BASE;
   if (typeof text !== "string") throw bridgeError();
@@ -546,7 +582,7 @@ function assertNullableIsoTimestamp(value) {
   if (value !== null) assertIsoTimestamp(value);
 }
 
-function validateWorkResponse(value) {
+function validateWorkResponse(value, actionPermitAvailable) {
   if (!isPlainObject(value)) {
     throw invalidServerResponse();
   }
@@ -556,8 +592,8 @@ function validateWorkResponse(value) {
     }
     assertNullableIsoTimestamp(value.nextActionAt);
     assertNullableIsoTimestamp(value.cooldownUntil);
-    if (value.actionPermit !== undefined) {
-      assertString(value.actionPermit, 1, 128);
+    if (value.state !== undefined && !JOB_STATES.has(value.state)) {
+      throw bridgeError();
     }
     if (value.kind === "list") {
       assertInteger(value.nextListBatchSequence, 1, MAX_UNIQUE_ITEMS);
@@ -568,7 +604,25 @@ function validateWorkResponse(value) {
       assertInteger(value.nextDetailSequence, 1, MAX_UNIQUE_ITEMS);
     }
   });
-  return value;
+  return {
+    kind: value.kind,
+    nextActionAt: value.nextActionAt,
+    cooldownUntil: value.cooldownUntil,
+    actionPermitAvailable,
+    ...(value.state === undefined ? {} : { state: value.state }),
+    ...(value.kind === "list"
+      ? {
+          nextListBatchSequence: value.nextListBatchSequence,
+          nextLoadSequence: value.nextLoadSequence
+        }
+      : value.kind === "detail"
+        ? {
+            sourceListingId: value.sourceListingId,
+            url: value.url,
+            nextDetailSequence: value.nextDetailSequence
+          }
+        : {})
+  };
 }
 
 function validateJobResponse(value, expectedState) {
@@ -581,7 +635,23 @@ function validateJobResponse(value, expectedState) {
       throw bridgeError();
     }
   });
-  return value;
+  validateServerShape(() => {
+    if (value.nextActionAt !== undefined) {
+      assertNullableIsoTimestamp(value.nextActionAt);
+    }
+    if (value.cooldownUntil !== undefined) {
+      assertNullableIsoTimestamp(value.cooldownUntil);
+    }
+  });
+  return {
+    state: value.state,
+    ...(value.nextActionAt === undefined
+      ? {}
+      : { nextActionAt: value.nextActionAt }),
+    ...(value.cooldownUntil === undefined
+      ? {}
+      : { cooldownUntil: value.cooldownUntil })
+  };
 }
 
 function validateClaimResponse(value, expectedJobId) {
@@ -608,7 +678,11 @@ function validateListResponse(value) {
       MAX_UNIQUE_ITEMS + 1
     );
   });
-  return value;
+  return {
+    acceptedCount: value.acceptedCount,
+    uniqueItemCount: value.uniqueItemCount,
+    nextSequence: value.nextSequence
+  };
 }
 
 function validateLoadResponse(value) {
@@ -619,7 +693,11 @@ function validateLoadResponse(value) {
     assertInteger(value.loadActionCount, 1, MAX_LOAD_EVENTS);
     assertInteger(value.nextSequence, 1, MAX_LOAD_EVENTS + 1);
   });
-  return value;
+  return {
+    acceptedCount: value.acceptedCount,
+    loadActionCount: value.loadActionCount,
+    nextSequence: value.nextSequence
+  };
 }
 
 function validateDetailResponse(value) {
@@ -651,7 +729,13 @@ function validateDetailResponse(value) {
       MAX_UNIQUE_ITEMS + 1
     );
   });
-  return value;
+  return {
+    acceptedCount: value.acceptedCount,
+    detailCompletedCount: value.detailCompletedCount,
+    detailRequiredCount: value.detailRequiredCount,
+    nextSourceListingId: value.nextSourceListingId,
+    nextSequence: value.nextSequence
+  };
 }
 
 function validateCompletionResponse(value) {
@@ -671,7 +755,11 @@ function validateCompletionResponse(value) {
       );
     }
   });
-  return value;
+  return {
+    state: value.state,
+    scanRunId: value.scanRunId,
+    publishedRunId: value.publishedRunId
+  };
 }
 
 function waitAbortError() {
@@ -747,7 +835,10 @@ export async function claimJiaoyimaoBrowserJob(options) {
     );
     throw new JiaoyimaoBrowserBridgeError(
       code,
-      safeServerMessage(claimPayload?.message, [claimed.claimCode]),
+      safeServerMessage(claimPayload?.message, [
+        claimed.claimCode,
+        ...sensitiveValues(claimPayload)
+      ]),
       safeRetryAt(claimPayload?.retryAt)
     );
   }
@@ -791,7 +882,8 @@ export async function claimJiaoyimaoBrowserJob(options) {
     path,
     body,
     authenticated = true,
-    onConfirmedSuccess
+    onConfirmedSuccess,
+    responseKind = "standard"
   ) {
     const currentToken = requireToken();
     if (body !== undefined) assertBatchSize(body);
@@ -825,6 +917,12 @@ export async function claimJiaoyimaoBrowserJob(options) {
         payload?.error,
         "browser_bridge_http_error"
       );
+      const responseSecrets = [
+        claimed.claimCode,
+        currentToken,
+        pendingPermit?.value,
+        ...sensitiveValues(payload)
+      ];
       if (
         response.status === 401 ||
         TERMINAL_ERROR_CODES.has(code) ||
@@ -834,13 +932,14 @@ export async function claimJiaoyimaoBrowserJob(options) {
       }
       throw new JiaoyimaoBrowserBridgeError(
         code,
-        safeServerMessage(payload?.message, [
-          currentToken
-        ]),
+        safeServerMessage(payload?.message, responseSecrets),
         safeRetryAt(payload?.retryAt)
       );
     }
     onConfirmedSuccess?.();
+    if (responseKind === "work") {
+      return extractWorkPayload(payload);
+    }
     const safePayload = assertSafeServerPayload(payload);
     if (isTerminalPayload(safePayload)) {
       clearCredentials();
@@ -854,25 +953,28 @@ export async function claimJiaoyimaoBrowserJob(options) {
 
   async function getWork(input) {
     validateEmptyArgument(input);
-    const work = validateWorkResponse(
-      await request("GET", bridgePath("work"))
+    const internalWork = await request(
+      "GET",
+      bridgePath("work"),
+      undefined,
+      true,
+      undefined,
+      "work"
     );
-    if (typeof work.actionPermit === "string") {
+    const work = validateWorkResponse(
+      internalWork.payload,
+      internalWork.actionPermit !== undefined
+    );
+    if (typeof internalWork.actionPermit === "string") {
       pendingPermit = work.kind === "list"
-        ? { kind: "load", value: work.actionPermit }
+        ? { kind: "load", value: internalWork.actionPermit }
         : work.kind === "detail"
-          ? { kind: "detail", value: work.actionPermit }
+          ? { kind: "detail", value: internalWork.actionPermit }
           : null;
     } else {
       pendingPermit = null;
     }
-    const publicWork = {
-      ...work,
-      actionPermitAvailable:
-        typeof work.actionPermit === "string"
-    };
-    delete publicWork.actionPermit;
-    return publicWork;
+    return work;
   }
 
   async function submitFilterProof(input) {
