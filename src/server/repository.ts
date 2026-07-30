@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   selectBalancedCandidatePool,
@@ -179,6 +180,10 @@ function countBySource(
 }
 
 export class ListingRepository {
+  private readonly savepointPrefix =
+    randomBytes(8).toString("hex");
+  private savepointSequence = 0;
+
   constructor(private readonly database: DatabaseSync) {}
 
   replaceSourceSnapshot(
@@ -1102,7 +1107,7 @@ export class ListingRepository {
     const timestamp = input.attemptedAt.toISOString();
 
     try {
-      this.database.exec("BEGIN IMMEDIATE");
+      return this.runTransaction(() => {
       const job = this.database.prepare(`
         SELECT state
         FROM browser_refresh_jobs
@@ -1291,7 +1296,6 @@ export class ListingRepository {
           "anomaly_quarantined"
         );
         this.pruneScanHistory();
-        this.database.exec("COMMIT");
         return {
           state: "quarantined",
           scanRunId,
@@ -1633,18 +1637,13 @@ export class ListingRepository {
       `).run(timestamp, scanRunId);
       finishJob("success", scanRunId, null);
       this.pruneScanHistory();
-      this.database.exec("COMMIT");
       return {
         state: "success",
         scanRunId,
         publishedRunId: scanRunId
       };
+      });
     } catch (cause) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original validation or write failure.
-      }
       throw new Error("无法提交交易猫浏览器刷新", { cause });
     }
   }
@@ -1723,12 +1722,18 @@ export class ListingRepository {
     const latestRun = this.getScanHistory(1)[0] ?? null;
     const published = this.database
       .prepare(`
-        SELECT finished_at
-        FROM scan_runs
-        WHERE is_baseline = 0
-          AND state IN ('success', 'partial')
-          AND finished_at IS NOT NULL
-        ORDER BY id DESC
+        SELECT r.finished_at
+        FROM scan_runs r
+        WHERE r.is_baseline = 0
+          AND r.state IN ('success', 'partial')
+          AND r.finished_at IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM scan_source_results sr
+            WHERE sr.run_id = r.id
+              AND sr.published = 1
+          )
+        ORDER BY r.id DESC
         LIMIT 1
       `)
       .get() as { finished_at: string } | undefined;
@@ -1815,6 +1820,45 @@ export class ListingRepository {
           LIMIT 50
         )
     `);
+  }
+
+  private runTransaction<T>(operation: () => T): T {
+    const callerOwnsTransaction = this.database.isTransaction;
+    const savepoint = callerOwnsTransaction
+      ? `listing_repository_${this.savepointPrefix}_` +
+        `${++this.savepointSequence}`
+      : null;
+    let started = false;
+    try {
+      this.database.exec(
+        savepoint === null
+          ? "BEGIN IMMEDIATE"
+          : `SAVEPOINT ${savepoint}`
+      );
+      started = true;
+      const result = operation();
+      this.database.exec(
+        savepoint === null
+          ? "COMMIT"
+          : `RELEASE SAVEPOINT ${savepoint}`
+      );
+      started = false;
+      return result;
+    } catch (error) {
+      if (started) {
+        try {
+          if (savepoint === null) {
+            this.database.exec("ROLLBACK");
+          } else {
+            this.database.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+            this.database.exec(`RELEASE SAVEPOINT ${savepoint}`);
+          }
+        } catch {
+          // Preserve the original transaction failure.
+        }
+      }
+      throw error;
+    }
   }
 
   getListings(eligibility?: Eligibility): Listing[] {

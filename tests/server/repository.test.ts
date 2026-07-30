@@ -451,6 +451,192 @@ describe("ListingRepository", () => {
     });
   });
 
+  it("does not roll back a caller transaction when nested browser publish fails", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      sourceListings("jiaoyimao", 1, "trusted"),
+      "success",
+      scanTime,
+      { pagesScanned: 1, stopReason: "end_of_pages" }
+    );
+    const { browserRepository, jobId } =
+      createCommittingBrowserJob(database);
+    database.exec(`
+      CREATE TABLE outer_transaction_markers (
+        marker TEXT PRIMARY KEY
+      );
+      CREATE TRIGGER fail_nested_browser_publish
+      BEFORE UPDATE ON source_status
+      WHEN NEW.source = 'jiaoyimao'
+        AND NEW.state = 'success'
+        AND EXISTS (
+          SELECT 1 FROM listings
+          WHERE listing_key = 'jiaoyimao:nested-fresh-0'
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'nested publish failure');
+      END;
+      BEGIN IMMEDIATE;
+      INSERT INTO outer_transaction_markers (marker) VALUES ('kept');
+    `);
+
+    expect(() => repository.commitBrowserSourceRefresh({
+      jobId,
+      source: "jiaoyimao",
+      listings: sourceListings("jiaoyimao", 1, "nested-fresh"),
+      attemptedAt: new Date(scanTime.getTime() + 1_000),
+      pagesScanned: 1,
+      stopReason: "end_of_pages"
+    })).toThrow("无法提交交易猫浏览器刷新");
+
+    expect(database.isTransaction).toBe(true);
+    expect(
+      database.prepare(
+        "SELECT marker FROM outer_transaction_markers"
+      ).all()
+    ).toEqual([{ marker: "kept" }]);
+    expect(browserRepository.getJobRecord(
+      jobId,
+      new Date(scanTime.getTime() + 1_000)
+    )).toMatchObject({
+      state: "committing",
+      scanRunId: null,
+      publishedRunId: null
+    });
+    database.exec("ROLLBACK");
+    expect(database.isTransaction).toBe(false);
+    expect(
+      database.prepare(
+        "SELECT COUNT(*) AS count FROM outer_transaction_markers"
+      ).get()
+    ).toEqual({ count: 0 });
+  });
+
+  it("uses a savepoint for a successful nested browser publish", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const { browserRepository, jobId } =
+      createCommittingBrowserJob(database);
+    database.exec(`
+      CREATE TABLE successful_outer_markers (
+        marker TEXT PRIMARY KEY
+      );
+      BEGIN IMMEDIATE;
+      INSERT INTO successful_outer_markers (marker) VALUES ('kept');
+    `);
+
+    const result = repository.commitBrowserSourceRefresh({
+      jobId,
+      source: "jiaoyimao",
+      listings: sourceListings("jiaoyimao", 1, "nested-success"),
+      attemptedAt: new Date(scanTime.getTime() + 1_000),
+      pagesScanned: 1,
+      stopReason: "end_of_pages"
+    });
+
+    expect(result.state).toBe("success");
+    expect(database.isTransaction).toBe(true);
+    expect(
+      database.prepare(
+        "SELECT marker FROM successful_outer_markers"
+      ).all()
+    ).toEqual([{ marker: "kept" }]);
+    expect(browserRepository.getJobRecord(
+      jobId,
+      new Date(scanTime.getTime() + 1_000)
+    )).toMatchObject({
+      state: "success",
+      scanRunId: result.scanRunId,
+      publishedRunId: result.scanRunId
+    });
+    database.exec("ROLLBACK");
+    expect(database.isTransaction).toBe(false);
+    expect(
+      database.prepare(
+        "SELECT COUNT(*) AS count FROM successful_outer_markers"
+      ).get()
+    ).toEqual({ count: 0 });
+    expect(browserRepository.getJobRecord(
+      jobId,
+      new Date(scanTime.getTime() + 1_000)
+    )).toMatchObject({
+      state: "committing",
+      scanRunId: null,
+      publishedRunId: null
+    });
+    expect(repository.getScanHistory(10)).toEqual([]);
+    expect(repository.getListings()).toEqual([]);
+  });
+
+  it("keeps lastSnapshotAt on the prior published run after quarantine and restart", () => {
+    const directory = mkdtempSync(join(
+      tmpdir(),
+      "sjz-quarantine-snapshot-"
+    ));
+    const databasePath = join(directory, "snapshot.sqlite");
+    const initialFinishedAt = new Date(scanTime.getTime() + 1_000);
+    const quarantineAt = new Date(scanTime.getTime() + 2_000);
+    try {
+      const database = createDatabase(databasePath);
+      const repository = new ListingRepository(database);
+      const initialRun = repository.startScan(scanTime);
+      repository.commitScanRefresh(
+        initialRun,
+        [
+          ...sourceListings("jiaoyimao", 20, "trusted"),
+          ...sourceListings("panzhi", 1, "trusted"),
+          ...sourceListings("pxb7", 1, "trusted")
+        ],
+        [
+          successUpdate("jiaoyimao", 20, "success", 5),
+          successUpdate("panzhi", 1),
+          successUpdate("pxb7", 1)
+        ],
+        initialFinishedAt
+      );
+      const { jobId } = createCommittingBrowserJob(
+        database,
+        quarantineAt
+      );
+      const quarantined = repository.commitBrowserSourceRefresh({
+        jobId,
+        source: "jiaoyimao",
+        listings: sourceListings("jiaoyimao", 2, "low"),
+        attemptedAt: quarantineAt,
+        pagesScanned: 1,
+        stopReason: "end_of_pages"
+      });
+      expect(quarantined.state).toBe("quarantined");
+      expect(repository.getRefreshSnapshot()).toMatchObject({
+        latestRun: expect.objectContaining({
+          id: quarantined.scanRunId,
+          state: "partial"
+        }),
+        lastSnapshotAt: initialFinishedAt.toISOString()
+      });
+      database.close();
+
+      const reopened = createDatabase(databasePath);
+      try {
+        expect(
+          new ListingRepository(reopened).getRefreshSnapshot()
+        ).toMatchObject({
+          latestRun: expect.objectContaining({
+            id: quarantined.scanRunId,
+            state: "partial"
+          }),
+          lastSnapshotAt: initialFinishedAt.toISOString()
+        });
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("migrates legacy source statuses without destroying rows", () => {
     const directory = mkdtempSync(join(tmpdir(), "sjz-legacy-source-status-"));
     const databasePath = join(directory, "legacy.sqlite");
