@@ -7,6 +7,7 @@ import {
   compactText,
   parseChineseAmount
 } from "../collector/adapters/shared.js";
+import { BROWSER_REFRESH_LIMITS } from "./contracts.js";
 
 export interface JiaoyimaoVisibleSections {
   head: string;
@@ -16,10 +17,9 @@ export interface JiaoyimaoVisibleSections {
 }
 
 const MAX_STORED_EVIDENCE_CHARS = 2_000;
-const STORED_EVIDENCE_SUFFIX_CHARS =
-  Math.floor(MAX_STORED_EVIDENCE_CHARS / 2);
-const STORED_EVIDENCE_PREFIX_CHARS =
-  MAX_STORED_EVIDENCE_CHARS - STORED_EVIDENCE_SUFFIX_CHARS - 1;
+const STORED_EVIDENCE_OVERLAP_CHARS = 256;
+const STORED_EVIDENCE_CHUNK_STEP =
+  MAX_STORED_EVIDENCE_CHARS - STORED_EVIDENCE_OVERLAP_CHARS;
 
 function toBoundedEvidenceRecords(lines: string[]) {
   return lines.flatMap((line) => {
@@ -27,14 +27,23 @@ function toBoundedEvidenceRecords(lines: string[]) {
     if (!record || !record.truncated) return record ? [record] : [];
 
     const characters = [...line.trim()];
-    return [{
-      text: [
-        ...characters.slice(0, STORED_EVIDENCE_PREFIX_CHARS),
-        "…",
-        ...characters.slice(-STORED_EVIDENCE_SUFFIX_CHARS)
-      ].join(""),
-      truncated: true
-    }];
+    const records = [];
+    for (
+      let start = 0;
+      start < characters.length;
+      start += STORED_EVIDENCE_CHUNK_STEP
+    ) {
+      records.push({
+        text: characters
+          .slice(start, start + MAX_STORED_EVIDENCE_CHARS)
+          .join(""),
+        truncated: true
+      });
+      if (start + MAX_STORED_EVIDENCE_CHARS >= characters.length) {
+        break;
+      }
+    }
+    return records;
   });
 }
 
@@ -57,6 +66,20 @@ export function parseJiaoyimaoVisibleDetail(
   sections: JiaoyimaoVisibleSections,
   _summary: ListingSummary
 ): DetailParseResult {
+  const rawSections = Object.values(sections);
+  if (
+    rawSections.some(
+      (section) =>
+        section.length > BROWSER_REFRESH_LIMITS.maxSectionChars
+    ) ||
+    rawSections.reduce(
+      (total, section) => total + section.length,
+      0
+    ) > BROWSER_REFRESH_LIMITS.maxCombinedDetailTextChars
+  ) {
+    return { kind: "blocked", reason: "structure_changed" };
+  }
+
   const head = compactText(sections.head);
   const report = compactText(sections.report);
   const safety = compactText(sections.safety);

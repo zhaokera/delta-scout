@@ -88,7 +88,8 @@ const forbiddenVisibleText = [
   "JaVaScRiPt:alert(1)",
   "<svg onload=alert(1)>visible</svg>",
   "<iframe src=https://evil.example>visible</iframe>",
-  "<div>visible text</div>"
+  "<div>visible text</div>",
+  '<img title="<" src=x onerror=alert(1)>'
 ] as const;
 
 describe("browser refresh contract constants", () => {
@@ -173,7 +174,9 @@ describe("Jiaoyimao URL and scalar validation", () => {
     [
       "a dot segment",
       filterUrl.replace("/o110/", "/ignored/../o110/")
-    ]
+    ],
+    ["an empty query delimiter", `${filterUrl.split("?")[0]}?`],
+    ["an empty hash delimiter", `${filterUrl}#`]
   ])("rejects a non-canonical filter URL with %s", (_label, currentUrl) => {
     expect(() =>
       BrowserFilterProofSchema.parse(filterProof({ currentUrl }))
@@ -232,7 +235,9 @@ describe("Jiaoyimao URL and scalar validation", () => {
         "/1785384225212552.html",
         "/999.html/../1785384225212552.html"
       )
-    ]
+    ],
+    ["an empty query delimiter", `${detailItem().url}?`],
+    ["an empty hash delimiter", `${detailItem().url}#`]
   ])("rejects a non-canonical detail URL with %s", (_label, url) => {
     expect(() =>
       BrowserDetailInputSchema.parse(detailItem({ url }))
@@ -268,7 +273,12 @@ describe("Jiaoyimao URL and scalar validation", () => {
         "/1785384225212552.html",
         "/999.html/../1785384225212552.html"
       )
-    ]
+    ],
+    [
+      "an empty query delimiter",
+      `${listItem().url.split("?")[0]}?`
+    ],
+    ["an empty hash delimiter", `${listItem().url}#`]
   ])("rejects a non-canonical list URL with %s", (_label, url) => {
     expect(() =>
       BrowserListBatchSchema.parse({

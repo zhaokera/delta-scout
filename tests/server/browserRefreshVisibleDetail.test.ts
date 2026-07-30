@@ -2,11 +2,18 @@
 import { readFile } from "node:fs/promises";
 import { load } from "cheerio";
 import { describe, expect, it } from "vitest";
+import {
+  parseJulang,
+  parseM7,
+  parseM7RareFinishes,
+  parseRedSkins
+} from "../../src/domain/evidence.js";
 import type { ListingSummary } from "../../src/server/collector/types.js";
 import {
   parseJiaoyimaoVisibleDetail,
   type JiaoyimaoVisibleSections
 } from "../../src/server/browserRefresh/visibleDetail.js";
+import { BROWSER_REFRESH_LIMITS } from "../../src/server/browserRefresh/contracts.js";
 
 async function fixture(name: string): Promise<string> {
   return readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
@@ -90,7 +97,7 @@ describe("parseJiaoyimaoVisibleDetail", () => {
     );
   });
 
-  it("parses late facts from full sections without enlarging stored evidence", () => {
+  it("parses late facts without enlarging individual evidence records", () => {
     const padding = "普通可见说明".repeat(350);
     const result = parseJiaoyimaoVisibleDetail(
       {
@@ -134,5 +141,65 @@ describe("parseJiaoyimaoVisibleDetail", () => {
           text.includes("M7棱镜攻势S2 炫彩 糖果纸")
       )
     ).toBe(true);
+  });
+
+  it("preserves middle facts for the actual downstream evidence parsers", () => {
+    const prefix = "前置普通描述".repeat(450);
+    const suffix = "后置普通描述".repeat(450);
+    const facts =
+      "M7战斗步枪-棱镜攻势S2极品A 全炫彩 珠光 糖果纸，" +
+      "威龙-凌霄戍卫 红皮，巨浪(极品)";
+    const result = parseJiaoyimaoVisibleDetail(
+      {
+        head: "QQ双端帐号",
+        report: "总资产88M",
+        safety: "永久包赔",
+        description: `${prefix}${facts}${suffix}`
+      },
+      summary
+    );
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected parsed detail");
+    const { evidence } = result.detail;
+    expect(evidence.every(({ text }) => [...text].length <= 2_000))
+      .toBe(true);
+    expect(evidence.length).toBeGreaterThan(4);
+    expect(parseM7(evidence)).toMatchObject({
+      status: "peak",
+      quality: "A"
+    });
+    expect(parseM7RareFinishes(evidence).finishes).toEqual([
+      "pearl",
+      "iridescent",
+      "candy"
+    ]);
+    expect(parseRedSkins(evidence).names).toContain("威龙");
+    expect(parseJulang(evidence)).toMatchObject({
+      status: "owned",
+      quality: "极品"
+    });
+  });
+
+  it.each([
+    {
+      head: "QQ双端帐号",
+      report: "总资产88M",
+      safety: "",
+      description: "字".repeat(
+        BROWSER_REFRESH_LIMITS.maxSectionChars + 1
+      )
+    },
+    {
+      head: `QQ双端帐号${"字".repeat(8_000)}`,
+      report: `总资产88M${"字".repeat(8_000)}`,
+      safety: `永久包赔${"字".repeat(8_000)}`,
+      description: `M7棱镜攻势${"字".repeat(8_000)}`
+    }
+  ])("blocks detail text outside contract bounds", (sections) => {
+    expect(parseJiaoyimaoVisibleDetail(sections, summary)).toEqual({
+      kind: "blocked",
+      reason: "structure_changed"
+    });
   });
 });

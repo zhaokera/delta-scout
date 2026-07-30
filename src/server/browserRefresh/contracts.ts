@@ -32,7 +32,7 @@ const FORBIDDEN_VISIBLE_TEXT_PATTERNS = [
   /校验码\s*[:=]/i,
   /<script/i,
   /javascript:/i,
-  /<\/?[A-Za-z][A-Za-z0-9:-]*(?:(?:\s|\/)[^<>]*)?>/i,
+  /<\/?[A-Za-z][A-Za-z0-9:-]*[^>]*>/i,
   /<!(?:--|doctype\b|\[CDATA\[)/i
 ] as const;
 
@@ -81,7 +81,9 @@ export const DigitIdSchema = z.string().regex(/^\d+$/);
 function parseApprovedUrl(value: string): URL | null {
   if (
     value.trim() !== value ||
-    /[\u0000-\u001F\u007F]/.test(value)
+    /[\u0000-\u001F\u007F]/.test(value) ||
+    value.includes("#") ||
+    value.indexOf("?") === value.length - 1
   ) {
     return null;
   }
