@@ -385,14 +385,21 @@ describe("BrowserRefreshRepository staging", () => {
     const { repository } = makeRepository();
     const { id } = claim(repository);
     repository.acceptListBatch(id, listBatch(), now);
+    repository.transition(
+      id,
+      ["collecting_list"],
+      "collecting_list",
+      { loadActionCount: 7 },
+      now
+    );
     const first = loadEvent(1);
     const original = repository.acceptLoadEvent(id, first, now);
-    repository.acceptLoadEvent(
+    expect(original.loadActionCount).toBe(8);
+    repository.transition(
       id,
-      loadEvent(2, {
-        observedUniqueCount: 1,
-        newItemCount: 0
-      }),
+      ["collecting_list"],
+      "collecting_list",
+      { loadActionCount: 12 },
       now
     );
 
@@ -401,6 +408,115 @@ describe("BrowserRefreshRepository staging", () => {
 });
 
 describe("BrowserRefreshRepository recovery and cleanup", () => {
+  it("enforces terminal run linkage for direct database writes", () => {
+    const { database, repository } = makeRepository();
+    const created = repository.createJob(now);
+
+    expect(() =>
+      database.prepare(`
+        UPDATE browser_refresh_jobs
+        SET state = 'success'
+        WHERE id = ?
+      `).run(created.id)
+    ).toThrow(/link/i);
+  });
+
+  it("rejects terminal transitions without valid formal scan linkage", () => {
+    const { database, repository } = makeRepository();
+    const listingRepository = new ListingRepository(database);
+    const firstRun = listingRepository.startScan(now);
+    const secondRun = listingRepository.startScan(now);
+
+    const invalidTransitions = [
+      {
+        next: "success" as const,
+        patch: {}
+      },
+      {
+        next: "success" as const,
+        patch: { scanRunId: firstRun }
+      },
+      {
+        next: "success" as const,
+        patch: {
+          scanRunId: firstRun,
+          publishedRunId: secondRun
+        }
+      },
+      {
+        next: "quarantined" as const,
+        patch: {}
+      },
+      {
+        next: "quarantined" as const,
+        patch: {
+          scanRunId: firstRun,
+          publishedRunId: firstRun
+        }
+      },
+      {
+        next: "failed" as const,
+        patch: {
+          scanRunId: firstRun,
+          publishedRunId: firstRun
+        }
+      }
+    ];
+
+    for (const { next, patch } of invalidTransitions) {
+      const created = repository.createJob(now);
+      expect(() =>
+        repository.transition(
+          created.id,
+          ["awaiting_codex"],
+          next,
+          patch,
+          now
+        )
+      ).toThrow(/scan|published|link/i);
+      repository.transition(
+        created.id,
+        ["awaiting_codex"],
+        "cancelled",
+        {},
+        now
+      );
+    }
+  });
+
+  it.each(["success", "quarantined"] as const)(
+    "does not clean staging for an invalid %s row without scan linkage",
+    (state) => {
+      const { database, repository } = makeRepository();
+      const { id } = claim(repository);
+      repository.acceptListBatch(id, listBatch(), now);
+      database.exec(
+        "DROP TRIGGER browser_refresh_jobs_terminal_link_update"
+      );
+      database.prepare(`
+        UPDATE browser_refresh_jobs
+        SET state = ?, finished_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(state, now.toISOString(), now.toISOString(), id);
+
+      expect(() => repository.cleanupTerminalStaging(now)).toThrow(
+        /scan|published|link/i
+      );
+      expect(
+        database.prepare(`
+          SELECT COUNT(*) AS count FROM browser_refresh_list_items
+          WHERE job_id = ?
+        `).get(id)
+      ).toEqual({ count: 1 });
+      expect(
+        database.prepare(`
+          SELECT COUNT(*) AS count FROM browser_refresh_batches
+          WHERE job_id = ?
+        `).get(id)
+      ).toEqual({ count: 1 });
+    }
+  );
+
   it("fails interrupted commits and pauses other unfinished jobs without losing cursors", () => {
     const first = makeRepository();
     const committing = claim(first.repository);

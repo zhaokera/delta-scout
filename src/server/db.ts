@@ -246,6 +246,7 @@ export function createDatabase(path: string): DatabaseSync {
       job_id TEXT NOT NULL,
       sequence INTEGER NOT NULL CHECK(sequence > 0),
       payload_hash TEXT NOT NULL,
+      accepted_result_json TEXT NOT NULL,
       observed_unique_count INTEGER NOT NULL
         CHECK(observed_unique_count >= 0),
       new_item_count INTEGER NOT NULL CHECK(new_item_count >= 0),
@@ -304,7 +305,75 @@ export function createDatabase(path: string): DatabaseSync {
       FOREIGN KEY (job_id)
         REFERENCES browser_refresh_jobs(id) ON DELETE CASCADE
     );
+
+    CREATE TRIGGER IF NOT EXISTS
+      browser_refresh_jobs_terminal_link_insert
+      BEFORE INSERT ON browser_refresh_jobs
+      WHEN (
+        NEW.state = 'success'
+        AND (
+          NEW.scan_run_id IS NULL
+          OR NEW.published_run_id IS NULL
+          OR NEW.published_run_id <> NEW.scan_run_id
+        )
+      ) OR (
+        NEW.state = 'quarantined'
+        AND (
+          NEW.scan_run_id IS NULL
+          OR NEW.published_run_id IS NOT NULL
+        )
+      ) OR (
+        NEW.state <> 'success'
+        AND NEW.published_run_id IS NOT NULL
+      )
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'invalid browser refresh run linkage'
+        );
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS
+      browser_refresh_jobs_terminal_link_update
+      BEFORE UPDATE OF state, scan_run_id, published_run_id
+      ON browser_refresh_jobs
+      WHEN (
+        NEW.state = 'success'
+        AND (
+          NEW.scan_run_id IS NULL
+          OR NEW.published_run_id IS NULL
+          OR NEW.published_run_id <> NEW.scan_run_id
+        )
+      ) OR (
+        NEW.state = 'quarantined'
+        AND (
+          NEW.scan_run_id IS NULL
+          OR NEW.published_run_id IS NOT NULL
+        )
+      ) OR (
+        NEW.state <> 'success'
+        AND NEW.published_run_id IS NOT NULL
+      )
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'invalid browser refresh run linkage'
+        );
+      END;
   `);
+
+  const loadEventColumns = new Set(
+    (
+      database
+        .prepare("PRAGMA table_info(browser_refresh_load_events)")
+        .all() as { name: string }[]
+    ).map(({ name }) => name)
+  );
+  if (!loadEventColumns.has("accepted_result_json")) {
+    database.exec(
+      "ALTER TABLE browser_refresh_load_events ADD COLUMN accepted_result_json TEXT"
+    );
+  }
 
   const observationColumns = new Set(
     (

@@ -41,7 +41,8 @@ export type BrowserRefreshRepositoryErrorCode =
   | "sequence_conflict"
   | "missing_list_item"
   | "invalid_load_event"
-  | "invalid_action_permit";
+  | "invalid_action_permit"
+  | "invalid_terminal_linkage";
 
 export class BrowserRefreshRepositoryError extends Error {
   constructor(
@@ -573,10 +574,14 @@ export class BrowserRefreshRepository {
       this.database.exec("BEGIN IMMEDIATE");
       const job = this.requireActiveRow(id);
       const existing = this.database.prepare(`
-        SELECT payload_hash FROM browser_refresh_load_events
+        SELECT payload_hash, accepted_result_json
+        FROM browser_refresh_load_events
         WHERE job_id = ? AND sequence = ?
       `).get(id, parsed.sequence) as
-        | { payload_hash: string }
+        | {
+            payload_hash: string;
+            accepted_result_json: string | null;
+          }
         | undefined;
       if (existing) {
         if (existing.payload_hash !== hash) {
@@ -585,11 +590,15 @@ export class BrowserRefreshRepository {
             "Load event sequence was already used with a different hash"
           );
         }
-        const result: AcceptedLoadEventView = {
-          acceptedCount: 1,
-          loadActionCount: parsed.sequence,
-          nextSequence: parsed.sequence + 1
-        };
+        const result = existing.accepted_result_json === null
+          ? {
+              acceptedCount: 1,
+              loadActionCount: parsed.sequence,
+              nextSequence: parsed.sequence + 1
+            }
+          : parseStoredResult<AcceptedLoadEventView>(
+              existing.accepted_result_json
+            );
         this.database.exec("COMMIT");
         return result;
       }
@@ -631,16 +640,23 @@ export class BrowserRefreshRepository {
         );
       }
       this.consumeActionPermit(job, parsed.actionPermit, now);
+      const loadActionCount = job.load_action_count + 1;
+      const result: AcceptedLoadEventView = {
+        acceptedCount: 1,
+        loadActionCount,
+        nextSequence: parsed.sequence + 1
+      };
       this.database.prepare(`
         INSERT INTO browser_refresh_load_events (
-          job_id, sequence, payload_hash, observed_unique_count,
-          new_item_count, visible_total_count, end_marker_visible,
-          loading_visible, blocking_state, observed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          job_id, sequence, payload_hash, accepted_result_json,
+          observed_unique_count, new_item_count, visible_total_count,
+          end_marker_visible, loading_visible, blocking_state, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         parsed.sequence,
         hash,
+        JSON.stringify(result),
         parsed.observedUniqueCount,
         parsed.newItemCount,
         parsed.visibleTotalCount,
@@ -649,18 +665,13 @@ export class BrowserRefreshRepository {
         parsed.blockingState,
         parsed.observedAt
       );
-      const loadActionCount = job.load_action_count + 1;
       this.database.prepare(`
         UPDATE browser_refresh_jobs
         SET load_action_count = ?, updated_at = ?
         WHERE id = ?
       `).run(loadActionCount, now.toISOString(), id);
       this.database.exec("COMMIT");
-      return {
-        acceptedCount: 1,
-        loadActionCount,
-        nextSequence: parsed.sequence + 1
-      };
+      return result;
     } catch (error) {
       try {
         this.database.exec("ROLLBACK");
@@ -884,12 +895,36 @@ export class BrowserRefreshRepository {
         }
       }
       if (
-        values.publishedRunId !== null &&
-        values.publishedRunId !== values.scanRunId
+        next === "success" &&
+        (
+          values.scanRunId === null ||
+          values.publishedRunId !== values.scanRunId
+        )
       ) {
         throw new BrowserRefreshRepositoryError(
-          "invalid_transition",
-          "publishedRunId must equal scanRunId"
+          "invalid_terminal_linkage",
+          "A successful job requires matching scan and published run links"
+        );
+      }
+      if (
+        next === "quarantined" &&
+        (
+          values.scanRunId === null ||
+          values.publishedRunId !== null
+        )
+      ) {
+        throw new BrowserRefreshRepositoryError(
+          "invalid_terminal_linkage",
+          "A quarantined job requires a scan link and no published run"
+        );
+      }
+      if (
+        next !== "success" &&
+        values.publishedRunId !== null
+      ) {
+        throw new BrowserRefreshRepositoryError(
+          "invalid_terminal_linkage",
+          "Only a successful job may have a published run link"
         );
       }
       const terminal = isTerminal(next);
@@ -1033,6 +1068,36 @@ export class BrowserRefreshRepository {
     ).toISOString();
     try {
       this.database.exec("BEGIN IMMEDIATE");
+      const invalidTerminal = this.database.prepare(`
+        SELECT id, state FROM browser_refresh_jobs
+        WHERE (
+          state = 'success'
+          AND (
+            scan_run_id IS NULL
+            OR published_run_id IS NULL
+            OR published_run_id <> scan_run_id
+          )
+        ) OR (
+          state = 'quarantined'
+          AND (
+            scan_run_id IS NULL
+            OR published_run_id IS NOT NULL
+          )
+        ) OR (
+          state <> 'success'
+          AND published_run_id IS NOT NULL
+        )
+        LIMIT 1
+      `).get() as
+        | { id: string; state: BrowserRefreshJobState }
+        | undefined;
+      if (invalidTerminal) {
+        throw new BrowserRefreshRepositoryError(
+          "invalid_terminal_linkage",
+          `Cannot clean ${invalidTerminal.state} job ` +
+            `${invalidTerminal.id} without valid scan linkage`
+        );
+      }
       for (const table of [
         "browser_refresh_details",
         "browser_refresh_list_items",
