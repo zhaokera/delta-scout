@@ -138,7 +138,6 @@ export type BrowserRefreshWork =
 export interface JiaoyimaoBrowserTaskServiceOptions {
   now?: () => Date;
   random?: () => number;
-  completeJob?: (jobId: string) => void | Promise<void>;
   publisher?: Pick<ListingRepository, "commitBrowserSourceRefresh">;
   releaseAdmission?: (jobId: string) => void;
   permitFactory?: () => string;
@@ -154,9 +153,6 @@ const ACTION_PERMIT_LIFETIME_MS = 60_000;
 export class JiaoyimaoBrowserTaskService {
   private readonly now: () => Date;
   private readonly random: () => number;
-  private readonly completeJobCallback:
-    | ((jobId: string) => void | Promise<void>)
-    | undefined;
   private readonly publisher:
     | Pick<ListingRepository, "commitBrowserSourceRefresh">
     | undefined;
@@ -171,7 +167,6 @@ export class JiaoyimaoBrowserTaskService {
   ) {
     this.now = options.now ?? (() => new Date());
     this.random = options.random ?? Math.random;
-    this.completeJobCallback = options.completeJob;
     this.publisher = options.publisher;
     this.releaseAdmission = options.releaseAdmission;
     this.permitFactory = options.permitFactory ??
@@ -673,11 +668,7 @@ export class JiaoyimaoBrowserTaskService {
   complete(
     id: string,
     bridgeToken: string
-  ):
-    | void
-    | Promise<void>
-    | CommitBrowserSourceRefreshResult
-    | Promise<CommitBrowserSourceRefreshResult> {
+  ): CommitBrowserSourceRefreshResult {
     const now = this.now();
     const job = this.authenticate(id, bridgeToken, now);
     let stagedInput: CommitBrowserSourceRefreshInput | null = null;
@@ -694,96 +685,100 @@ export class JiaoyimaoBrowserTaskService {
       );
     }
     this.assertCommand(job, "complete");
-    if (!this.publisher && !this.completeJobCallback) {
+    if (!this.publisher) {
       throw new BrowserRefreshServiceError(
         "staging_invalid",
-        "No browser refresh completion callback is configured"
+        "No scoped browser refresh publisher is configured"
       );
     }
-    if (this.publisher) {
-      try {
-        const details = new Map(
-          this.repository.getDetails(id, now).map((detail) => [
-            detail.sourceListingId,
-            detail
-          ])
-        );
-        const listings = this.repository.getListItems(id, now).map(
-          (item) => {
-            const summary: ListingSummary = {
-              source: "jiaoyimao",
-              sourceListingId: item.sourceListingId,
-              url: item.url,
-              title: item.title,
-              rawText: item.rawText,
-              priceCny: item.priceCny,
-              detailFetchHint: "m7_prism_query"
-            };
-            const requiresDetail =
-              item.priceCny === null || item.priceCny <= 6_000;
-            const stagedDetail = details.get(item.sourceListingId);
-            if (requiresDetail && !stagedDetail) {
-              throw new BrowserRefreshServiceError(
-                "details_incomplete",
-                `Required detail ${item.sourceListingId} is missing`
-              );
-            }
-            const parsedDetail = stagedDetail
-              ? parseJiaoyimaoVisibleDetail(
-                  stagedDetail.sections,
-                  summary
-                )
-              : null;
-            if (
-              requiresDetail &&
-              parsedDetail?.kind !== "ok"
-            ) {
-              throw new BrowserRefreshServiceError(
-                "staging_invalid",
-                `Staged detail ${item.sourceListingId} could not be parsed`
-              );
-            }
-            return buildListing(
-              {
-                summary,
-                detail:
-                  parsedDetail?.kind === "ok"
-                    ? parsedDetail.detail
-                    : null,
-                detailAttempted: requiresDetail,
-                warnings: []
-              },
-              now
+    try {
+      const details = new Map(
+        this.repository.getDetails(id, now).map((detail) => [
+          detail.sourceListingId,
+          detail
+        ])
+      );
+      const listings = this.repository.getListItems(id, now).map(
+        (item) => {
+          const summary: ListingSummary = {
+            source: "jiaoyimao",
+            sourceListingId: item.sourceListingId,
+            url: item.url,
+            title: item.title,
+            rawText: item.rawText,
+            priceCny: item.priceCny,
+            detailFetchHint: "m7_prism_query"
+          };
+          const requiresDetail =
+            item.priceCny === null || item.priceCny <= 6_000;
+          const stagedDetail = details.get(item.sourceListingId);
+          if (requiresDetail && !stagedDetail) {
+            throw new BrowserRefreshServiceError(
+              "details_incomplete",
+              `Required detail ${item.sourceListingId} is missing`
             );
           }
-        );
-        const naturalEnd = evaluateNaturalEnd(
-          this.repository.getLoadEvents(id, now)
-        );
-        if (naturalEnd.kind !== "complete") {
-          throw new BrowserRefreshServiceError(
-            "list_incomplete",
-            "Browser refresh list has no trusted natural end"
+          const parsedDetail = stagedDetail
+            ? parseJiaoyimaoVisibleDetail(
+                stagedDetail.sections,
+                summary
+              )
+            : null;
+          if (
+            requiresDetail &&
+            parsedDetail?.kind !== "ok"
+          ) {
+            throw new BrowserRefreshServiceError(
+              "staging_invalid",
+              `Staged detail ${item.sourceListingId} could not be parsed`
+            );
+          }
+          return buildListing(
+            {
+              summary,
+              detail:
+                parsedDetail?.kind === "ok"
+                  ? parsedDetail.detail
+                  : null,
+              detailAttempted: requiresDetail,
+              warnings: []
+            },
+            now
           );
         }
-        stagedInput = {
-          jobId: id,
-          source: "jiaoyimao",
-          listings,
-          attemptedAt: now,
-          pagesScanned:
-            this.repository.getLoadEvents(id, now).length,
-          stopReason: naturalEnd.reason === "no_growth_twice"
-            ? "no_growth_twice"
-            : "end_of_pages"
-        };
-      } catch (error) {
-        if (error instanceof BrowserRefreshServiceError) throw error;
+      );
+      const naturalEnd = evaluateNaturalEnd(
+        this.repository.getLoadEvents(id, now)
+      );
+      if (naturalEnd.kind !== "complete") {
         throw new BrowserRefreshServiceError(
-          "staging_invalid",
-          "Staged browser details could not be parsed"
+          "list_incomplete",
+          "Browser refresh list has no trusted natural end"
         );
       }
+      stagedInput = {
+        jobId: id,
+        source: "jiaoyimao",
+        listings,
+        attemptedAt: now,
+        pagesScanned:
+          this.repository.getLoadEvents(id, now).length,
+        stopReason: naturalEnd.reason === "no_growth_twice"
+          ? "no_growth_twice"
+          : "end_of_pages"
+      };
+    } catch (error) {
+      if (error instanceof BrowserRefreshServiceError) throw error;
+      throw new BrowserRefreshServiceError(
+        "staging_invalid",
+        "Staged browser details could not be parsed"
+      );
+    }
+    if (!stagedInput) {
+      throw new BrowserRefreshServiceError(
+        "staging_invalid",
+        "Scoped browser refresh input was not constructed"
+      );
     }
     try {
       this.repository.transition(
@@ -803,37 +798,13 @@ export class JiaoyimaoBrowserTaskService {
       if (error instanceof BrowserRefreshServiceError) throw error;
       throw this.mapError(error);
     }
-    if (this.publisher && stagedInput) {
-      try {
-        const result =
-          this.publisher.commitBrowserSourceRefresh(stagedInput);
-        if (result instanceof Promise) {
-          return result
-            .catch((error: unknown) => {
-              this.markCommitFailedBestEffort(id, now);
-              throw this.mapCompletionError(error);
-            })
-            .finally(() => {
-              this.releaseAdmissionBestEffort(id);
-            });
-        }
-        this.releaseAdmissionBestEffort(id);
-        return result;
-      } catch (error) {
-        this.markCommitFailedBestEffort(id, now);
-        this.releaseAdmissionBestEffort(id);
-        throw this.mapCompletionError(error);
-      }
-    }
     try {
-      const result = this.completeJobCallback!(id);
-      if (result instanceof Promise) {
-        return result.catch((error: unknown) => {
-          throw this.mapCompletionError(error);
-        });
-      }
+      return this.publisher.commitBrowserSourceRefresh(stagedInput);
     } catch (error) {
+      this.markCommitFailedBestEffort(id, now);
       throw this.mapCompletionError(error);
+    } finally {
+      this.releaseAdmissionBestEffort(id);
     }
   }
 

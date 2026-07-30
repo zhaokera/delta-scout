@@ -1285,7 +1285,11 @@ export class ListingRepository {
           SET state = 'partial', finished_at = ?, error = NULL
           WHERE id = ?
         `).run(timestamp, scanRunId);
-        finishJob("quarantined", null, "anomaly_guard");
+        finishJob(
+          "quarantined",
+          null,
+          "anomaly_quarantined"
+        );
         this.pruneScanHistory();
         this.database.exec("COMMIT");
         return {

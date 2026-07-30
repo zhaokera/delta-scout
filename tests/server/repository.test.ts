@@ -338,6 +338,8 @@ describe("ListingRepository", () => {
       firstAttempt
     )).toMatchObject({
       state: "quarantined",
+      reason: "anomaly_quarantined",
+      lastError: "anomaly_quarantined",
       scanRunId: quarantined.scanRunId,
       publishedRunId: null
     });
@@ -374,7 +376,7 @@ describe("ListingRepository", () => {
     });
   });
 
-  it("browser quarantine publisher rolls back every write when formal listing insertion fails", () => {
+  it("browser publisher rolls back every write when a post-listing status write fails", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);
     repository.replaceSourceSnapshot(
@@ -399,11 +401,16 @@ describe("ListingRepository", () => {
     const { browserRepository, jobId } =
       createCommittingBrowserJob(database);
     database.exec(`
-      CREATE TRIGGER fail_browser_listing_insert
-      BEFORE INSERT ON listings
+      CREATE TRIGGER fail_browser_post_listing_write
+      BEFORE UPDATE ON source_status
       WHEN NEW.source = 'jiaoyimao'
+        AND NEW.state = 'success'
+        AND EXISTS (
+          SELECT 1 FROM listings
+          WHERE listing_key = 'jiaoyimao:fresh-0'
+        )
       BEGIN
-        SELECT RAISE(ABORT, 'injected listing failure');
+        SELECT RAISE(ABORT, 'injected post-listing failure');
       END;
     `);
 
@@ -422,6 +429,12 @@ describe("ListingRepository", () => {
     expect(database.prepare(`
       SELECT COUNT(*) AS count FROM scan_runs
     `).get()).toEqual(beforeRuns);
+    expect(database.prepare(`
+      SELECT COUNT(*) AS count FROM scan_source_results
+    `).get()).toEqual({ count: 0 });
+    expect(database.prepare(`
+      SELECT COUNT(*) AS count FROM listing_observations
+    `).get()).toEqual({ count: 0 });
     expect(database.prepare(`
       SELECT * FROM source_status WHERE source = 'jiaoyimao'
     `).get()).toEqual(beforeStatus);

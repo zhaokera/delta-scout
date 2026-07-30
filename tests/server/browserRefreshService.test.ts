@@ -14,7 +14,8 @@ import {
 import {
   BROWSER_REFRESH_STATE_COMMANDS,
   BrowserRefreshServiceError,
-  JiaoyimaoBrowserTaskService
+  JiaoyimaoBrowserTaskService,
+  type JiaoyimaoBrowserTaskServiceOptions
 } from "../../src/server/browserRefresh/service.js";
 import { ListingRepository } from "../../src/server/repository.js";
 import { RefreshAdmissionController } from "../../src/server/refreshAdmission.js";
@@ -104,20 +105,23 @@ function details(
 function fixture(random = 0) {
   const database = createDatabase(":memory:");
   const repository = new BrowserRefreshRepository(database);
+  const listingRepository = new ListingRepository(database);
   let time = baseTime.getTime();
-  const completed: string[] = [];
+  const publisher = vi.spyOn(
+    listingRepository,
+    "commitBrowserSourceRefresh"
+  );
   const service = new JiaoyimaoBrowserTaskService(repository, {
     now: () => new Date(time),
     random: () => random,
-    completeJob: (jobId) => {
-      completed.push(jobId);
-    }
+    publisher: listingRepository
   });
   return {
     database,
     repository,
+    listingRepository,
     service,
-    completed,
+    publisher,
     setTime: (next: number) => {
       time = next;
     },
@@ -1177,7 +1181,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     });
   });
 
-  it("refuses incomplete completion and invokes only the injected callback", async () => {
+  it("refuses incomplete completion and invokes the scoped publisher exactly once", async () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
     f.service.submitListBatch(f.id, f.token, listBatch([["1", 5_000]]));
@@ -1200,8 +1204,40 @@ describe("JiaoyimaoBrowserTaskService", () => {
     f.advance(2_000);
     f.service.submitDetails(f.id, f.token, details(["1"]));
     await f.service.complete(f.id, f.token);
-    expect(f.completed).toEqual([f.id]);
-    expect(f.repository.getJob(f.id, baseTime)?.state).toBe("committing");
+    expect(f.publisher).toHaveBeenCalledOnce();
+    expect(f.repository.getJob(f.id, baseTime)?.state).toBe("success");
+  });
+
+  it("does not allow a legacy completeJob callback to bypass the scoped publisher", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 6_001]]));
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+    const bypass = vi.fn();
+    const legacy = new JiaoyimaoBrowserTaskService(
+      f.repository,
+      ({
+        now: () => baseTime,
+        random: () => 0,
+        completeJob: bypass
+      } as unknown as JiaoyimaoBrowserTaskServiceOptions)
+    );
+
+    expectCode(
+      () => legacy.complete(f.id, f.token),
+      "staging_invalid"
+    );
+    expect(bypass).not.toHaveBeenCalled();
+    expect(f.repository.getJobRecord(f.id, baseTime)).toMatchObject({
+      state: "validating"
+    });
   });
 
   it("builds trusted listings locally and publishes one scoped snapshot exactly once", async () => {
@@ -1541,7 +1577,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     expect(error.message).not.toMatch(/PRIVATE_SQL|table=|bridge-token/);
   });
 
-  it("does not expose unexpected completion callback details", () => {
+  it("does not expose unexpected scoped publisher details", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
     f.service.submitListBatch(f.id, f.token, listBatch([["1", 6_001]]));
@@ -1556,10 +1592,12 @@ describe("JiaoyimaoBrowserTaskService", () => {
     const failing = new JiaoyimaoBrowserTaskService(f.repository, {
       now: () => baseTime,
       random: () => 0,
-      completeJob: () => {
-        throw new Error(
-          "PRIVATE_CALLBACK SQL=/tmp/private.sqlite token=bridge-secret"
-        );
+      publisher: {
+        commitBrowserSourceRefresh: () => {
+          throw new Error(
+            "PRIVATE_PUBLISHER SQL=/tmp/private.sqlite token=bridge-secret"
+          );
+        }
       }
     });
     const error = captureServiceError(
@@ -1570,7 +1608,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
       message: "Browser refresh publish failed"
     });
     expect(error.message).not.toMatch(
-      /PRIVATE_CALLBACK|private\.sqlite|bridge-secret/
+      /PRIVATE_PUBLISHER|private\.sqlite|bridge-secret/
     );
   });
 
