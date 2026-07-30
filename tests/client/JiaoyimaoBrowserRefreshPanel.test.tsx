@@ -480,6 +480,33 @@ describe("httpScoutApi Jiaoyimao browser refresh", () => {
     ]);
   });
 
+  it("forwards abort signals to every browser-refresh mutation", async () => {
+    const job = makeJob();
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockImplementation(async () =>
+        new Response(JSON.stringify(job), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const controller = new AbortController();
+
+    await httpScoutApi.startJiaoyimaoBrowserRefresh(controller.signal);
+    await httpScoutApi.keepWaitingForJiaoyimaoBrowserRefresh(
+      job.id,
+      controller.signal
+    );
+    await httpScoutApi.cancelJiaoyimaoBrowserRefresh(
+      job.id,
+      controller.signal
+    );
+
+    expect(fetchMock.mock.calls).toHaveLength(3);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init).toMatchObject({ signal: controller.signal });
+    }
+  });
+
   it("maps non-2xx JSON into a stable Error without echoing credentials", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({

@@ -263,6 +263,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     const requestedView = activeView.current;
     const requestedMode = activePoolMode.current;
     const selectedKey = selectedKeyRef.current;
+    setDetailLoading(false);
     if (selectedKey !== null) {
       setHistoryLoading(true);
       setHistoryError(null);

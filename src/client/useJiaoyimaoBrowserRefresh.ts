@@ -9,7 +9,8 @@ import type {
   JiaoyimaoBrowserRefreshConflict,
   JiaoyimaoBrowserRefreshJob,
   JiaoyimaoBrowserRefreshState,
-  ScoutApi
+  ScoutApi,
+  StartedJiaoyimaoBrowserRefresh
 } from "./api";
 
 const BROWSER_REFRESH_CHANNEL =
@@ -17,6 +18,11 @@ const BROWSER_REFRESH_CHANNEL =
 const ACTIVE_POLL_MS = 1_000;
 const IDLE_POLL_MS = 5_000;
 const SYNC_TIMEOUT_MS = 4_000;
+const OPERATION_TIMEOUT_MS = 4_000;
+const UNCERTAIN_START_MESSAGE =
+  "发起结果未确认；若任务已创建，一次性接管码无法恢复，可取消该任务后重新发起。";
+const UNCERTAIN_MUTATION_MESSAGE =
+  "操作结果未确认，已重新读取服务端权威状态；不会自动重试本次操作。";
 const TERMINAL_STATES: ReadonlySet<JiaoyimaoBrowserRefreshState> =
   new Set([
     "success",
@@ -79,6 +85,39 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error
     ? cause.message
     : "交易猫浏览器刷新状态暂不可达";
+}
+
+function jobFromStarted(
+  started: StartedJiaoyimaoBrowserRefresh
+): JiaoyimaoBrowserRefreshJob {
+  const unknownServerTimestamp = "1970-01-01T00:00:00.000Z";
+  return {
+    id: started.jobId,
+    source: "jiaoyimao",
+    state: started.state,
+    stage: "awaiting_codex",
+    reason: null,
+    claimedAt: null,
+    createdAt: unknownServerTimestamp,
+    updatedAt: unknownServerTimestamp,
+    finishedAt: null,
+    expiresAt: started.expiresAt,
+    listBatchCursor: 0,
+    detailCompletedCount: 0,
+    detailRequiredCount: 0,
+    uniqueItemCount: 0,
+    itemCount: 0,
+    loadActionCount: 0,
+    cooldownAttempt: 0,
+    cooldownUntil: null,
+    nextActionAt: null,
+    actionPermitExpiresAt: null,
+    actionPermitConsumedAt: null,
+    filterUrl: null,
+    lastError: null,
+    scanRunId: null,
+    publishedRunId: null
+  };
 }
 
 function isStartConflictError(cause: unknown): cause is ScoutApiError {
@@ -168,6 +207,21 @@ function waitForAbort<T>(
   });
 }
 
+async function runBoundedRequest<T>(
+  request: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    OPERATION_TIMEOUT_MS
+  );
+  try {
+    return await waitForAbort(request(controller.signal), controller.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 interface BrowserRefreshController {
   job: JiaoyimaoBrowserRefreshJob | null;
   claimCode: string | null;
@@ -208,6 +262,7 @@ export function useJiaoyimaoBrowserRefresh(
   const syncTimeoutRef =
     useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncAbortRef = useRef<AbortController | null>(null);
+  const reconcileAbortRef = useRef<AbortController | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const requestSequenceRef = useRef(0);
   const appliedSequenceRef = useRef(0);
@@ -331,6 +386,78 @@ export function useJiaoyimaoBrowserRefresh(
     schedule(incoming);
     return true;
   }, [broadcast, onPublished, schedule]);
+
+  const reconcileAuthority = useCallback(async (
+    kind: "start-conflict" | "start-uncertain" | "mutation-uncertain",
+    message: string
+  ) => {
+    reconcileAbortRef.current?.abort();
+    const controller = new AbortController();
+    reconcileAbortRef.current = controller;
+    const timeout = setTimeout(
+      () => controller.abort(),
+      OPERATION_TIMEOUT_MS
+    );
+    const sequence = ++requestSequenceRef.current;
+    const generation = generationRef.current;
+    try {
+      const [current, allSourceStatus] = await waitForAbort(Promise.all([
+        api.getCurrentJiaoyimaoBrowserRefresh(controller.signal),
+        api.getRefreshStatus(controller.signal)
+      ]), controller.signal);
+      if (
+        !mountedRef.current ||
+        generation !== generationRef.current ||
+        sequence !== requestSequenceRef.current ||
+        reconcileAbortRef.current !== controller
+      ) {
+        return;
+      }
+      applyJob(current, sequence);
+      if (kind !== "mutation-uncertain") {
+        localClaimJobRef.current = null;
+        setClaimCode(null);
+      }
+      if (kind === "start-conflict") {
+        const browserActive =
+          current !== null &&
+          KNOWN_STATES.has(current.state) &&
+          !isTerminal(current);
+        const activeKind = browserActive
+          ? "browser"
+          : allSourceStatus.state === "running"
+            ? "all_sources"
+            : null;
+        if (activeKind === null) {
+          setError(message);
+        } else {
+          const nextConflict: JiaoyimaoBrowserRefreshConflict = {
+            activeKind,
+            message
+          };
+          conflictRef.current = nextConflict;
+          setConflict(nextConflict);
+        }
+      } else {
+        setError(message);
+      }
+    } catch {
+      if (
+        mountedRef.current &&
+        generation === generationRef.current &&
+        sequence === requestSequenceRef.current &&
+        reconcileAbortRef.current === controller
+      ) {
+        setError(message);
+        schedule(jobRef.current);
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (reconcileAbortRef.current === controller) {
+        reconcileAbortRef.current = null;
+      }
+    }
+  }, [api, applyJob, schedule]);
 
   const synchronize = useCallback(async (
     origin: "initial" | "poll" | "focus" | "broadcast" = "poll"
@@ -477,6 +604,8 @@ export function useJiaoyimaoBrowserRefresh(
       clearTimer();
       syncAbortRef.current?.abort();
       syncAbortRef.current = null;
+      reconcileAbortRef.current?.abort();
+      reconcileAbortRef.current = null;
       if (syncTimeoutRef.current !== null) {
         clearTimeout(syncTimeoutRef.current);
         syncTimeoutRef.current = null;
@@ -508,8 +637,14 @@ export function useJiaoyimaoBrowserRefresh(
     setError(null);
     conflictRef.current = null;
     setConflict(null);
+    let reconciliation: {
+      kind: "start-conflict" | "start-uncertain";
+      message: string;
+    } | null = null;
     try {
-      const started = await api.startJiaoyimaoBrowserRefresh();
+      const started = await runBoundedRequest((signal) =>
+        api.startJiaoyimaoBrowserRefresh(signal)
+      );
       if (
         !mountedRef.current ||
         operationGeneration !== operationGenerationRef.current
@@ -524,20 +659,10 @@ export function useJiaoyimaoBrowserRefresh(
       };
       localClaimJobRef.current = started.jobId;
       setClaimCode(started.claimCode);
-      const current = await api.getCurrentJiaoyimaoBrowserRefresh();
-      if (
-        !mountedRef.current ||
-        operationGeneration !== operationGenerationRef.current ||
-        current?.id !== started.jobId
-      ) {
-        localClaimJobRef.current = null;
-        setClaimCode(null);
-        broadcastInvalidation();
-        return;
-      }
+      const current = jobFromStarted(started);
       const sequence = ++requestSequenceRef.current;
       applyJob(current, sequence);
-      if (current) broadcast(current, true);
+      broadcast(current, true);
     } catch (cause) {
       if (
         !mountedRef.current ||
@@ -546,44 +671,20 @@ export function useJiaoyimaoBrowserRefresh(
         return;
       }
       const message = errorMessage(cause);
-      if (!isStartConflictError(cause)) {
-        setError(message);
-        return;
-      }
-      try {
-        const [current, allSourceStatus] = await Promise.all([
-          api.getCurrentJiaoyimaoBrowserRefresh(),
-          api.getRefreshStatus()
-        ]);
-        if (
-          !mountedRef.current ||
-          operationGeneration !== operationGenerationRef.current
-        ) {
-          return;
-        }
-        const sequence = ++requestSequenceRef.current;
-        applyJob(current, sequence);
-        const browserActive =
-          current !== null &&
-          KNOWN_STATES.has(current.state) &&
-          !isTerminal(current);
-        const activeKind = browserActive
-          ? "browser"
-          : allSourceStatus.state === "running"
-            ? "all_sources"
-            : null;
-        if (activeKind === null) {
-          setError(message);
-          return;
-        }
-        const nextConflict: JiaoyimaoBrowserRefreshConflict = {
-          activeKind,
+      if (isStartConflictError(cause)) {
+        reconciliation = {
+          kind: "start-conflict",
           message
         };
-        conflictRef.current = nextConflict;
-        setConflict(nextConflict);
-      } catch {
-        setError(message);
+      } else {
+        if (!(cause instanceof ScoutApiError)) {
+          reconciliation = {
+            kind: "start-uncertain",
+            message: UNCERTAIN_START_MESSAGE
+          };
+        } else {
+          setError(message);
+        }
       }
     } finally {
       if (
@@ -594,18 +695,31 @@ export function useJiaoyimaoBrowserRefresh(
         if (mountedRef.current) setBusy(false);
       }
     }
+    if (
+      reconciliation !== null &&
+      mountedRef.current &&
+      operationGeneration === operationGenerationRef.current
+    ) {
+      await reconcileAuthority(
+        reconciliation.kind,
+        reconciliation.message
+      );
+    }
   }, [
     allSourcesRefreshing,
     api,
     applyJob,
     broadcast,
-    broadcastInvalidation
+    broadcastInvalidation,
+    reconcileAuthority
   ]);
 
   const applyMutation = useCallback(async (
     kind: "cancel" | "keep-waiting",
     targetId: string,
-    operation: () => Promise<JiaoyimaoBrowserRefreshJob>
+    operation: (
+      signal: AbortSignal
+    ) => Promise<JiaoyimaoBrowserRefreshJob>
   ) => {
     if (!mountedRef.current || operationInFlightRef.current) return;
     const operationGeneration = ++operationGenerationRef.current;
@@ -619,8 +733,9 @@ export function useJiaoyimaoBrowserRefresh(
     setError(null);
     conflictRef.current = null;
     setConflict(null);
+    let reconcile = false;
     try {
-      const result = await operation();
+      const result = await runBoundedRequest(operation);
       if (
         !mountedRef.current ||
         operationGeneration !== operationGenerationRef.current ||
@@ -639,7 +754,11 @@ export function useJiaoyimaoBrowserRefresh(
         operationGeneration === operationGenerationRef.current &&
         jobRef.current?.id === targetId
       ) {
-        setError(errorMessage(cause));
+        if (cause instanceof ScoutApiError) {
+          setError(errorMessage(cause));
+        } else {
+          reconcile = true;
+        }
       }
     } finally {
       if (
@@ -650,17 +769,32 @@ export function useJiaoyimaoBrowserRefresh(
         if (mountedRef.current) setBusy(false);
       }
     }
-  }, [applyJob, broadcast, broadcastInvalidation]);
+    if (
+      reconcile &&
+      mountedRef.current &&
+      operationGeneration === operationGenerationRef.current
+    ) {
+      await reconcileAuthority(
+        "mutation-uncertain",
+        UNCERTAIN_MUTATION_MESSAGE
+      );
+    }
+  }, [
+    applyJob,
+    broadcast,
+    broadcastInvalidation,
+    reconcileAuthority
+  ]);
 
   const cancel = useCallback(async (jobId: string) => {
-    await applyMutation("cancel", jobId, () =>
-      api.cancelJiaoyimaoBrowserRefresh(jobId)
+    await applyMutation("cancel", jobId, (signal) =>
+      api.cancelJiaoyimaoBrowserRefresh(jobId, signal)
     );
   }, [api, applyMutation]);
 
   const keepWaiting = useCallback(async (jobId: string) => {
-    await applyMutation("keep-waiting", jobId, () =>
-      api.keepWaitingForJiaoyimaoBrowserRefresh(jobId)
+    await applyMutation("keep-waiting", jobId, (signal) =>
+      api.keepWaitingForJiaoyimaoBrowserRefresh(jobId, signal)
     );
   }, [api, applyMutation]);
 

@@ -191,13 +191,15 @@ export interface ScoutApi {
   getScanHistory(limit?: number): Promise<ScanHistoryResponse>;
   getCurrentJiaoyimaoBrowserRefresh(signal?: AbortSignal):
     Promise<JiaoyimaoBrowserRefreshJob | null>;
-  startJiaoyimaoBrowserRefresh():
+  startJiaoyimaoBrowserRefresh(signal?: AbortSignal):
     Promise<StartedJiaoyimaoBrowserRefresh>;
   cancelJiaoyimaoBrowserRefresh(
-    jobId: string
+    jobId: string,
+    signal?: AbortSignal
   ): Promise<JiaoyimaoBrowserRefreshJob>;
   keepWaitingForJiaoyimaoBrowserRefresh(
-    jobId: string
+    jobId: string,
+    signal?: AbortSignal
   ): Promise<JiaoyimaoBrowserRefreshJob>;
 }
 
@@ -453,12 +455,14 @@ async function requestJson<T>(
 
 function postBrowserJson<T>(
   input: string,
-  body: Record<string, never> = {}
+  body: Record<string, never> = {},
+  signal?: AbortSignal
 ): Promise<T> {
   return requestJson<T>(input, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {})
   });
 }
 
@@ -497,20 +501,26 @@ export const httpScoutApi: ScoutApi = {
       "/api/sources/jiaoyimao/browser-refresh/current",
       signal ? { signal } : undefined
     ),
-  startJiaoyimaoBrowserRefresh: () =>
+  startJiaoyimaoBrowserRefresh: (signal) =>
     postBrowserJson<StartedJiaoyimaoBrowserRefresh>(
-      "/api/sources/jiaoyimao/browser-refresh"
+      "/api/sources/jiaoyimao/browser-refresh",
+      {},
+      signal
     ),
-  cancelJiaoyimaoBrowserRefresh: (jobId) =>
+  cancelJiaoyimaoBrowserRefresh: (jobId, signal) =>
     postBrowserJson<JiaoyimaoBrowserRefreshJob>(
       `/api/sources/jiaoyimao/browser-refresh/${
         encodeURIComponent(jobId)
-      }/cancel`
+      }/cancel`,
+      {},
+      signal
     ),
-  keepWaitingForJiaoyimaoBrowserRefresh: (jobId) =>
+  keepWaitingForJiaoyimaoBrowserRefresh: (jobId, signal) =>
     postBrowserJson<JiaoyimaoBrowserRefreshJob>(
       `/api/sources/jiaoyimao/browser-refresh/${
         encodeURIComponent(jobId)
-      }/keep-waiting`
+      }/keep-waiting`,
+      {},
+      signal
     )
 };

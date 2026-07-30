@@ -1950,6 +1950,112 @@ describe("App shell", () => {
     })).toBeDisabled();
   });
 
+  it("browser refresh applies a successful start response without waiting for another current read", async () => {
+    const awaiting = makeBrowserRefreshJob({
+      state: "awaiting_codex",
+      stage: "awaiting_codex",
+      claimedAt: null,
+      listBatchCursor: 0,
+      uniqueItemCount: 0,
+      itemCount: 0,
+      loadActionCount: 0
+    });
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getCurrentJiaoyimaoBrowserRefresh: async () => null,
+      startJiaoyimaoBrowserRefresh: async () => ({
+        jobId: awaiting.id,
+        state: "awaiting_codex",
+        claimCode: "START-ONLY-CODE",
+        expiresAt: awaiting.expiresAt
+      })
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    const panel = await screen.findByRole("region", {
+      name: "交易猫浏览器刷新"
+    });
+    await user.click(within(panel).getByRole("button", {
+      name: "刷新交易猫"
+    }));
+
+    expect(within(panel).getByTestId("browser-refresh-state"))
+      .toHaveTextContent("等待 Codex 接管");
+    expect(within(panel).getByText("START-ONLY-CODE"))
+      .toBeInTheDocument();
+    expect(api.getCurrentJiaoyimaoBrowserRefresh)
+      .toHaveBeenCalledTimes(1);
+  });
+
+  it("browser refresh times out an uncertain start and reconciles a redacted created job without retrying", async () => {
+    vi.useFakeTimers();
+    const awaiting = makeBrowserRefreshJob({
+      state: "awaiting_codex",
+      stage: "awaiting_codex",
+      claimedAt: null
+    });
+    const startSignals: AbortSignal[] = [];
+    const reconcileSignals: AbortSignal[] = [];
+    let currentCall = 0;
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getCurrentJiaoyimaoBrowserRefresh: async (signal) => {
+        currentCall += 1;
+        if (currentCall === 1) return null;
+        if (signal) reconcileSignals.push(signal);
+        return awaiting;
+      },
+      getRefreshStatus: async (signal) => {
+        if (signal) reconcileSignals.push(signal);
+        return makeRefreshStatus();
+      },
+      startJiaoyimaoBrowserRefresh: async (signal) => {
+        if (signal) startSignals.push(signal);
+        return new Promise(() => undefined);
+      }
+    });
+
+    try {
+      render(<App api={api} />);
+      await act(async () => undefined);
+      const panel = screen.getByRole("region", {
+        name: "交易猫浏览器刷新"
+      });
+      const statusCallsBeforeStart =
+        vi.mocked(api.getRefreshStatus).mock.calls.length;
+      fireEvent.click(within(panel).getByRole("button", {
+        name: "刷新交易猫"
+      }));
+      expect(panel).toHaveAttribute("aria-busy", "true");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000);
+      });
+
+      expect(startSignals).toHaveLength(1);
+      expect(startSignals[0]?.aborted).toBe(true);
+      expect(api.startJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(2);
+      expect(api.getRefreshStatus)
+        .toHaveBeenCalledTimes(statusCallsBeforeStart + 1);
+      expect(reconcileSignals).toHaveLength(2);
+      expect(panel).toHaveAttribute("aria-busy", "false");
+      expect(within(panel).getByTestId("browser-refresh-state"))
+        .toHaveTextContent("等待 Codex 接管");
+      expect(within(panel).getByText("接管码已隐藏"))
+        .toBeInTheDocument();
+      expect(within(panel).getByRole("alert"))
+        .toHaveTextContent("一次性接管码无法恢复");
+      expect(within(panel).getByRole("button", {
+        name: "取消本次刷新"
+      })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("browser refresh recovers an active job after a create conflict without clearing candidates", async () => {
     const listing = makeListing({ sourceListingId: "CONFLICT-KEPT" });
     let currentCall = 0;
@@ -2020,6 +2126,67 @@ describe("App shell", () => {
         .toHaveBeenCalledTimes(4)
     );
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("browser refresh bounds a hung 409 authority recovery without retrying the start mutation", async () => {
+    vi.useFakeTimers();
+    const recoverySignals: AbortSignal[] = [];
+    let currentCall = 0;
+    let statusCall = 0;
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getCurrentJiaoyimaoBrowserRefresh: (signal) => {
+        currentCall += 1;
+        if (currentCall === 1) return Promise.resolve(null);
+        if (signal) recoverySignals.push(signal);
+        return new Promise(() => undefined);
+      },
+      getRefreshStatus: (signal) => {
+        statusCall += 1;
+        if (statusCall === 1) {
+          return Promise.resolve(makeRefreshStatus());
+        }
+        if (signal) recoverySignals.push(signal);
+        return new Promise(() => undefined);
+      },
+      startJiaoyimaoBrowserRefresh: async () => {
+        throw new ScoutApiError(
+          "另一个刷新任务正在进行",
+          409,
+          "refresh_conflict"
+        );
+      }
+    });
+
+    try {
+      render(<App api={api} />);
+      await act(async () => undefined);
+      const panel = screen.getByRole("region", {
+        name: "交易猫浏览器刷新"
+      });
+      fireEvent.click(within(panel).getByRole("button", {
+        name: "刷新交易猫"
+      }));
+      await act(async () => undefined);
+      expect(panel).toHaveAttribute("aria-busy", "false");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000);
+      });
+
+      expect(recoverySignals).toHaveLength(2);
+      expect(recoverySignals.every(({ aborted }) => aborted)).toBe(true);
+      expect(api.startJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(2);
+      expect(api.getRefreshStatus).toHaveBeenCalledTimes(2);
+      expect(panel).toHaveAttribute("aria-busy", "false");
+      expect(within(panel).getByRole("button", {
+        name: "刷新交易猫"
+      })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each(["success", "partial", "failed"] as const)(
@@ -2136,7 +2303,9 @@ describe("App shell", () => {
   it.each([
     {
       name: "network",
-      failure: new Error("网络暂不可达")
+      failure: new Error("网络暂不可达"),
+      expectedMessage: "一次性接管码无法恢复",
+      reconciles: true
     },
     {
       name: "server",
@@ -2144,11 +2313,13 @@ describe("App shell", () => {
         "交易猫浏览器刷新操作失败",
         500,
         "browser_refresh_failed"
-      )
+      ),
+      expectedMessage: "交易猫浏览器刷新操作失败",
+      reconciles: false
     }
   ])(
     "browser refresh keeps retry available after a non-conflict $name start error",
-    async ({ failure }) => {
+    async ({ failure, expectedMessage, reconciles }) => {
       const api = makeApi({
         sources: [makeSourceStatus({ source: "jiaoyimao" })],
         getCurrentJiaoyimaoBrowserRefresh: async () => null,
@@ -2168,12 +2339,12 @@ describe("App shell", () => {
       await user.click(startButton);
 
       expect(within(panel).getByRole("alert"))
-        .toHaveTextContent(failure.message);
+        .toHaveTextContent(expectedMessage);
       expect(within(panel).queryByText("当前无法发起："))
         .not.toBeInTheDocument();
       expect(startButton).toBeEnabled();
       expect(api.getCurrentJiaoyimaoBrowserRefresh)
-        .toHaveBeenCalledTimes(1);
+        .toHaveBeenCalledTimes(reconciles ? 2 : 1);
 
       await user.click(startButton);
       expect(api.startJiaoyimaoBrowserRefresh)
@@ -2199,10 +2370,6 @@ describe("App shell", () => {
     }
     vi.stubGlobal("BroadcastChannel", BroadcastChannelStub);
     let currentCall = 0;
-    const awaiting = makeBrowserRefreshJob({
-      state: "awaiting_codex",
-      stage: "awaiting_codex"
-    });
     const collecting = makeBrowserRefreshJob({
       state: "collecting_details",
       stage: "details",
@@ -2213,7 +2380,6 @@ describe("App shell", () => {
       getCurrentJiaoyimaoBrowserRefresh: async () => {
         currentCall += 1;
         if (currentCall === 1) return null;
-        if (currentCall === 2) return awaiting;
         return remoteCurrent;
       }
     });
@@ -2359,13 +2525,19 @@ describe("App shell", () => {
             name: "确认取消"
           }));
           expect(api.cancelJiaoyimaoBrowserRefresh)
-            .toHaveBeenCalledWith("browser-job-a");
+            .toHaveBeenCalledWith(
+              "browser-job-a",
+              expect.any(AbortSignal)
+            );
         } else {
           await user.click(screen.getByRole("button", {
             name: "我还在处理，继续等待"
           }));
           expect(api.keepWaitingForJiaoyimaoBrowserRefresh)
-            .toHaveBeenCalledWith("browser-job-a");
+            .toHaveBeenCalledWith(
+              "browser-job-a",
+              expect.any(AbortSignal)
+            );
         }
 
         current = makeBrowserRefreshJob({
@@ -2406,6 +2578,139 @@ describe("App shell", () => {
       }
     }
   );
+
+  it.each(["cancel", "keep-waiting"] as const)(
+    "browser refresh times out a hung %s mutation, unlocks, and reconciles once without retrying",
+    async (operationKind) => {
+      vi.useFakeTimers();
+      const paused = makeBrowserRefreshJob({
+        state: "paused",
+        stage: "paused"
+      });
+      const mutationSignals: AbortSignal[] = [];
+      const reconcileStatusSignals: AbortSignal[] = [];
+      const api = makeApi({
+        getCurrentJiaoyimaoBrowserRefresh: async (signal) => {
+          return paused;
+        },
+        getRefreshStatus: async (signal) => {
+          if (signal) reconcileStatusSignals.push(signal);
+          return makeRefreshStatus();
+        },
+        cancelJiaoyimaoBrowserRefresh: async (_jobId, signal) => {
+          if (signal) mutationSignals.push(signal);
+          return new Promise(() => undefined);
+        },
+        keepWaitingForJiaoyimaoBrowserRefresh: async (
+          _jobId,
+          signal
+        ) => {
+          if (signal) mutationSignals.push(signal);
+          return new Promise(() => undefined);
+        }
+      });
+
+      try {
+        render(<App api={api} />);
+        await act(async () => undefined);
+        const panel = screen.getByRole("region", {
+          name: "交易猫浏览器刷新"
+        });
+        if (operationKind === "cancel") {
+          fireEvent.click(within(panel).getByRole("button", {
+            name: "取消本次刷新"
+          }));
+          fireEvent.click(screen.getByRole("button", {
+            name: "确认取消"
+          }));
+        } else {
+          fireEvent.click(within(panel).getByRole("button", {
+            name: "我还在处理，继续等待"
+          }));
+        }
+        expect(panel).toHaveAttribute("aria-busy", "true");
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(4_000);
+        });
+
+        expect(mutationSignals).toHaveLength(1);
+        expect(mutationSignals[0]?.aborted).toBe(true);
+        const mutation = operationKind === "cancel"
+          ? api.cancelJiaoyimaoBrowserRefresh
+          : api.keepWaitingForJiaoyimaoBrowserRefresh;
+        expect(mutation).toHaveBeenCalledTimes(1);
+        expect(
+          vi.mocked(api.getCurrentJiaoyimaoBrowserRefresh).mock.calls
+            .length
+        ).toBeGreaterThanOrEqual(2);
+        expect(reconcileStatusSignals).toHaveLength(1);
+        expect(panel).toHaveAttribute("aria-busy", "false");
+        expect(within(panel).getByRole("button", {
+          name: "我还在处理，继续等待"
+        })).toBeEnabled();
+        expect(within(panel).getByRole("button", {
+          name: "取消本次刷新"
+        })).toBeEnabled();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("browser refresh preserves a still-valid local claim code after an uncertain cancel reconciles to the same awaiting job", async () => {
+    vi.useFakeTimers();
+    const awaiting = makeBrowserRefreshJob({
+      state: "awaiting_codex",
+      stage: "awaiting_codex",
+      claimedAt: null
+    });
+    let currentCall = 0;
+    const api = makeApi({
+      getCurrentJiaoyimaoBrowserRefresh: async () => {
+        currentCall += 1;
+        return currentCall === 1 ? null : awaiting;
+      },
+      startJiaoyimaoBrowserRefresh: async () => ({
+        jobId: awaiting.id,
+        state: "awaiting_codex",
+        claimCode: "STILL-VALID-CODE",
+        expiresAt: awaiting.expiresAt
+      }),
+      cancelJiaoyimaoBrowserRefresh: async () =>
+        new Promise(() => undefined)
+    });
+
+    try {
+      render(<App api={api} />);
+      await act(async () => undefined);
+      const panel = screen.getByRole("region", {
+        name: "交易猫浏览器刷新"
+      });
+      fireEvent.click(within(panel).getByRole("button", {
+        name: "刷新交易猫"
+      }));
+      await act(async () => undefined);
+      expect(within(panel).getByText("STILL-VALID-CODE"))
+        .toBeInTheDocument();
+
+      fireEvent.click(within(panel).getByRole("button", {
+        name: "取消本次刷新"
+      }));
+      fireEvent.click(screen.getByRole("button", {
+        name: "确认取消"
+      }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000);
+      });
+
+      expect(within(panel).getByText("STILL-VALID-CODE"))
+        .toBeInTheDocument();
+      expect(api.cancelJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("browser refresh ignores a stale mutation failure after synchronization moves to another job", async () => {
     const operation = deferred<JiaoyimaoBrowserRefreshJob>();
@@ -2599,6 +2904,59 @@ describe("App shell", () => {
     );
     expect(api.getScanHistory).toHaveBeenCalledTimes(2);
     expect(api.getListingHistory).toHaveBeenCalledTimes(3);
+  });
+
+  it("browser published reload clears a superseded detail busy state and ignores its late result", async () => {
+    const listing = makeListing({
+      key: "jiaoyimao:published-detail",
+      source: "jiaoyimao",
+      sourceListingId: "PUBLISHED-DETAIL",
+      totalAssetsM: 321
+    });
+    const staleDetail = deferred<Listing>();
+    let current = makeBrowserRefreshJob();
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getListings: async () => [listing],
+      getListing: async () => staleDetail.promise,
+      getCurrentJiaoyimaoBrowserRefresh: async () => current
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", {
+      name: /PUBLISHED-DETAIL/
+    }));
+    const detail = screen.getByRole("complementary", {
+      name: "候选详情"
+    });
+    expect(detail).toHaveAttribute("aria-busy", "true");
+
+    current = makeBrowserRefreshJob({
+      state: "success",
+      stage: "success",
+      updatedAt: "2026-07-31T01:02:00.000Z",
+      finishedAt: "2026-07-31T01:02:00.000Z",
+      scanRunId: 301,
+      publishedRunId: 301
+    });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(api.getScanHistory).toHaveBeenCalledTimes(1)
+    );
+    await act(async () => undefined);
+
+    expect(detail).toHaveAttribute("aria-busy", "false");
+
+    await act(async () => {
+      staleDetail.resolve(makeListing({
+        ...listing,
+        totalAssetsM: 999
+      }));
+    });
+    expect(detail).toHaveAttribute("aria-busy", "false");
+    expect(within(detail).getByText("321M")).toBeInTheDocument();
+    expect(within(detail).queryByText("999M")).not.toBeInTheDocument();
   });
 
   it("browser published reload retries after a required failure and displays scan history once successful", async () => {
