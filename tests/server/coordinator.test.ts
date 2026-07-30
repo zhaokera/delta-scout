@@ -1339,6 +1339,58 @@ describe("CollectionCoordinator", () => {
     });
   });
 
+  it("stores only M7 rare finishes supported by merged listing evidence", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapter = fakeAdapter({
+      parseList: () => ({
+        kind: "ok",
+        items: [
+          {
+            ...summary(),
+            embeddedDetail: {
+              ...listingDetail(),
+              evidence: [
+                { text: "M7战斗步枪-棱镜攻势S2(极品A)", truncated: false },
+                {
+                  text: "市场价5万+三角券的珠光粉M7",
+                  truncated: false
+                },
+                {
+                  text: "极品M7说明文字炫彩MP7",
+                  truncated: false
+                }
+              ]
+            }
+          }
+        ]
+      })
+    });
+    const fetcher = new MapFetcher(
+      new Map([
+        [adapter.entryUrl, ok(adapter.entryUrl, "home")],
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+      ])
+    );
+    const coordinator = new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      now: () => new Date("2026-07-28T10:00:00.000Z")
+    });
+
+    await coordinator.refreshAll();
+
+    expect(repository.getListings("eligible")[0]).toMatchObject({
+      m7RareFinishes: ["pearl"],
+      m7RareFinishEvidence: [
+        {
+          text: "市场价5万+三角券的珠光粉M7",
+          truncated: false
+        }
+      ]
+    });
+  });
+
   it("collects every source before replacing any stored snapshot", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     repository.replaceSourceSnapshot(

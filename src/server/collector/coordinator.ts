@@ -4,6 +4,7 @@ import { markPossibleDuplicates } from "../../domain/duplicates.js";
 import {
   parseJulang,
   parseM7,
+  parseM7RareFinishes,
   parseRedSkins,
   toEvidenceRecords
 } from "../../domain/evidence.js";
@@ -264,6 +265,7 @@ function buildListing(
       : parsedM7;
   const redSkins = parseRedSkins(evidence);
   const julang = parseJulang(evidence);
+  const rareM7 = parseM7RareFinishes(evidence);
   const loginPlatform = detail
     ? detail.loginPlatform
     : inferLoginPlatform(combinedText);
@@ -292,8 +294,8 @@ function buildListing(
     m7PrismStatus: m7.status,
     m7PrismQuality: m7.quality ?? null,
     m7Evidence: m7.evidence,
-    m7RareFinishes: [],
-    m7RareFinishEvidence: [],
+    m7RareFinishes: rareM7.finishes,
+    m7RareFinishEvidence: rareM7.evidence,
     redSkins: redSkins.names,
     redSkinCount:
       redSkins.names.length > 0
