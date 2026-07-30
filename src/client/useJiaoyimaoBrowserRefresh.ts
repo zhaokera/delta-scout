@@ -106,6 +106,8 @@ export function useJiaoyimaoBrowserRefresh(
   const mountedRef = useRef(false);
   const generationRef = useRef(0);
   const jobRef = useRef<JiaoyimaoBrowserRefreshJob | null>(null);
+  const conflictRef =
+    useRef<JiaoyimaoBrowserRefreshConflict | null>(null);
   const localClaimJobRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
@@ -223,8 +225,14 @@ export function useJiaoyimaoBrowserRefresh(
   ) => {
     const sequence = ++requestSequenceRef.current;
     const generation = generationRef.current;
+    const conflictAtRequest = conflictRef.current;
     try {
-      const current = await api.getCurrentJiaoyimaoBrowserRefresh();
+      const [current, allSourceStatus] = await Promise.all([
+        api.getCurrentJiaoyimaoBrowserRefresh(),
+        conflictAtRequest === null
+          ? Promise.resolve(null)
+          : api.getRefreshStatus().catch(() => null)
+      ]);
       if (
         !mountedRef.current ||
         generation !== generationRef.current ||
@@ -238,13 +246,29 @@ export function useJiaoyimaoBrowserRefresh(
           jobRef.current === null ||
           jobVersion(jobRef.current) !== jobVersion(current)
         );
-      applyJob(current, sequence, {
+      const applied = applyJob(current, sequence, {
         initial: origin === "initial",
         broadcastChange:
           origin !== "initial" &&
           origin !== "broadcast" &&
           stateChanged
       });
+      const currentIsKnownActive =
+        current !== null &&
+        KNOWN_STATES.has(current.state) &&
+        !isTerminal(current);
+      const authoritativeIdle =
+        (current === null || isTerminal(current)) &&
+        allSourceStatus?.state === "idle";
+      if (
+        applied &&
+        conflictAtRequest !== null &&
+        conflictRef.current === conflictAtRequest &&
+        (currentIsKnownActive || authoritativeIdle)
+      ) {
+        conflictRef.current = null;
+        setConflict(null);
+      }
     } catch (cause) {
       if (
         !mountedRef.current ||
@@ -301,12 +325,14 @@ export function useJiaoyimaoBrowserRefresh(
       !mountedRef.current ||
       busy ||
       allSourcesRefreshing ||
+      conflictRef.current !== null ||
       blocksAllSourceRefresh(jobRef.current)
     ) {
       return;
     }
     setBusy(true);
     setError(null);
+    conflictRef.current = null;
     setConflict(null);
     try {
       const started = await api.startJiaoyimaoBrowserRefresh();
@@ -326,10 +352,12 @@ export function useJiaoyimaoBrowserRefresh(
         if (!mountedRef.current) return;
         const sequence = ++requestSequenceRef.current;
         applyJob(current, sequence);
-        setConflict({
+        const nextConflict: JiaoyimaoBrowserRefreshConflict = {
           activeKind: current ? "browser" : "all_sources",
           message
-        });
+        };
+        conflictRef.current = nextConflict;
+        setConflict(nextConflict);
       } catch {
         setError(message);
       }
@@ -350,6 +378,7 @@ export function useJiaoyimaoBrowserRefresh(
     if (!mountedRef.current || busy) return;
     setBusy(true);
     setError(null);
+    conflictRef.current = null;
     setConflict(null);
     try {
       const result = await operation();

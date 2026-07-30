@@ -141,6 +141,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       options: {
         preserveOnError?: boolean;
         refreshSelection?: boolean;
+        preserveMissingSelection?: boolean;
       } = {}
     ) => {
       if (!mounted.current) return;
@@ -166,8 +167,16 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             ? null
             : (nextListings.find(({ key }) => key === selectedKey) ??
               null);
-        setSelected(nextSelected);
-        if (selectedKey !== null && nextSelected === null) {
+        const preserveMissingSelection =
+          options.preserveMissingSelection === true &&
+          selectedKey !== null &&
+          nextSelected === null;
+        if (!preserveMissingSelection) setSelected(nextSelected);
+        if (
+          selectedKey !== null &&
+          nextSelected === null &&
+          !preserveMissingSelection
+        ) {
           selectedKeyRef.current = null;
           setListingHistory(null);
           setHistoryError(null);
@@ -176,12 +185,19 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           if (options.refreshSelection) {
             setSelectionNotice("该账号已不在最新在售快照");
           }
-        } else if (nextSelected && options.refreshSelection) {
-          setSelectionNotice(null);
+        } else if (
+          (nextSelected || preserveMissingSelection) &&
+          options.refreshSelection
+        ) {
+          setSelectionNotice(
+            preserveMissingSelection
+              ? "该账号已不在最新在售快照"
+              : null
+          );
           setHistoryLoading(true);
           setHistoryError(null);
           const historyResult = await api
-            .getListingHistory(nextSelected.key, 20)
+            .getListingHistory(nextSelected?.key ?? selectedKey!, 20)
             .then(
               (value) => ({ status: "fulfilled" as const, value }),
               (reason: unknown) => ({
@@ -239,7 +255,8 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     const [, historyResult] = await Promise.allSettled([
       load(activeView.current, activePoolMode.current, {
         preserveOnError: true,
-        refreshSelection: true
+        refreshSelection: true,
+        preserveMissingSelection: true
       }),
       api.getScanHistory(10)
     ]);
@@ -632,6 +649,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         jiaoyimaoRefreshDisabled={
           browserRefresh.busy ||
           refreshing ||
+          browserRefresh.conflict !== null ||
           browserRefresh.blocksAllSourceRefresh
         }
         onJiaoyimaoRefresh={() => {

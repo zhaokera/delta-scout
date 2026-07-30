@@ -1948,6 +1948,54 @@ describe("App shell", () => {
       .toHaveBeenCalledTimes(2);
   });
 
+  it("browser refresh blocks repeat starts after an external all-source conflict and restores them after an idle sync", async () => {
+    let allSourceStatus = makeRefreshStatus();
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getRefreshStatus: async () => allSourceStatus,
+      getCurrentJiaoyimaoBrowserRefresh: async () => null,
+      startJiaoyimaoBrowserRefresh: async () => {
+        allSourceStatus = makeRefreshStatus({
+          runId: 82,
+          state: "running",
+          source: "panzhi",
+          phase: "list"
+        });
+        throw new Error("另一个刷新任务正在进行");
+      }
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    const jymCard = (await screen.findByText("交易猫")).closest("article");
+    const sourceButton = within(jymCard!).getByRole("button", {
+      name: /刷新交易猫/
+    });
+    const panel = screen.getByRole("region", {
+      name: "交易猫浏览器刷新"
+    });
+    const panelButton = within(panel).getByRole("button", {
+      name: "刷新交易猫"
+    });
+
+    await user.click(sourceButton);
+
+    expect(await screen.findByRole("alert"))
+      .toHaveTextContent("另一个刷新任务正在进行");
+    expect(sourceButton).toBeDisabled();
+    expect(panelButton).toBeDisabled();
+    await user.click(sourceButton);
+    await user.click(panelButton);
+    expect(api.startJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
+
+    allSourceStatus = makeRefreshStatus();
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(sourceButton).toBeEnabled());
+    expect(panelButton).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("browser refresh keeps claim codes local and broadcasts mutations without echo", async () => {
     const channels = new Map<string, BroadcastChannelStub>();
     class BroadcastChannelStub {
@@ -2161,6 +2209,83 @@ describe("App shell", () => {
     );
     expect(api.getScanHistory).toHaveBeenCalledTimes(2);
     expect(api.getListingHistory).toHaveBeenCalledTimes(3);
+  });
+
+  it("browser published success preserves a removed selection while reloading formal data and history", async () => {
+    const listing = makeListing({
+      key: "panzhi:browser-removed",
+      sourceListingId: "BROWSER-REMOVED",
+      totalAssetsM: 818
+    });
+    let listingCall = 0;
+    let historyCall = 0;
+    let current = makeBrowserRefreshJob();
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getListings: async () => {
+        listingCall += 1;
+        return listingCall === 1 ? [listing] : [];
+      },
+      getListing: async () => listing,
+      getListingHistory: async (key) => {
+        historyCall += 1;
+        return {
+          key,
+          source: listing.source,
+          availability:
+            historyCall === 1 ? "active" as const : "removed" as const,
+          lastSeenAt: "2026-07-31T01:00:00.000Z",
+          observations: [
+            {
+              runId: historyCall,
+              observedAt: "2026-07-31T01:00:00.000Z",
+              availability:
+                historyCall === 1
+                  ? "active" as const
+                  : "removed" as const,
+              priceCny: historyCall === 1 ? listing.priceCny : null,
+              snapshot: buildListingHistorySnapshot(listing),
+              changes: []
+            }
+          ]
+        };
+      },
+      getCurrentJiaoyimaoBrowserRefresh: async () => current
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", {
+      name: /BROWSER-REMOVED/
+    }));
+    const detail = screen.getByRole("complementary", {
+      name: "候选详情"
+    });
+    expect(detail).toHaveTextContent("BROWSER-REMOVED");
+    expect(detail).toHaveTextContent("818M");
+
+    current = makeBrowserRefreshJob({
+      state: "success",
+      stage: "success",
+      updatedAt: "2026-07-31T01:02:00.000Z",
+      finishedAt: "2026-07-31T01:02:00.000Z",
+      scanRunId: 93,
+      publishedRunId: 93
+    });
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(api.getListings).toHaveBeenCalledTimes(2));
+    expect(api.getSources).toHaveBeenCalledTimes(2);
+    expect(api.getScanHistory).toHaveBeenCalledTimes(1);
+    expect(api.getListingHistory)
+      .toHaveBeenLastCalledWith(listing.key, 20);
+    expect(api.getListingHistory).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", {
+      name: /BROWSER-REMOVED/
+    })).not.toBeInTheDocument();
+    expect(detail).toHaveTextContent("BROWSER-REMOVED");
+    expect(detail).toHaveTextContent("818M");
+    expect(within(detail).getByText("已下架")).toBeInTheDocument();
   });
 
   it("browser refresh ignores stale out-of-order polls after a terminal state", async () => {
