@@ -232,6 +232,128 @@ const SAFE_API_ERROR_MESSAGES: Readonly<Record<string, string>> = {
 const SENSITIVE_ERROR_PATTERN =
   /claim[\s_-]*code|bridge[\s_-]*token|action[\s_-]*permit|credential|secret|token|password|captcha|cookie|local[\s_-]*storage|验证码(?:答案|结果|内容)?\s*[:=]/i;
 
+const SENSITIVE_ERROR_KEY_PARTS = [
+  "credential",
+  "claimcode",
+  "bridgetoken",
+  "actionpermit",
+  "token",
+  "secret",
+  "password",
+  "captcha",
+  "cookie",
+  "localstorage",
+  "session",
+  "auth"
+] as const;
+
+const ERROR_VALUE_SCAN_LIMITS = {
+  depth: 6,
+  nodes: 256,
+  children: 64,
+  values: 32
+} as const;
+
+function isSensitiveErrorKey(key: string): boolean {
+  const normalized = key
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  return SENSITIVE_ERROR_KEY_PARTS.some((part) =>
+    normalized.includes(part)
+  );
+}
+
+function collectSensitiveErrorValues(payload: object): {
+  values: string[];
+  incomplete: boolean;
+} {
+  const values: string[] = [];
+  const seen = new WeakSet<object>();
+  let visitedNodes = 0;
+  let incomplete = false;
+
+  const visit = (
+    value: unknown,
+    depth: number,
+    inheritedSensitive: boolean
+  ): void => {
+    if (
+      depth > ERROR_VALUE_SCAN_LIMITS.depth ||
+      visitedNodes >= ERROR_VALUE_SCAN_LIMITS.nodes ||
+      values.length >= ERROR_VALUE_SCAN_LIMITS.values
+    ) {
+      incomplete = true;
+      return;
+    }
+    visitedNodes += 1;
+    if (typeof value === "string") {
+      const candidate = value.trim();
+      if (
+        inheritedSensitive &&
+        candidate.length > 0 &&
+        candidate.length <= 160
+      ) {
+        values.push(candidate);
+      }
+      return;
+    }
+    if (value === null || typeof value !== "object") return;
+    if (seen.has(value)) {
+      incomplete = true;
+      return;
+    }
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      if (value.length > ERROR_VALUE_SCAN_LIMITS.children) {
+        incomplete = true;
+      }
+      const length = Math.min(
+        value.length,
+        ERROR_VALUE_SCAN_LIMITS.children
+      );
+      for (let index = 0; index < length; index += 1) {
+        visit(value[index], depth + 1, inheritedSensitive);
+      }
+      return;
+    }
+
+    let childCount = 0;
+    for (const key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      if (
+        childCount >= ERROR_VALUE_SCAN_LIMITS.children ||
+        visitedNodes >= ERROR_VALUE_SCAN_LIMITS.nodes ||
+        values.length >= ERROR_VALUE_SCAN_LIMITS.values
+      ) {
+        incomplete = true;
+        break;
+      }
+      childCount += 1;
+      if (key.length > 256) {
+        incomplete = true;
+        continue;
+      }
+      let child: unknown;
+      try {
+        child = (value as Record<string, unknown>)[key];
+      } catch {
+        incomplete = true;
+        continue;
+      }
+      visit(
+        child,
+        depth + 1,
+        inheritedSensitive || isSensitiveErrorKey(key)
+      );
+    }
+  };
+
+  visit(payload, 0, false);
+  return { values, incomplete };
+}
+
 function safeApiErrorMessage(
   payload: unknown,
   status: number
@@ -257,6 +379,13 @@ function safeApiErrorMessage(
     message.trim() !== message ||
     /[\u0000-\u001F\u007F]/.test(message) ||
     SENSITIVE_ERROR_PATTERN.test(message)
+  ) {
+    return fallback;
+  }
+  const sensitiveScan = collectSensitiveErrorValues(payload);
+  if (
+    sensitiveScan.incomplete ||
+    sensitiveScan.values.some((value) => message.includes(value))
   ) {
     return fallback;
   }

@@ -516,4 +516,157 @@ describe("httpScoutApi Jiaoyimao browser refresh", () => {
     expect((error as Error).message).not.toContain("ONE-TIME-SECRET");
     expect((error as Error).cause).toBeUndefined();
   });
+
+  it("does not echo an opaque sibling credential referenced by message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        error: "unexpected_failure",
+        message: "刷新失败，跟踪值 9f4b7c2d71e6",
+        credential: "9f4b7c2d71e6"
+      }), {
+        status: 502,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("请求失败（502）");
+    expect((error as Error).message).not.toContain(
+      "9f4b7c2d71e6"
+    );
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([
+    {
+      label: "nested array and case variant",
+      secret: "NESTED-BRIDGE-93",
+      payload: {
+        error: "unexpected_failure",
+        message: "任务失败 NESTED-BRIDGE-93",
+        diagnostics: [
+          { harmless: "public" },
+          { "BrIdGe_ToKeN": "NESTED-BRIDGE-93" }
+        ]
+      }
+    },
+    {
+      label: "separator variant with string array",
+      secret: "SESSION-AUTH-44",
+      payload: {
+        error: "unexpected_failure",
+        message: "任务失败 SESSION-AUTH-44",
+        meta: {
+          "Session.Auth": ["SESSION-AUTH-44"]
+        }
+      }
+    }
+  ])(
+    "does not echo sensitive values from $label",
+    async ({ payload, secret }) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify(payload), {
+          status: 500,
+          headers: { "content-type": "application/json" }
+        })
+      );
+
+      const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("请求失败（500）");
+      expect((error as Error).message).not.toContain(secret);
+      expect((error as Error).cause).toBeUndefined();
+    }
+  );
+
+  it("fails closed when a sensitive value is beyond the depth bound", async () => {
+    const payload: Record<string, unknown> = {
+      error: "unexpected_failure",
+      message: "任务失败 d33p0paque71"
+    };
+    let cursor: Record<string, unknown> = {};
+    payload.diagnostics = cursor;
+    for (let depth = 0; depth < 8; depth += 1) {
+      const next: Record<string, unknown> = {};
+      cursor.next = next;
+      cursor = next;
+    }
+    cursor.credential = "d33p0paque71";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect((error as Error).message).toBe("请求失败（500）");
+  });
+
+  it("fails closed when an object exceeds the child scan bound", async () => {
+    const diagnostics: Record<string, unknown> = {};
+    for (let index = 0; index < 70; index += 1) {
+      diagnostics[`public_${index}`] = `value_${index}`;
+    }
+    diagnostics.credential = "huge0paque72";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        error: "unexpected_failure",
+        message: "任务失败 huge0paque72",
+        diagnostics
+      }), {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect((error as Error).message).toBe("请求失败（500）");
+  });
+
+  it("fails closed when an array exceeds the child scan bound", async () => {
+    const diagnostics: Array<Record<string, string>> = Array.from(
+      { length: 70 },
+      (_, index) => ({ public: `value_${index}` })
+    );
+    diagnostics.push({ credential: "array0paque73" });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        error: "unexpected_failure",
+        message: "任务失败 array0paque73",
+        diagnostics
+      }), {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect((error as Error).message).toBe("请求失败（500）");
+  });
+
+  it("bounds cyclic error payloads without exposing a cause", async () => {
+    const payload: Record<string, unknown> = {
+      error: "unexpected_failure",
+      message: "普通读取失败"
+    };
+    payload.loop = payload;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => payload
+    } as Response);
+
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("请求失败（500）");
+    expect((error as Error).cause).toBeUndefined();
+  });
 });
