@@ -6,6 +6,7 @@ import {
   waitFor,
   within
 } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
@@ -16,7 +17,10 @@ import type {
   ScoutApi,
   SourceStatusView
 } from "../../src/client/api";
-import { httpScoutApi } from "../../src/client/api";
+import {
+  httpScoutApi,
+  ScoutApiError
+} from "../../src/client/api";
 import type { Listing, SourceId } from "../../src/domain/listing";
 import { buildListingHistorySnapshot } from "../../src/domain/listingHistory";
 import { makeListing, makeScore } from "../domain/listingFactory";
@@ -224,6 +228,16 @@ function stubViewport(matches: boolean): () => void {
 }
 
 describe("App shell", () => {
+  it("keeps the source browser-refresh touch target at least 44px tall", () => {
+    const clientStyles = readFileSync(
+      "src/client/styles.css",
+      "utf8"
+    );
+    expect(clientStyles).toMatch(
+      /\.source-card__browser-refresh\s*\{[^}]*min-height:\s*44px;/s
+    );
+  });
+
   it("shows the fixed account requirements", () => {
     render(<App api={makeApi()} />);
 
@@ -273,6 +287,34 @@ describe("App shell", () => {
       "/api/listings/panzhi%3ASA%20123/history?limit=7"
     ]);
     expect(fetchMock.mock.calls[5]?.[1]).toMatchObject({ method: "POST" });
+  });
+
+  it("forwards abort signals to browser-current and refresh-status requests", async () => {
+    const fetchMock = vi.fn(async (
+      _input: RequestInfo | URL,
+      _init?: RequestInit
+    ) => ({
+      ok: true,
+      json: async () => null
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    try {
+      await httpScoutApi.getCurrentJiaoyimaoBrowserRefresh(
+        controller.signal
+      );
+      await httpScoutApi.getRefreshStatus(controller.signal);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      signal: controller.signal
+    });
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      signal: controller.signal
+    });
   });
 
   it("loads the pool first and switches among four isolated views", async () => {
@@ -1930,7 +1972,11 @@ describe("App shell", () => {
         return currentCall === 1 ? null : current;
       },
       startJiaoyimaoBrowserRefresh: async () => {
-        throw new Error("另一个刷新任务正在进行");
+        throw new ScoutApiError(
+          "交易猫浏览器刷新任务已存在",
+          409,
+          "browser_job_conflict"
+        );
       }
     });
     const user = userEvent.setup();
@@ -1947,7 +1993,7 @@ describe("App shell", () => {
     expect(await screen.findByTestId("browser-refresh-state"))
       .toHaveTextContent("正在核验详情");
     expect(screen.getByRole("alert"))
-      .toHaveTextContent("另一个刷新任务正在进行");
+      .toHaveTextContent("交易猫浏览器刷新任务已存在");
     expect(screen.getByRole("button", {
       name: /CONFLICT-KEPT/
     })).toBeInTheDocument();
@@ -1960,7 +2006,7 @@ describe("App shell", () => {
         .toHaveBeenCalledTimes(3)
     );
     expect(screen.getByRole("alert"))
-      .toHaveTextContent("另一个刷新任务正在进行");
+      .toHaveTextContent("交易猫浏览器刷新任务已存在");
 
     current = makeBrowserRefreshJob({
       state: "failed",
@@ -1991,7 +2037,11 @@ describe("App shell", () => {
             source: "panzhi",
             phase: "list"
           });
-          throw new Error("另一个刷新任务正在进行");
+          throw new ScoutApiError(
+            "另一个刷新任务正在进行",
+            409,
+            "refresh_conflict"
+          );
         }
       });
       const user = userEvent.setup();
@@ -2035,10 +2085,20 @@ describe("App shell", () => {
 
   it("browser refresh keeps starts blocked while the conflicting all-source tracker is running", async () => {
     let allSourceStatus = makeRefreshStatus();
+    let currentCall = 0;
+    const oldTerminal = makeBrowserRefreshJob({
+      id: "old-browser-job",
+      state: "failed",
+      stage: "failed",
+      finishedAt: "2026-07-31T00:50:00.000Z"
+    });
     const api = makeApi({
       sources: [makeSourceStatus({ source: "jiaoyimao" })],
       getRefreshStatus: async () => allSourceStatus,
-      getCurrentJiaoyimaoBrowserRefresh: async () => null,
+      getCurrentJiaoyimaoBrowserRefresh: async () => {
+        currentCall += 1;
+        return currentCall === 1 ? null : oldTerminal;
+      },
       startJiaoyimaoBrowserRefresh: async () => {
         allSourceStatus = makeRefreshStatus({
           runId: 83,
@@ -2046,7 +2106,11 @@ describe("App shell", () => {
           source: "panzhi",
           phase: "list"
         });
-        throw new Error("另一个刷新任务正在进行");
+        throw new ScoutApiError(
+          "另一个刷新任务正在进行",
+          409,
+          "refresh_conflict"
+        );
       }
     });
     const user = userEvent.setup();
@@ -2068,6 +2132,54 @@ describe("App shell", () => {
       .toHaveTextContent("另一个刷新任务正在进行");
     expect(api.startJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    {
+      name: "network",
+      failure: new Error("网络暂不可达")
+    },
+    {
+      name: "server",
+      failure: new ScoutApiError(
+        "交易猫浏览器刷新操作失败",
+        500,
+        "browser_refresh_failed"
+      )
+    }
+  ])(
+    "browser refresh keeps retry available after a non-conflict $name start error",
+    async ({ failure }) => {
+      const api = makeApi({
+        sources: [makeSourceStatus({ source: "jiaoyimao" })],
+        getCurrentJiaoyimaoBrowserRefresh: async () => null,
+        startJiaoyimaoBrowserRefresh: async () => {
+          throw failure;
+        }
+      });
+      const user = userEvent.setup();
+
+      render(<App api={api} />);
+      const panel = await screen.findByRole("region", {
+        name: "交易猫浏览器刷新"
+      });
+      const startButton = within(panel).getByRole("button", {
+        name: "刷新交易猫"
+      });
+      await user.click(startButton);
+
+      expect(within(panel).getByRole("alert"))
+        .toHaveTextContent(failure.message);
+      expect(within(panel).queryByText("当前无法发起："))
+        .not.toBeInTheDocument();
+      expect(startButton).toBeEnabled();
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(1);
+
+      await user.click(startButton);
+      expect(api.startJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(2);
+    }
+  );
 
   it("browser refresh keeps claim codes local and broadcasts mutations without echo", async () => {
     const channels = new Map<string, BroadcastChannelStub>();
@@ -2125,15 +2237,50 @@ describe("App shell", () => {
       expect(JSON.stringify(browserChannel?.messages))
         .not.toContain("one-time-code");
       const postsBeforeMessage = browserChannel!.messages.length;
+      const currentCallsBeforeInvalid =
+        vi.mocked(api.getCurrentJiaoyimaoBrowserRefresh).mock.calls
+          .length;
+
+      for (const data of [
+        null,
+        { type: "browser-refresh-changed" },
+        {
+          version: 2,
+          type: "browser-refresh-changed",
+          jobId: collecting.id,
+          state: collecting.state,
+          updatedAt: collecting.updatedAt,
+          publishedRunId: null
+        },
+        {
+          version: 1,
+          type: "browser-refresh-changed",
+          jobId: collecting.id,
+          state: collecting.state,
+          updatedAt: collecting.updatedAt,
+          publishedRunId: null,
+          extra: true
+        }
+      ]) {
+        await act(async () => {
+          browserChannel?.onmessage?.(
+            new MessageEvent("message", { data })
+          );
+        });
+      }
+      expect(api.getCurrentJiaoyimaoBrowserRefresh)
+        .toHaveBeenCalledTimes(currentCallsBeforeInvalid);
 
       await act(async () => {
         browserChannel?.onmessage?.(
           new MessageEvent("message", {
             data: {
+              version: 1,
               type: "browser-refresh-changed",
               jobId: collecting.id,
               state: collecting.state,
-              updatedAt: collecting.updatedAt
+              updatedAt: collecting.updatedAt,
+              publishedRunId: null
             }
           })
         );
@@ -2155,11 +2302,181 @@ describe("App shell", () => {
 
       expect(browserChannel?.messages)
         .toHaveLength(postsBeforeMessage + 1);
+      expect(browserChannel?.messages.every((message) =>
+        typeof message === "object" &&
+        message !== null &&
+        "version" in message &&
+        message.version === 1
+      )).toBe(true);
       expect(JSON.stringify(browserChannel?.messages))
         .not.toContain("one-time-code");
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it.each(["cancel", "keep-waiting"] as const)(
+    "browser refresh ignores a stale %s response after synchronization moves to another job",
+    async (operationKind) => {
+      const channels = new Map<string, BroadcastChannelStub>();
+      class BroadcastChannelStub {
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        messages: unknown[] = [];
+        constructor(readonly name: string) {
+          channels.set(name, this);
+        }
+        postMessage(message: unknown) {
+          this.messages.push(message);
+        }
+        close() {}
+      }
+      vi.stubGlobal("BroadcastChannel", BroadcastChannelStub);
+      const operation =
+        deferred<JiaoyimaoBrowserRefreshJob>();
+      let current = makeBrowserRefreshJob({
+        id: "browser-job-a",
+        state: "paused",
+        stage: "paused"
+      });
+      const api = makeApi({
+        getCurrentJiaoyimaoBrowserRefresh: async () => current,
+        cancelJiaoyimaoBrowserRefresh: async () => operation.promise,
+        keepWaitingForJiaoyimaoBrowserRefresh: async () =>
+          operation.promise
+      });
+      const user = userEvent.setup();
+
+      try {
+        render(<App api={api} />);
+        expect(await screen.findByTestId("browser-refresh-state"))
+          .toHaveTextContent("任务已暂停");
+
+        if (operationKind === "cancel") {
+          await user.click(screen.getByRole("button", {
+            name: "取消本次刷新"
+          }));
+          await user.click(screen.getByRole("button", {
+            name: "确认取消"
+          }));
+          expect(api.cancelJiaoyimaoBrowserRefresh)
+            .toHaveBeenCalledWith("browser-job-a");
+        } else {
+          await user.click(screen.getByRole("button", {
+            name: "我还在处理，继续等待"
+          }));
+          expect(api.keepWaitingForJiaoyimaoBrowserRefresh)
+            .toHaveBeenCalledWith("browser-job-a");
+        }
+
+        current = makeBrowserRefreshJob({
+          id: "browser-job-b",
+          state: "collecting_details",
+          stage: "details",
+          updatedAt: "2026-07-31T01:03:00.000Z"
+        });
+        window.dispatchEvent(new Event("focus"));
+        await waitFor(() =>
+          expect(screen.getByTestId("browser-refresh-state"))
+            .toHaveTextContent("正在核验详情")
+        );
+
+        await act(async () => {
+          operation.resolve(makeBrowserRefreshJob({
+            id: "browser-job-a",
+            state: operationKind === "cancel"
+              ? "cancelled"
+              : "paused",
+            stage: operationKind,
+            updatedAt: "2026-07-31T01:04:00.000Z",
+            finishedAt: operationKind === "cancel"
+              ? "2026-07-31T01:04:00.000Z"
+              : null
+          }));
+        });
+
+        expect(screen.getByTestId("browser-refresh-state"))
+          .toHaveTextContent("正在核验详情");
+        const browserChannel = channels.get(
+          "jiaoyimao-browser-refresh-changed"
+        );
+        expect(JSON.stringify(browserChannel?.messages))
+          .not.toContain("browser-job-a");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  );
+
+  it("browser refresh ignores a stale mutation failure after synchronization moves to another job", async () => {
+    const operation = deferred<JiaoyimaoBrowserRefreshJob>();
+    let current = makeBrowserRefreshJob({
+      id: "browser-job-a",
+      state: "paused",
+      stage: "paused"
+    });
+    const api = makeApi({
+      getCurrentJiaoyimaoBrowserRefresh: async () => current,
+      keepWaitingForJiaoyimaoBrowserRefresh: async () =>
+        operation.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    expect(await screen.findByTestId("browser-refresh-state"))
+      .toHaveTextContent("任务已暂停");
+    await user.click(screen.getByRole("button", {
+      name: "我还在处理，继续等待"
+    }));
+
+    current = makeBrowserRefreshJob({
+      id: "browser-job-b",
+      state: "collecting_details",
+      stage: "details",
+      updatedAt: "2026-07-31T01:03:00.000Z"
+    });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(screen.getByTestId("browser-refresh-state"))
+        .toHaveTextContent("正在核验详情")
+    );
+
+    await act(async () => {
+      operation.reject(new Error("旧任务操作失败"));
+    });
+
+    expect(screen.getByTestId("browser-refresh-state"))
+      .toHaveTextContent("正在核验详情");
+    expect(screen.queryByText("旧任务操作失败"))
+      .not.toBeInTheDocument();
+  });
+
+  it("browser refresh blocks same-tick duplicate starts synchronously", async () => {
+    const startResult =
+      deferred<Awaited<
+        ReturnType<ScoutApi["startJiaoyimaoBrowserRefresh"]>
+      >>();
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      startJiaoyimaoBrowserRefresh: async () => startResult.promise
+    });
+
+    render(<App api={api} />);
+    const jymCard = (await screen.findByText("交易猫")).closest("article");
+    const sourceButton = within(jymCard!).getByRole("button", {
+      name: /刷新交易猫/
+    });
+    const panelButton = within(screen.getByRole("region", {
+      name: "交易猫浏览器刷新"
+    })).getByRole("button", {
+      name: "刷新交易猫"
+    });
+
+    act(() => {
+      panelButton.click();
+      sourceButton.click();
+    });
+
+    expect(api.startJiaoyimaoBrowserRefresh).toHaveBeenCalledTimes(1);
   });
 
   it("browser refresh preserves selected data on pause, failure, quarantine, and transport errors", async () => {
@@ -2284,6 +2601,74 @@ describe("App shell", () => {
     expect(api.getListingHistory).toHaveBeenCalledTimes(3);
   });
 
+  it("browser published reload retries after a required failure and displays scan history once successful", async () => {
+    vi.useFakeTimers();
+    const listing = makeListing({
+      sourceListingId: "PUBLISHED-RETRY-KEPT"
+    });
+    const published = makeBrowserRefreshJob({
+      state: "success",
+      stage: "success",
+      updatedAt: "2026-07-31T01:02:00.000Z",
+      finishedAt: "2026-07-31T01:02:00.000Z",
+      scanRunId: 201,
+      publishedRunId: 201
+    });
+    let scanHistoryCall = 0;
+    const api = makeApi({
+      sources: [makeSourceStatus({ source: "jiaoyimao" })],
+      getListings: async () => [listing],
+      getCurrentJiaoyimaoBrowserRefresh: async () => published,
+      getScanHistory: async () => {
+        scanHistoryCall += 1;
+        if (scanHistoryCall === 1) {
+          throw new Error("扫描历史首次读取失败");
+        }
+        return {
+          runs: [{
+            id: 201,
+            startedAt: "2026-07-31T01:00:00.000Z",
+            finishedAt: "2026-07-31T01:02:00.000Z",
+            state: "success" as const,
+            error: null,
+            scope: "single_source" as const,
+            requestedSource: "jiaoyimao" as const,
+            sources: []
+          }]
+        };
+      }
+    });
+
+    try {
+      render(<App api={api} />);
+      await act(async () => undefined);
+
+      expect(api.getScanHistory).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", {
+        name: /PUBLISHED-RETRY-KEPT/
+      })).toBeInTheDocument();
+      expect(screen.getAllByText("扫描历史首次读取失败").length)
+        .toBeGreaterThan(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(api.getScanHistory).toHaveBeenCalledTimes(2);
+      expect(screen.getByLabelText("最近扫描历史"))
+        .toHaveTextContent("#201");
+      expect(screen.queryAllByText("扫描历史首次读取失败"))
+        .toHaveLength(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(api.getScanHistory).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("browser published success preserves a removed selection while reloading formal data and history", async () => {
     const listing = makeListing({
       key: "panzhi:browser-removed",
@@ -2405,6 +2790,147 @@ describe("App shell", () => {
     expect(screen.getByRole("button", {
       name: "刷新公开数据"
     })).toBeEnabled();
+  });
+
+  it("browser refresh aborts stale focus synchronizations and only applies the latest result", async () => {
+    const requests: Array<{
+      signal: AbortSignal | undefined;
+      result: ReturnType<
+        typeof deferred<JiaoyimaoBrowserRefreshJob | null>
+      >;
+    }> = [];
+    const api = makeApi({
+      getCurrentJiaoyimaoBrowserRefresh: (
+        signal?: AbortSignal
+      ) => {
+        const result =
+          deferred<JiaoyimaoBrowserRefreshJob | null>();
+        requests.push({ signal, result });
+        return result.promise;
+      }
+    });
+
+    render(<App api={api} />);
+    await act(async () => undefined);
+    expect(requests).toHaveLength(1);
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    expect(requests).toHaveLength(4);
+    expect(requests.slice(0, 3).every(
+      ({ signal }) => signal?.aborted === true
+    )).toBe(true);
+
+    await act(async () => {
+      requests[3]!.result.resolve(makeBrowserRefreshJob({
+        id: "browser-job-b",
+        state: "collecting_details",
+        stage: "details",
+        updatedAt: "2026-07-31T01:04:00.000Z"
+      }));
+    });
+    expect(screen.getByTestId("browser-refresh-state"))
+      .toHaveTextContent("正在核验详情");
+
+    await act(async () => {
+      requests[0]!.result.resolve(makeBrowserRefreshJob({
+        id: "browser-job-a",
+        state: "failed",
+        stage: "failed",
+        updatedAt: "2026-07-31T01:05:00.000Z",
+        finishedAt: "2026-07-31T01:05:00.000Z"
+      }));
+    });
+    expect(screen.getByTestId("browser-refresh-state"))
+      .toHaveTextContent("正在核验详情");
+  });
+
+  it("browser refresh times out a hung synchronization and schedules the next poll", async () => {
+    vi.useFakeTimers();
+    const signals: Array<AbortSignal | undefined> = [];
+    const api = makeApi({
+      getCurrentJiaoyimaoBrowserRefresh: (
+        signal?: AbortSignal
+      ) => {
+        signals.push(signal);
+        return new Promise<JiaoyimaoBrowserRefreshJob | null>(
+          () => undefined
+        );
+      }
+    });
+
+    try {
+      render(<App api={api} />);
+      await act(async () => undefined);
+      expect(signals).toHaveLength(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_999);
+      });
+      expect(signals[0]?.aborted).toBe(false);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(signals[0]?.aborted).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_999);
+      });
+      expect(signals).toHaveLength(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(signals).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("browser refresh aborts hung synchronization on StrictMode cleanup without later updates", async () => {
+    vi.useFakeTimers();
+    const signals: Array<AbortSignal | undefined> = [];
+    const api = makeApi({
+      getCurrentJiaoyimaoBrowserRefresh: (
+        signal?: AbortSignal
+      ) => {
+        signals.push(signal);
+        return new Promise<JiaoyimaoBrowserRefreshJob | null>(
+          () => undefined
+        );
+      }
+    });
+    const consoleError = vi.spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    try {
+      const { unmount } = render(
+        <StrictMode>
+          <App api={api} />
+        </StrictMode>
+      );
+      await act(async () => undefined);
+      expect(signals.length).toBeGreaterThan(0);
+
+      unmount();
+      expect(signals.every(
+        (signal) => signal?.aborted === true
+      )).toBe(true);
+      const callsAtUnmount = signals.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+      expect(signals).toHaveLength(callsAtUnmount);
+      expect(consoleError.mock.calls.join(" "))
+        .not.toMatch(/unmounted|state update/i);
+    } finally {
+      vi.useRealTimers();
+      consoleError.mockRestore();
+    }
   });
 
   it("browser refresh fails closed on unknown state and cleans polling resources in StrictMode", async () => {

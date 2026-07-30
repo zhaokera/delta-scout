@@ -13,6 +13,7 @@ import {
   type ListingView,
   type PoolMode,
   type RefreshStatusView,
+  type ScanHistoryResponse,
   type ScoutApi,
   type SourceStatusView
 } from "./api";
@@ -111,6 +112,8 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshStatus, setRefreshStatus] =
     useState<RefreshStatusView | null>(null);
+  const [scanHistory, setScanHistory] =
+    useState<ScanHistoryResponse | null>(null);
   const [transportWarning, setTransportWarning] =
     useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -252,25 +255,104 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   );
 
   const reloadBrowserPublishedData = useCallback(async () => {
-    const [, historyResult] = await Promise.allSettled([
-      load(activeView.current, activePoolMode.current, {
-        preserveOnError: true,
-        refreshSelection: true,
-        preserveMissingSelection: true
-      }),
-      api.getScanHistory(10)
-    ]);
+    if (!mounted.current) {
+      throw new Error("页面已关闭");
+    }
+    const requestSequence = ++loadSequence.current;
+    const detailRequestSequence = ++detailSequence.current;
+    const requestedView = activeView.current;
+    const requestedMode = activePoolMode.current;
+    const selectedKey = selectedKeyRef.current;
+    if (selectedKey !== null) {
+      setHistoryLoading(true);
+      setHistoryError(null);
+    }
+
+    const [sourcesResult, listingsResult, scanResult, historyResult] =
+      await Promise.allSettled([
+        api.getSources(requestedMode),
+        api.getListings(requestedView, requestedMode),
+        api.getScanHistory(10),
+        selectedKey === null
+          ? Promise.resolve(null)
+          : api.getListingHistory(selectedKey, 20)
+      ]);
+
     if (
-      historyResult.status === "rejected" &&
-      mounted.current
+      !mounted.current ||
+      requestSequence !== loadSequence.current ||
+      detailRequestSequence !== detailSequence.current
     ) {
-      setTransportWarning(
+      throw new Error("发布刷新已被更新的页面操作取代");
+    }
+
+    setLoading(false);
+    if (sourcesResult.status === "fulfilled") {
+      setSources(sourcesResult.value);
+    }
+    if (listingsResult.status === "fulfilled") {
+      const nextListings = listingsResult.value;
+      setListings(nextListings);
+      if (selectedKey !== null) {
+        const nextSelected =
+          nextListings.find(({ key }) => key === selectedKey) ?? null;
+        if (nextSelected) {
+          setSelected(nextSelected);
+          setSelectionNotice(null);
+        } else {
+          setSelectionNotice("该账号已不在最新在售快照");
+        }
+      }
+    }
+    if (scanResult.status === "fulfilled") {
+      setScanHistory(scanResult.value);
+      setTransportWarning(null);
+    }
+    if (historyResult.status === "fulfilled" && historyResult.value) {
+      setListingHistory(historyResult.value);
+      setHistoryError(null);
+    } else if (historyResult.status === "rejected") {
+      setHistoryError(
         historyResult.reason instanceof Error
           ? historyResult.reason.message
+          : "账号历史读取失败"
+      );
+    }
+    if (selectedKey !== null) setHistoryLoading(false);
+
+    const requiredFailures = [
+      sourcesResult,
+      listingsResult,
+      scanResult,
+      historyResult
+    ].filter(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected"
+    );
+    const firstFailure = requiredFailures[0]?.reason;
+    if (sourcesResult.status === "rejected" ||
+        listingsResult.status === "rejected") {
+      setError(
+        firstFailure instanceof Error
+          ? firstFailure.message
+          : "无法读取最新候选数据"
+      );
+    }
+    if (scanResult.status === "rejected") {
+      setTransportWarning(
+        scanResult.reason instanceof Error
+          ? scanResult.reason.message
           : "扫描历史暂不可达"
       );
     }
-  }, [api, load]);
+    if (requiredFailures.length > 0) {
+      throw firstFailure instanceof Error
+        ? firstFailure
+        : new Error("发布数据刷新未完整完成");
+    }
+
+    setError(null);
+  }, [api]);
 
   const browserRefresh = useJiaoyimaoBrowserRefresh(
     api,
@@ -609,6 +691,17 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         status={refreshStatus}
         transportWarning={transportWarning}
       />
+
+      {scanHistory?.runs[0] ? (
+        <section
+          className="scan-history-summary"
+          aria-label="最近扫描历史"
+        >
+          <span>最近扫描</span>
+          <strong>#{scanHistory.runs[0].id}</strong>
+          <small>{scanHistory.runs[0].state.toUpperCase()}</small>
+        </section>
+      ) : null}
 
       <JiaoyimaoBrowserRefreshPanel
         job={browserRefresh.job}

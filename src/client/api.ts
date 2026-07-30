@@ -187,9 +187,9 @@ export interface ScoutApi {
   getListing(key: string): Promise<Listing>;
   getListingHistory(key: string, limit?: number): Promise<ListingHistoryView>;
   startRefresh(): Promise<{ runId: number; state: "running" }>;
-  getRefreshStatus(): Promise<RefreshStatusView>;
+  getRefreshStatus(signal?: AbortSignal): Promise<RefreshStatusView>;
   getScanHistory(limit?: number): Promise<ScanHistoryResponse>;
-  getCurrentJiaoyimaoBrowserRefresh():
+  getCurrentJiaoyimaoBrowserRefresh(signal?: AbortSignal):
     Promise<JiaoyimaoBrowserRefreshJob | null>;
   startJiaoyimaoBrowserRefresh():
     Promise<StartedJiaoyimaoBrowserRefresh>;
@@ -228,6 +228,18 @@ const SAFE_API_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   action_permit_required: "本次操作缺少一次性许可",
   action_permit_invalid: "一次性操作许可无效或已过期"
 };
+
+export class ScoutApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(message: string, status: number, code: string | null) {
+    super(message);
+    this.name = "ScoutApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
 
 const SENSITIVE_ERROR_PATTERN =
   /claim[\s_-]*code|bridge[\s_-]*token|action[\s_-]*permit|credential|secret|token|password|captcha|cookie|local[\s_-]*storage|验证码(?:答案|结果|内容)?\s*[:=]/i;
@@ -409,6 +421,20 @@ function safeApiErrorMessage(
   return message;
 }
 
+function safeApiErrorCode(payload: unknown): string | null {
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    return null;
+  }
+  const code = (payload as Record<string, unknown>).error;
+  return typeof code === "string" && SAFE_API_ERROR_MESSAGES[code]
+    ? code
+    : null;
+}
+
 async function requestJson<T>(
   input: string,
   init?: RequestInit
@@ -416,7 +442,11 @@ async function requestJson<T>(
   const response = await fetch(input, init);
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
-    throw new Error(safeApiErrorMessage(payload, response.status));
+    throw new ScoutApiError(
+      safeApiErrorMessage(payload, response.status),
+      response.status,
+      safeApiErrorCode(payload)
+    );
   }
   return response.json() as Promise<T>;
 }
@@ -453,15 +483,19 @@ export const httpScoutApi: ScoutApi = {
     requestJson<{ runId: number; state: "running" }>("/api/refresh", {
       method: "POST"
     }),
-  getRefreshStatus: () =>
-    requestJson<RefreshStatusView>("/api/refresh-status"),
+  getRefreshStatus: (signal) =>
+    requestJson<RefreshStatusView>(
+      "/api/refresh-status",
+      signal ? { signal } : undefined
+    ),
   getScanHistory: (limit = 10) =>
     requestJson<ScanHistoryResponse>(
       `/api/scan-history?limit=${limit}`
     ),
-  getCurrentJiaoyimaoBrowserRefresh: () =>
+  getCurrentJiaoyimaoBrowserRefresh: (signal) =>
     requestJson<JiaoyimaoBrowserRefreshJob | null>(
-      "/api/sources/jiaoyimao/browser-refresh/current"
+      "/api/sources/jiaoyimao/browser-refresh/current",
+      signal ? { signal } : undefined
     ),
   startJiaoyimaoBrowserRefresh: () =>
     postBrowserJson<StartedJiaoyimaoBrowserRefresh>(

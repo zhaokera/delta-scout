@@ -706,7 +706,7 @@ button {
   position: relative;
   z-index: 2;
   width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   margin-top: 11px;
   padding: 0 11px;
   display: flex;
@@ -735,6 +735,30 @@ button {
 
 .source-card__browser-refresh:disabled small {
   color: #686f69;
+}
+
+.scan-history-summary {
+  min-height: 44px;
+  margin-top: 18px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid var(--line);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+}
+
+.scan-history-summary strong {
+  color: var(--ink);
+}
+
+.scan-history-summary small {
+  margin-left: auto;
+  color: var(--acid);
+  font: inherit;
 }
 
 .filter-panel {

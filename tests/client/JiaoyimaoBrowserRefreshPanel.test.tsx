@@ -493,9 +493,17 @@ describe("httpScoutApi Jiaoyimao browser refresh", () => {
       })
     );
 
-    const promise = httpScoutApi.startJiaoyimaoBrowserRefresh();
-    await expect(promise).rejects.toThrow("另一个刷新任务正在进行");
-    await expect(promise).rejects.not.toThrow(/never-show-this|private payload/);
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      status: 409,
+      code: "refresh_conflict",
+      message: "另一个刷新任务正在进行"
+    });
+    expect((error as Error).message)
+      .not.toMatch(/never-show-this|private payload/);
+    expect((error as Error).cause).toBeUndefined();
   });
 
   it("rejects a sensitive server message instead of echoing a claim code", async () => {
