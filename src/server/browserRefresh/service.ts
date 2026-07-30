@@ -19,6 +19,7 @@ import {
   BrowserRefreshRepositoryError,
   type AcceptedBatchView,
   type AcceptedLoadEventView,
+  type BrowserRefreshOutcomeTransition,
   type BrowserRefreshJobView,
   type ClaimedBrowserRefreshJob,
   type CreatedBrowserRefreshJob,
@@ -69,7 +70,7 @@ export const BROWSER_REFRESH_STATE_COMMANDS = {
   committing: ["keepWaiting"],
   success: [],
   quarantined: [],
-  paused: ["resume", "keepWaiting", "cancel"],
+  paused: ["claim", "resume", "keepWaiting", "cancel"],
   failed: [],
   cancelled: [],
   expired: []
@@ -131,6 +132,11 @@ export interface JiaoyimaoBrowserTaskServiceOptions {
   permitFactory?: () => string;
 }
 
+interface PlannedOutcome {
+  transition: BrowserRefreshOutcomeTransition;
+  errorAfterCommit?: BrowserRefreshServiceError;
+}
+
 const COOLDOWN_DELAYS_MS = [30_000, 120_000, 300_000, 900_000] as const;
 const ACTION_PERMIT_LIFETIME_MS = 60_000;
 
@@ -165,6 +171,18 @@ export class JiaoyimaoBrowserTaskService {
     const now = this.now();
     const job = this.requireJob(id, now);
     this.assertCommand(job, "claim");
+    if (
+      job.state === "paused" &&
+      (
+        job.reason !== "process_interrupted" ||
+        job.claimedAt !== null
+      )
+    ) {
+      throw new BrowserRefreshServiceError(
+        "invalid_transition",
+        "Only an interrupted unclaimed job may be claimed from paused"
+      );
+    }
     try {
       return this.repository.claimJob(id, claimCode, now);
     } catch (error) {
@@ -362,9 +380,15 @@ export class JiaoyimaoBrowserTaskService {
       this.assertCommand(job, "submitLoadEvent");
       this.assertActionPermitForOutcome(job, event.actionPermit, now);
       this.assertActionTime(job, now);
-      const result = this.repository.acceptLoadEvent(id, event, now);
-      this.afterLoadOutcome(id, job, event, now);
-      return result;
+      const outcome = this.planLoadOutcome(id, job, event, now);
+      const result = this.repository.acceptLoadEventAndTransition(
+        id,
+        event,
+        outcome.transition,
+        now
+      );
+      if (outcome.errorAfterCommit) throw outcome.errorAfterCommit;
+      return result.accepted;
     } catch (error) {
       if (error instanceof BrowserRefreshServiceError) throw error;
       throw this.mapError(error);
@@ -396,28 +420,33 @@ export class JiaoyimaoBrowserTaskService {
           "Detail evidence may only be staged for required list items"
         );
       }
-      const result = this.repository.acceptDetailBatch(id, batch, now);
-      const next = this.repository.getNextRequiredDetail(id, now);
-      const complete = next === null &&
-        result.detailCompletedCount === result.detailRequiredCount;
-      this.repository.transition(
+      const completedIds = this.repository.getCompletedDetailIds(id, now);
+      for (const item of batch.items) {
+        completedIds.add(item.sourceListingId);
+      }
+      const complete = [...requiredIds].every((id) =>
+        completedIds.has(id)
+      );
+      const result = this.repository.acceptDetailBatchAndTransition(
         id,
-        ["collecting_details"],
-        complete ? "validating" : "collecting_details",
+        batch,
         {
-          stage: complete ? "validating" : "collecting_details",
-          reason: null,
-          cooldownAttempt: 0,
-          cooldownUntil: null,
-          actionPermit: null,
-          actionPermitExpiresAt: null,
-          nextActionAt: complete
-            ? null
-            : this.nextActionTimestamp("detail", now)
+          next: complete ? "validating" : "collecting_details",
+          patch: {
+            stage: complete ? "validating" : "collecting_details",
+            reason: null,
+            cooldownAttempt: 0,
+            cooldownUntil: null,
+            actionPermit: null,
+            actionPermitExpiresAt: null,
+            nextActionAt: complete
+              ? null
+              : this.nextActionTimestamp("detail", now)
+          }
         },
         now
       );
-      return result;
+      return result.accepted;
     } catch (error) {
       if (error instanceof BrowserRefreshServiceError) throw error;
       throw this.mapError(error);
@@ -461,6 +490,23 @@ export class JiaoyimaoBrowserTaskService {
     this.assertCommand(job, "resume");
     const target = this.resumeTarget(job);
     try {
+      if (
+        job.reason === "process_interrupted" &&
+        job.cooldownAttempt > 0 &&
+        job.cooldownUntil !== null
+      ) {
+        return this.repository.transition(
+          id,
+          ["paused"],
+          "cooling_down",
+          {
+            stage: target,
+            reason: "rate_limited",
+            lastError: "process_interrupted"
+          },
+          now
+        );
+      }
       return this.repository.transition(
         id,
         [job.state],
@@ -622,69 +668,70 @@ export class JiaoyimaoBrowserTaskService {
     }
   }
 
-  private afterLoadOutcome(
+  private planLoadOutcome(
     id: string,
     job: BrowserRefreshJobView,
     event: BrowserLoadEvent,
     now: Date
-  ): void {
+  ): PlannedOutcome {
     const resumeTarget = this.resumeTarget(job);
     if (event.blockingState === "login" || event.blockingState === "captcha") {
-      this.repository.transition(
-        id,
-        [job.state],
-        "awaiting_user_verification",
-        {
-          stage: resumeTarget,
-          reason: event.blockingState === "login"
-            ? "login_required"
-            : "captcha_required",
-          actionPermit: null,
-          actionPermitExpiresAt: null,
-          nextActionAt: null
-        },
-        now
-      );
-      return;
+      return {
+        transition: {
+          next: "awaiting_user_verification",
+          patch: {
+            stage: resumeTarget,
+            reason: event.blockingState === "login"
+              ? "login_required"
+              : "captcha_required",
+            actionPermit: null,
+            actionPermitExpiresAt: null,
+            nextActionAt: null
+          }
+        }
+      };
     }
     if (event.blockingState === "error") {
-      this.repository.transition(
-        id,
-        [job.state],
-        "paused",
-        {
-          stage: resumeTarget,
-          reason: "structure_changed",
-          lastError: "structure_changed",
-          nextActionAt: null
-        },
-        now
-      );
-      return;
+      return {
+        transition: {
+          next: "paused",
+          patch: {
+            stage: resumeTarget,
+            reason: "structure_changed",
+            lastError: "structure_changed",
+            nextActionAt: null
+          }
+        }
+      };
     }
     if (event.blockingState === "rate_limited" || event.loadingVisible) {
-      return;
+      return {
+        transition: {
+          next: job.state,
+          patch: {
+            stage: job.stage
+          }
+        }
+      };
     }
 
-    const events = this.repository.getLoadEvents(id, now);
+    const events = [...this.repository.getLoadEvents(id, now), event];
     const naturalEnd = evaluateNaturalEnd(events);
     if (naturalEnd.kind === "incomplete" &&
         naturalEnd.reason === "safety_limit") {
-      this.repository.transition(
-        id,
-        [job.state],
-        "paused",
-        {
-          stage: resumeTarget,
-          reason: "safety_limit",
-          lastError: "safety_limit",
-          nextActionAt: null,
-          actionPermit: null,
-          actionPermitExpiresAt: null
-        },
-        now
-      );
-      return;
+      return {
+        transition: {
+          next: "paused",
+          patch: {
+            stage: resumeTarget,
+            reason: "safety_limit",
+            lastError: "safety_limit",
+            nextActionAt: null,
+            actionPermit: null,
+            actionPermitExpiresAt: null
+          }
+        }
+      };
     }
     if (naturalEnd.kind === "complete") {
       const items = this.repository.getListItems(id, now);
@@ -692,64 +739,62 @@ export class JiaoyimaoBrowserTaskService {
         events.at(-1)?.observedUniqueCount !==
         new Set(items.map((item) => item.sourceListingId)).size
       ) {
-        this.repository.transition(
-          id,
-          [job.state],
-          "paused",
-          {
-            stage: resumeTarget,
-            reason: "staging_invalid",
-            lastError: "staging_invalid",
-            nextActionAt: null,
-            actionPermit: null,
-            actionPermitExpiresAt: null
+        return {
+          transition: {
+            next: "paused",
+            patch: {
+              stage: resumeTarget,
+              reason: "staging_invalid",
+              lastError: "staging_invalid",
+              nextActionAt: null,
+              actionPermit: null,
+              actionPermitExpiresAt: null
+            }
           },
-          now
-        );
-        throw new BrowserRefreshServiceError(
-          "staging_invalid",
-          "The staged list count does not match the visible unique count"
-        );
+          errorAfterCommit: new BrowserRefreshServiceError(
+            "staging_invalid",
+            "The staged list count does not match the visible unique count"
+          )
+        };
       }
       const requiredCount = detailRequiredIds(items).length;
-      this.repository.transition(
-        id,
-        [job.state],
-        requiredCount === 0 ? "validating" : "collecting_details",
-        {
-          stage: requiredCount === 0
+      return {
+        transition: {
+          next: requiredCount === 0
             ? "validating"
             : "collecting_details",
-          reason: naturalEnd.reason,
-          detailRequiredCount: requiredCount,
-          detailCompletedCount: 0,
+          patch: {
+            stage: requiredCount === 0
+              ? "validating"
+              : "collecting_details",
+            reason: naturalEnd.reason,
+            detailRequiredCount: requiredCount,
+            detailCompletedCount: 0,
+            cooldownAttempt: 0,
+            cooldownUntil: null,
+            nextActionAt: requiredCount === 0
+              ? null
+              : this.nextActionTimestamp("detail", now),
+            actionPermit: null,
+            actionPermitExpiresAt: null
+          }
+        }
+      };
+    }
+    return {
+      transition: {
+        next: job.state,
+        patch: {
+          stage: job.state,
+          reason: null,
           cooldownAttempt: 0,
           cooldownUntil: null,
-          nextActionAt: requiredCount === 0
-            ? null
-            : this.nextActionTimestamp("list", now),
+          nextActionAt: this.nextActionTimestamp("list", now),
           actionPermit: null,
           actionPermitExpiresAt: null
-        },
-        now
-      );
-      return;
-    }
-    this.repository.transition(
-      id,
-      [job.state],
-      job.state,
-      {
-        stage: job.state,
-        reason: null,
-        cooldownAttempt: 0,
-        cooldownUntil: null,
-        nextActionAt: this.nextActionTimestamp("list", now),
-        actionPermit: null,
-        actionPermitExpiresAt: null
-      },
-      now
-    );
+        }
+      }
+    };
   }
 
   private requireJob(id: string, now: Date): BrowserRefreshJobView {

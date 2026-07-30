@@ -81,6 +81,24 @@ describe("browser refresh completeness", () => {
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
   });
 
+  it("requires each M7 selection to contain exactly one standalone grade", () => {
+    const combined =
+      "M7 棱镜攻势 极品 S / 极品 A / 极品 B / 极品 C";
+    expect(validateFilterProof({
+      ...validProof,
+      m7FilterLabels: [combined, combined, combined, combined]
+    })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
+    expect(validateFilterProof({
+      ...validProof,
+      m7FilterLabels: [
+        "M7 战斗步枪 · 棱镜攻势 · 极品 S",
+        "M7 战斗步枪 · 棱镜攻势 · 极品 A",
+        "M7 战斗步枪 · 棱镜攻势 · 极品 B",
+        "M7 战斗步枪 · 棱镜攻势 · 极品 C"
+      ]
+    })).toEqual({ kind: "ok" });
+  });
+
   it("accepts two consecutive normal zero-growth observations", () => {
     expect(evaluateNaturalEnd([
       event(1, 4, 4),

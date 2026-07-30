@@ -51,19 +51,25 @@ function normalized(value: string): string {
 export function validateFilterProof(
   proof: BrowserFilterProof
 ): FilterProofResult {
-  const gradeLabels = proof.m7FilterLabels.map(normalized);
+  const grades = proof.m7FilterLabels.map((value) => {
+    const label = normalized(value);
+    if (
+      !label.includes("M7") ||
+      !label.includes(normalized("棱镜攻势"))
+    ) {
+      return null;
+    }
+    const matches = [...label.matchAll(/极品([SABC])(?![A-Z])/gu)];
+    return matches.length === 1 ? matches[0][1] : null;
+  });
   const valid =
     JiaoyimaoFilterUrlSchema.safeParse(proof.currentUrl).success &&
     normalized(proof.gameLabel) === normalized("三角洲行动") &&
     normalized(proof.platformLabel) === "QQ" &&
     normalized(proof.categoryLabel) === normalized("账号") &&
-    ["极品S", "极品A", "极品B", "极品C"].every((grade) =>
-      gradeLabels.some((label) =>
-        label.includes("M7") &&
-        label.includes(normalized("棱镜攻势")) &&
-        label.includes(normalized(grade))
-      )
-    );
+    grades.every((grade) => grade !== null) &&
+    new Set(grades).size === 4 &&
+    ["S", "A", "B", "C"].every((grade) => grades.includes(grade));
   return valid
     ? { kind: "ok" }
     : { kind: "invalid", reason: "filter_mismatch" };

@@ -223,9 +223,15 @@ describe("JiaoyimaoBrowserTaskService", () => {
     );
     expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
       state: "collecting_details",
-      detailRequiredCount: 2
+      detailRequiredCount: 2,
+      nextActionAt: "2026-07-30T10:00:02.000Z"
     });
-    f.advance(1_200);
+    f.advance(1_999);
+    expectCode(
+      () => f.service.getWork(f.id, f.token),
+      "action_too_early"
+    );
+    f.advance(1);
     const work = f.service.getWork(f.id, f.token);
     expect(work).toMatchObject({
       kind: "detail",
@@ -249,7 +255,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
         endMarkerVisible: true
       })
     );
-    f.advance(1_200);
+    f.advance(2_000);
     const detail = details(["1"]);
     const accepted = f.service.submitDetails(f.id, f.token, detail);
     expect(f.service.submitDetails(f.id, f.token, detail)).toEqual(accepted);
@@ -335,10 +341,14 @@ describe("JiaoyimaoBrowserTaskService", () => {
         endMarkerVisible: true
       })
     );
-    detail.advance(2_500);
+    expect(detail.repository.getJob(
+      detail.id,
+      baseTime
+    )?.nextActionAt).toBe("2026-07-30T10:00:03.500Z");
+    detail.advance(3_500);
     detail.service.submitDetails(detail.id, detail.token, details(["1"]));
     expect(detail.repository.getJob(detail.id, baseTime)?.nextActionAt).toBe(
-      "2026-07-30T10:00:06.000Z"
+      "2026-07-30T10:00:07.000Z"
     );
   });
 
@@ -473,6 +483,40 @@ describe("JiaoyimaoBrowserTaskService", () => {
     });
   });
 
+  it("allows only an interrupted, still-unclaimed job to use its claim code", () => {
+    const restart = fixture();
+    const created = restart.service.create();
+    restart.repository.recoverInterruptedJobs(baseTime);
+    expect(restart.repository.getJob(created.id, baseTime)).toMatchObject({
+      state: "paused",
+      reason: "process_interrupted",
+      claimedAt: null
+    });
+    expect(
+      restart.service.claim(created.id, created.claimCode)
+    ).toMatchObject({
+      state: "collecting_list",
+      bridgeToken: expect.any(String)
+    });
+
+    const arbitrary = fixture();
+    const other = arbitrary.service.create();
+    arbitrary.repository.transition(
+      other.id,
+      ["awaiting_codex"],
+      "paused",
+      {
+        stage: "collecting_list",
+        reason: "structure_changed"
+      },
+      baseTime
+    );
+    expectCode(
+      () => arbitrary.service.claim(other.id, other.claimCode),
+      "invalid_transition"
+    );
+  });
+
   it("recovers an interrupted detail queue to its exact stage and cursor", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
@@ -489,13 +533,13 @@ describe("JiaoyimaoBrowserTaskService", () => {
         endMarkerVisible: true
       })
     );
-    f.advance(1_200);
+    f.advance(2_000);
     f.service.submitDetails(f.id, f.token, details(["1"]));
     f.repository.recoverInterruptedJobs(new Date(
-      baseTime.getTime() + 1_200
+      baseTime.getTime() + 2_000
     ));
     const restarted = new JiaoyimaoBrowserTaskService(f.repository, {
-      now: () => new Date(baseTime.getTime() + 3_200),
+      now: () => new Date(baseTime.getTime() + 4_000),
       random: () => 0
     });
     restarted.resume(f.id, f.token);
@@ -528,14 +572,95 @@ describe("JiaoyimaoBrowserTaskService", () => {
     expect(f.service.resume(f.id, f.token).state).toBe("validating");
   });
 
-  it("preserves the underlying detail stage when cooling is interrupted", () => {
+  it("restores interrupted cooldown without bypassing or resetting it", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    f.service.submitListBatch(
+    const cooldown = f.service.startCooldown(f.id, f.token);
+    f.repository.recoverInterruptedJobs(baseTime);
+    let restartedTime = baseTime.getTime();
+    const restarted = new JiaoyimaoBrowserTaskService(f.repository, {
+      now: () => new Date(restartedTime),
+      random: () => 0
+    });
+    expect(restarted.resume(f.id, f.token)).toMatchObject({
+      state: "cooling_down",
+      cooldownAttempt: 1,
+      cooldownUntil: cooldown.cooldownUntil
+    });
+    expectCode(
+      () => restarted.getWork(f.id, f.token),
+      "cooldown_active"
+    );
+    restartedTime = Date.parse(cooldown.cooldownUntil!);
+    const work = restarted.getWork(f.id, f.token);
+    expect(work).toMatchObject({
+      kind: "list",
+      actionPermit: expect.any(String)
+    });
+    restarted.submitLoadEvent(
       f.id,
       f.token,
-      listBatch([["1", 100]])
+      loadEvent(1, 0, 0, {
+        blockingState: "rate_limited",
+        actionPermit: work.actionPermit
+      })
     );
+    expect(restarted.startCooldown(f.id, f.token)).toMatchObject({
+      cooldownAttempt: 2,
+      cooldownUntil: new Date(restartedTime + 120_000).toISOString()
+    });
+  });
+
+  it("rolls back a load event if its natural-end transition fails", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    f.database.exec(`
+      CREATE TRIGGER inject_load_transition_failure
+      BEFORE UPDATE OF state ON browser_refresh_jobs
+      WHEN NEW.id = '${f.id}' AND NEW.state = 'collecting_details'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected load transition failure');
+      END;
+    `);
+    const event = loadEvent(1, 1, 1, {
+      visibleTotalCount: 1,
+      endMarkerVisible: true
+    });
+    expectCode(
+      () => f.service.submitLoadEvent(f.id, f.token, event),
+      "staging_invalid"
+    );
+    expect(
+      f.database.prepare(`
+        SELECT COUNT(*) AS count FROM browser_refresh_load_events
+        WHERE job_id = ?
+      `).get(f.id)
+    ).toEqual({ count: 0 });
+    expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
+      state: "collecting_list",
+      loadActionCount: 0
+    });
+
+    f.database.exec("DROP TRIGGER inject_load_transition_failure");
+    f.service.submitLoadEvent(f.id, f.token, event);
+    expect(
+      f.database.prepare(`
+        SELECT COUNT(*) AS count FROM browser_refresh_load_events
+        WHERE job_id = ?
+      `).get(f.id)
+    ).toEqual({ count: 1 });
+    expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
+      state: "collecting_details",
+      loadActionCount: 1,
+      detailRequiredCount: 1
+    });
+  });
+
+  it("rolls back detail evidence if its validation transition fails", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
     f.service.submitLoadEvent(
       f.id,
       f.token,
@@ -544,19 +669,52 @@ describe("JiaoyimaoBrowserTaskService", () => {
         endMarkerVisible: true
       })
     );
-    f.advance(1_200);
-    f.service.startCooldown(f.id, f.token);
-    f.repository.recoverInterruptedJobs(new Date(
-      baseTime.getTime() + 1_200
-    ));
-    const restarted = new JiaoyimaoBrowserTaskService(f.repository, {
-      now: () => new Date(baseTime.getTime() + 1_200),
-      random: () => 0
+    f.advance(2_000);
+    f.database.exec(`
+      CREATE TRIGGER inject_detail_transition_failure
+      BEFORE UPDATE OF state ON browser_refresh_jobs
+      WHEN NEW.id = '${f.id}' AND NEW.state = 'validating'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected detail transition failure');
+      END;
+    `);
+    const batch = details(["1"]);
+    expectCode(
+      () => f.service.submitDetails(f.id, f.token, batch),
+      "staging_invalid"
+    );
+    expect(
+      f.database.prepare(`
+        SELECT COUNT(*) AS count FROM browser_refresh_details
+        WHERE job_id = ?
+      `).get(f.id)
+    ).toEqual({ count: 0 });
+    expect(
+      f.database.prepare(`
+        SELECT COUNT(*) AS count FROM browser_refresh_batches
+        WHERE job_id = ? AND kind = 'detail'
+      `).get(f.id)
+    ).toEqual({ count: 0 });
+    expect(f.repository.getJob(f.id, new Date(
+      baseTime.getTime() + 2_000
+    ))).toMatchObject({
+      state: "collecting_details",
+      detailCompletedCount: 0
     });
-    restarted.resume(f.id, f.token);
-    expect(restarted.getWork(f.id, f.token)).toMatchObject({
-      kind: "detail",
-      sourceListingId: "1"
+
+    f.database.exec("DROP TRIGGER inject_detail_transition_failure");
+    f.service.submitDetails(f.id, f.token, batch);
+    expect(
+      f.database.prepare(`
+        SELECT COUNT(*) AS count FROM browser_refresh_details
+        WHERE job_id = ?
+      `).get(f.id)
+    ).toEqual({ count: 1 });
+    expect(f.repository.getJob(f.id, new Date(
+      baseTime.getTime() + 2_000
+    ))).toMatchObject({
+      state: "validating",
+      detailCompletedCount: 1
     });
   });
 
@@ -580,7 +738,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
       () => f.service.complete(f.id, f.token),
       "details_incomplete"
     );
-    f.advance(1_200);
+    f.advance(2_000);
     f.service.submitDetails(f.id, f.token, details(["1"]));
     await f.service.complete(f.id, f.token);
     expect(f.completed).toEqual([f.id]);

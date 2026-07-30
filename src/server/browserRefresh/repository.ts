@@ -126,6 +126,21 @@ export interface RequiredDetailWork {
   url: string;
 }
 
+export interface BrowserRefreshOutcomeTransition {
+  next: BrowserRefreshJobState;
+  patch: BrowserRefreshTransitionPatch;
+}
+
+export interface AcceptedLoadOutcomeView {
+  accepted: AcceptedLoadEventView;
+  job: BrowserRefreshJobView;
+}
+
+export interface AcceptedDetailOutcomeView {
+  accepted: DetailProgressView;
+  job: BrowserRefreshJobView;
+}
+
 const AcceptedBatchViewSchema = z.strictObject({
   acceptedCount: z.number().int().nonnegative()
     .max(BROWSER_REFRESH_LIMITS.maxListItemsPerBatch),
@@ -430,8 +445,16 @@ export class BrowserRefreshRepository {
     const bridgeToken = opaqueCredential();
     this.runTransaction(() => {
       const row = this.requireRow(id);
+      const claimableAfterRestart =
+        row.state === "paused" &&
+        row.reason === "process_interrupted" &&
+        row.claimed_at === null &&
+        row.bridge_token_hash === null;
       if (
-        row.state !== "awaiting_codex" ||
+        (
+          row.state !== "awaiting_codex" &&
+          !claimableAfterRestart
+        ) ||
         row.claim_code_hash === null ||
         !credentialMatches(claimCode, row.claim_code_hash)
       ) {
@@ -696,6 +719,60 @@ export class BrowserRefreshRepository {
       replay.accepted_result_json,
       DetailProgressViewSchema
     );
+  }
+
+  acceptLoadEventAndTransition(
+    id: string,
+    event: BrowserLoadEvent,
+    outcome: BrowserRefreshOutcomeTransition,
+    now = new Date()
+  ): AcceptedLoadOutcomeView {
+    return this.runTransaction(() => {
+      const replay = this.replayLoadEvent(id, event, now);
+      if (replay) {
+        return {
+          accepted: replay,
+          job: toView(this.requireRow(id))
+        };
+      }
+      const expectedState = this.requireActiveRow(id).state;
+      const accepted = this.acceptLoadEvent(id, event, now);
+      const job = this.transition(
+        id,
+        [expectedState],
+        outcome.next,
+        outcome.patch,
+        now
+      );
+      return { accepted, job };
+    });
+  }
+
+  acceptDetailBatchAndTransition(
+    id: string,
+    batch: BrowserDetailBatch,
+    outcome: BrowserRefreshOutcomeTransition,
+    now = new Date()
+  ): AcceptedDetailOutcomeView {
+    return this.runTransaction(() => {
+      const replay = this.replayDetailBatch(id, batch, now);
+      if (replay) {
+        return {
+          accepted: replay,
+          job: toView(this.requireRow(id))
+        };
+      }
+      const expectedState = this.requireActiveRow(id).state;
+      const accepted = this.acceptDetailBatch(id, batch, now);
+      const job = this.transition(
+        id,
+        [expectedState],
+        outcome.next,
+        outcome.patch,
+        now
+      );
+      return { accepted, job };
+    });
   }
 
   keepWaiting(id: string, now = new Date()): BrowserRefreshJobView {
