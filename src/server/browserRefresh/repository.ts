@@ -1403,6 +1403,15 @@ export class BrowserRefreshRepository {
   recoverInterruptedJobs(now = new Date()): void {
     this.expireJobs(now);
     const timestamp = now.toISOString();
+    const secondCooldown = new Date(
+      now.getTime() + 120_000
+    ).toISOString();
+    const thirdCooldown = new Date(
+      now.getTime() + 300_000
+    ).toISOString();
+    const fourthCooldown = new Date(
+      now.getTime() + 900_000
+    ).toISOString();
     this.runTransaction(() => {
       this.database.prepare(`
         UPDATE browser_refresh_jobs
@@ -1421,9 +1430,60 @@ export class BrowserRefreshRepository {
       this.database.prepare(`
         UPDATE browser_refresh_jobs
         SET state = 'paused',
-            reason = 'process_interrupted',
+            reason = CASE
+              WHEN (
+                cooldown_attempt >= 4
+                AND (
+                  action_permit_consumed_at IS NOT NULL
+                  OR (state = 'paused' AND reason = 'rate_limited')
+                )
+              ) THEN 'rate_limited'
+              ELSE 'process_interrupted'
+            END,
             last_error = 'process_interrupted',
             updated_at = ?,
+            cooldown_attempt = CASE
+              WHEN (
+                action_permit_consumed_at IS NOT NULL
+                AND cooldown_attempt BETWEEN 1 AND 3
+              ) THEN cooldown_attempt + 1
+              ELSE cooldown_attempt
+            END,
+            cooldown_until = CASE
+              WHEN (
+                action_permit_consumed_at IS NOT NULL
+                AND cooldown_attempt = 1
+              ) THEN ?
+              WHEN (
+                action_permit_consumed_at IS NOT NULL
+                AND cooldown_attempt = 2
+              ) THEN ?
+              WHEN (
+                action_permit_consumed_at IS NOT NULL
+                AND cooldown_attempt = 3
+              ) THEN ?
+              WHEN (
+                cooldown_attempt >= 4
+                AND (
+                  action_permit_consumed_at IS NOT NULL
+                  OR (state = 'paused' AND reason = 'rate_limited')
+                )
+              ) THEN NULL
+              WHEN (
+                cooldown_attempt > 0
+                AND action_permit_hash IS NOT NULL
+                AND action_permit_consumed_at IS NULL
+              ) THEN CASE
+                WHEN action_permit_expires_at > ?
+                  THEN action_permit_expires_at
+                ELSE ?
+              END
+              WHEN (
+                cooldown_attempt > 0
+                AND cooldown_until IS NULL
+              ) THEN ?
+              ELSE cooldown_until
+            END,
             action_permit_hash = NULL,
             action_permit_expires_at = NULL,
             action_permit_consumed_at = NULL
@@ -1431,7 +1491,15 @@ export class BrowserRefreshRepository {
           'success', 'quarantined', 'failed', 'cancelled', 'expired',
           'committing'
         )
-      `).run(timestamp);
+      `).run(
+        timestamp,
+        secondCooldown,
+        thirdCooldown,
+        fourthCooldown,
+        timestamp,
+        timestamp,
+        timestamp
+      );
     });
   }
 

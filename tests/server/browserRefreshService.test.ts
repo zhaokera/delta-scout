@@ -611,6 +611,181 @@ describe("JiaoyimaoBrowserTaskService", () => {
     });
   });
 
+  it("replaces one unreturnable unconsumed permit after its original expiry", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    const firstCooldown = f.service.startCooldown(f.id, f.token);
+    f.setTime(Date.parse(firstCooldown.cooldownUntil!));
+    const lostWork = f.service.getWork(f.id, f.token);
+    const lostExpiry = f.repository.getJob(
+      f.id,
+      new Date(Date.parse(firstCooldown.cooldownUntil!))
+    )!.actionPermitExpiresAt!;
+    expect(lostWork.actionPermit).toEqual(expect.any(String));
+
+    f.advance(10_000);
+    const recoveryTime = Date.parse(firstCooldown.cooldownUntil!) + 10_000;
+    f.repository.recoverInterruptedJobs(new Date(recoveryTime));
+    expect(f.repository.getJob(f.id, new Date(recoveryTime))).toMatchObject({
+      state: "paused",
+      reason: "process_interrupted",
+      cooldownAttempt: 1,
+      cooldownUntil: lostExpiry,
+      actionPermitExpiresAt: null,
+      actionPermitConsumedAt: null
+    });
+
+    let restartedTime = recoveryTime;
+    const restarted = new JiaoyimaoBrowserTaskService(f.repository, {
+      now: () => new Date(restartedTime),
+      random: () => 0
+    });
+    expect(restarted.resume(f.id, f.token)).toMatchObject({
+      state: "cooling_down",
+      cooldownAttempt: 1,
+      cooldownUntil: lostExpiry
+    });
+    expectCode(
+      () => restarted.getWork(f.id, f.token),
+      "cooldown_active"
+    );
+    restartedTime = Date.parse(lostExpiry);
+    const replacement = restarted.getWork(f.id, f.token);
+    expect(replacement).toMatchObject({
+      kind: "list",
+      cooldownAttempt: 1,
+      actionPermit: expect.any(String)
+    });
+    expect(replacement.actionPermit).not.toBe(lostWork.actionPermit);
+    expectCode(
+      () => restarted.getWork(f.id, f.token),
+      "action_permit_required"
+    );
+    restarted.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 0, 0, {
+        blockingState: "rate_limited",
+        actionPermit: replacement.actionPermit
+      })
+    );
+    expect(restarted.startCooldown(f.id, f.token)).toMatchObject({
+      cooldownAttempt: 2,
+      cooldownUntil: new Date(restartedTime + 120_000).toISOString(),
+      loadActionCount: 1
+    });
+  });
+
+  it("advances a consumed attempt-one permit to the second cooldown after restart", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    const firstCooldown = f.service.startCooldown(f.id, f.token);
+    f.setTime(Date.parse(firstCooldown.cooldownUntil!));
+    const work = f.service.getWork(f.id, f.token);
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 0, 0, {
+        blockingState: "rate_limited",
+        actionPermit: work.actionPermit
+      })
+    );
+    const recoveryTime = Date.parse(firstCooldown.cooldownUntil!);
+    f.repository.recoverInterruptedJobs(new Date(recoveryTime));
+    const secondDeadline = new Date(
+      recoveryTime + 120_000
+    ).toISOString();
+    expect(f.repository.getJob(f.id, new Date(recoveryTime))).toMatchObject({
+      state: "paused",
+      reason: "process_interrupted",
+      cooldownAttempt: 2,
+      cooldownUntil: secondDeadline,
+      loadActionCount: 1,
+      actionPermitExpiresAt: null,
+      actionPermitConsumedAt: null
+    });
+
+    let restartedTime = recoveryTime;
+    const restarted = new JiaoyimaoBrowserTaskService(f.repository, {
+      now: () => new Date(restartedTime),
+      random: () => 0
+    });
+    expect(restarted.resume(f.id, f.token)).toMatchObject({
+      state: "cooling_down",
+      cooldownAttempt: 2,
+      cooldownUntil: secondDeadline
+    });
+    expectCode(
+      () => restarted.getWork(f.id, f.token),
+      "cooldown_active"
+    );
+    restartedTime = Date.parse(secondDeadline);
+    const replacement = restarted.getWork(f.id, f.token);
+    restarted.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(2, 0, 0, {
+        blockingState: "rate_limited",
+        actionPermit: replacement.actionPermit
+      })
+    );
+    expect(restarted.startCooldown(f.id, f.token)).toMatchObject({
+      cooldownAttempt: 3,
+      cooldownUntil: new Date(restartedTime + 300_000).toISOString(),
+      loadActionCount: 2
+    });
+  });
+
+  it("pauses an exhausted consumed attempt-four permit after restart", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    let permit: string | undefined;
+    let recoveryTime = baseTime.getTime();
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const cooldown = f.service.startCooldown(f.id, f.token);
+      recoveryTime = Date.parse(cooldown.cooldownUntil!);
+      f.setTime(recoveryTime);
+      permit = f.service.getWork(f.id, f.token).actionPermit;
+      if (attempt < 4) {
+        f.service.submitLoadEvent(
+          f.id,
+          f.token,
+          loadEvent(attempt, 0, 0, {
+            blockingState: "rate_limited",
+            actionPermit: permit
+          })
+        );
+      }
+    }
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(4, 0, 0, {
+        blockingState: "rate_limited",
+        actionPermit: permit
+      })
+    );
+    f.repository.recoverInterruptedJobs(new Date(recoveryTime));
+    expect(f.repository.getJob(f.id, new Date(recoveryTime))).toMatchObject({
+      state: "paused",
+      reason: "rate_limited",
+      cooldownAttempt: 4,
+      cooldownUntil: null,
+      loadActionCount: 4,
+      actionPermitExpiresAt: null,
+      actionPermitConsumedAt: null
+    });
+    expectCode(
+      () => f.service.resume(f.id, f.token),
+      "invalid_transition"
+    );
+    expect(f.repository.getJob(f.id, new Date(recoveryTime))).toMatchObject({
+      state: "paused",
+      reason: "rate_limited",
+      cooldownAttempt: 4
+    });
+  });
+
   it("rolls back a load event if its natural-end transition fails", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
