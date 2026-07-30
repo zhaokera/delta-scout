@@ -24,9 +24,9 @@ claim code 只来自创建任务时的一次性响应；bridge token 只保存�
 | `POST /api/browser-refresh/:id/list-batches` | 闭包 `submitListBatch` | 提交非空新增商品批次 |
 | `POST /api/browser-refresh/:id/load-events` | 闭包 `submitLoadEvent` | 提交每次加载动作结果，包括零新增 |
 | `POST /api/browser-refresh/:id/details` | 闭包 `submitDetails` | 提交指定商品的四个可见详情区块 |
-| `POST /api/browser-refresh/:id/pause` | 闭包 `pause` | 登录、CAPTCHA、结构变化或无进展时暂停 |
+| `POST /api/browser-refresh/:id/pause` | 闭包 `pause` | 尚无 load/detail outcome 时主动暂停 |
 | `POST /api/browser-refresh/:id/resume` | 闭包 `resume` | 用户处理完成后从持久化阶段继续 |
-| `POST /api/browser-refresh/:id/cooldown` | 闭包 `startCooldown` | 报告限流并进入服务端冷却 |
+| `POST /api/browser-refresh/:id/cooldown` | 闭包 `startCooldown` | 按当前 work/state 显式进入下一档或详情冷却 |
 | `POST /api/browser-refresh/:id/complete` | 闭包 `complete` | 完整性校验并原子发布或隔离 |
 
 闭包还提供本地辅助方法 `waitUntilAllowed`。它不是第十五个接口，只根据本次 `getWork` 返回的 `nextActionAt` 和 `cooldownUntil` 等待一次，不发请求。
@@ -57,11 +57,11 @@ claim code 只来自创建任务时的一次性响应；bridge token 只保存�
 
 5. 从页面可见标签构造 filter proof 并调用 `submitFilterProof`。proof 必须包含当前精确 URL、可见游戏/平台/类别标签、四到八个 M7 筛选标签和观察时间；筛选不匹配时停止并报告，不能绕过服务端校验。
 
-6. 列表阶段每轮先调用 `getWork`，再用 `waitUntilAllowed` 按服务端返回的 `nextActionAt` 或 `cooldownUntil` 等待，只执行一次加载动作。仅当本轮有新增商品时调用 `submitListBatch`；每轮都必须调用一次 `submitLoadEvent`，包括新增商品数为零。自然末页没有新增商品时不得发送空的 `submitListBatch`。普通列表动作间隔由服务端随机设为 `1,200–2,500 ms`；不要固定 sleep 或建立硬编码循环。
+6. 列表阶段每轮先调用 `getWork`，再用 `waitUntilAllowed` 按服务端返回的 `nextActionAt` 或 `cooldownUntil` 等待，只执行一次加载动作。本轮有新增商品时先提交非空 `submitListBatch`，随后每次已经执行的加载动作都必须用 `submitLoadEvent` 报告 outcome，包括零新增、登录、CAPTCHA、限流或错误；在 outcome 被服务端接收前不得改用 `pause` 或直接重试。自然末页没有新增商品时不得发送空的 `submitListBatch`。普通列表动作间隔由服务端随机设为 `1,200–2,500 ms`；不要固定 sleep 或建立硬编码循环。
 
-7. 页面要求用户登录或完成 CAPTCHA 时，调用 `pause({ reason: "login_required" })` 或 `pause({ reason: "captcha_required" })`，立即停止动作。用户在同一标签页亲自处理并确认后调用 `resume`，随后重新 `getWork`。Codex 不读取密码、验证码答案或输入内容。结构变化、无进展和安全上限也必须用对应 pause reason 原样上报。
+7. 若一次列表加载动作已经发生，并在结果中看到登录或 CAPTCHA，必须调用 `submitLoadEvent`，分别设置 `blockingState: "login"` 或 `"captcha"`；服务端会自动进入 `awaiting_user_verification`，不要再调用 `pause`。用户在同一标签页亲自处理并确认后调用 `resume`，随后重新 `getWork`。`pause({ reason: "login_required" | "captcha_required" })` 只用于尚未执行新加载动作时已经需要用户介入、因而没有 load outcome 可提交的场景；详情导航、结构变化、无进展和安全上限也只能在没有对应 outcome 的主动暂停点使用。Codex 不读取密码、验证码答案或输入内容。
 
-8. 若 outcome 为限流，只调用一次 `startCooldown` 并交回工作循环。四档服务端冷却依次是 30 秒、2 分钟、5 分钟、15 分钟；实际恢复必须服从新响应的 `cooldownUntil` 或 `retryAt`。闭包中的 action permit 只用于匹配的 load/detail outcome，成功接收或明确判定许可无效后立即丢弃，禁止记录。
+8. 限流必须按阶段处理。首次列表加载返回限流时，先调用 `submitLoadEvent({ ..., blockingState: "rate_limited" })`；服务端会自动进入第一档 `cooling_down`，此时不得再调用 `startCooldown`。冷却结束后，重新 `getWork` 取得一次性 action permit 并执行该次列表重试；若仍为限流，先把带 permit 的 `submitLoadEvent` 提交成功，再调用一次 `startCooldown` 进入下一档。详情导航尚无可提交的 detail outcome 就直接遇到限流时，按当前 `getWork` 的 state/permit 调用一次 `startCooldown`。四档冷却依次是 30 秒、2 分钟、5 分钟、15 分钟；每一步都以最新 `getWork` 返回的 `state`、`nextActionAt`、`cooldownUntil` 或错误 `retryAt` 为准。收到 `invalid_transition` 时停止当前动作、重新读取 `getWork` 并报告，不得循环调用。action permit 成功用于匹配 outcome 或明确失效后立即丢弃，禁止记录。
 
 9. 详情阶段按 `getWork` 给出的 `sourceListingId`、URL 和序号工作。等待服务端时间后只打开该详情一次，只读取 head、report、safety、description 四个可见区块并调用 `submitDetails`。普通详情动作间隔为 `2,000–3,500 ms`；每次提交后重新 `getWork`，不得预取、猜测下一条或构造重试循环。
 
@@ -74,15 +74,17 @@ claim code 只来自创建任务时的一次性响应；bridge token 只保存�
 - list batch 必须包含 1–25 个新增商品；重复提交完全相同的序号和 payload 可幂等重放，改动 payload 会被拒绝。
 - detail batch 必须包含 1–5 个服务端要求的商品；不能发送空 batch，也不能提交未列出的详情。
 - 零新增不是空 list batch：应跳过 `submitListBatch`，但仍提交一次 `submitLoadEvent`，让服务端判断自然末页、加载中、登录、CAPTCHA、限流或错误。
+- 已执行列表加载后，`submitLoadEvent` 是唯一 outcome 通道：`login`/`captcha` 会自动转为 `awaiting_user_verification`，首次 `rate_limited` 会自动转为第一档 `cooling_down`，`error` 会自动转为 `paused`；这些情况下不要追加一次 `pause` 或 `startCooldown`。
+- `pause` 只表示“本轮尚未执行新动作，因此没有 outcome 可提交”的主动暂停；不能拿它替代已经发生的 list load event。
 - action permit 有 60 秒有效期，只授权匹配的一次 load/detail outcome；不要在页面、日志、错误或状态 API 中展示。
 
 ## 暂停、失败与终态
 
 | 状态或事件 | 正确处理 | 正式候选 |
 | --- | --- | --- |
-| `awaiting_user_verification` | 用户在同一标签页处理，Codex 等待；随后 `resume` | 保留 |
+| `awaiting_user_verification` | 已提交 login/captcha load outcome，或在动作前主动 pause；用户处理后 `resume`、再 `getWork` | 保留 |
 | `paused` | 检查 reason；确认环境后 `resume`，或选择取消 | 保留 |
-| `cooling_down` | 等服务端时间，禁止主动刷新页面施压 | 保留 |
+| `cooling_down` | 等最新服务端时间；首次 load 限流已自动进入，不能重复 `startCooldown` | 保留 |
 | `cancelled` | 丢弃闭包，不再请求旧 job | 保留 |
 | `failed` | 报告脱敏原因；重新创建前先确认无活动任务 | 保留 |
 | `expired` | 原凭据已清除；创建新任务 | 保留 |
