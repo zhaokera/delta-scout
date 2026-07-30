@@ -2,6 +2,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import {
   claimJiaoyimaoBrowserJob
@@ -21,6 +22,28 @@ function jsonResponse(body: unknown, status = 200): Response {
       "content-type": "application/json"
     }
   });
+}
+
+function crossRealmValue<T>(value: T): T {
+  return runInNewContext(
+    "JSON.parse(serialized)",
+    { serialized: JSON.stringify(value) }
+  ) as T;
+}
+
+function valueResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body
+  } as Response;
+}
+
+function crossRealmJsonResponse(
+  body: unknown,
+  status = 200
+): Response {
+  return valueResponse(crossRealmValue(body), status);
 }
 
 function claimResponse() {
@@ -157,6 +180,263 @@ async function claimWith(fetch: ReturnType<typeof mockFetch>) {
 }
 
 describe("Jiaoyimao Codex browser bridge", () => {
+  it("accepts cross-realm claim, work, and ordinary JSON while keeping credentials private", async () => {
+    const fetch = mockFetch(
+      crossRealmJsonResponse({
+        id: jobId,
+        state: "collecting_list",
+        bridgeToken
+      }),
+      crossRealmJsonResponse({
+        kind: "list",
+        nextActionAt: null,
+        cooldownUntil: null,
+        actionPermit: "cross-realm-permit",
+        nextListBatchSequence: 1,
+        nextLoadSequence: 1
+      }),
+      crossRealmJsonResponse({
+        acceptedCount: 1,
+        uniqueItemCount: 1,
+        nextSequence: 2
+      })
+    );
+
+    const client = await claimWith(fetch);
+    const work = await client.getWork();
+    const accepted = await client.submitListBatch(listBatch());
+
+    expect(work).toEqual({
+      kind: "list",
+      nextActionAt: null,
+      cooldownUntil: null,
+      actionPermitAvailable: true,
+      nextListBatchSequence: 1,
+      nextLoadSequence: 1
+    });
+    expect(accepted).toEqual({
+      acceptedCount: 1,
+      uniqueItemCount: 1,
+      nextSequence: 2
+    });
+    expect(work).not.toHaveProperty("actionPermit");
+    expect(JSON.stringify(work)).not.toContain("cross-realm-permit");
+    expect(JSON.stringify(client)).not.toContain(bridgeToken);
+    expect(Object.values(client)).not.toContain(bridgeToken);
+  });
+
+  it("accepts cross-realm claim options and validated outgoing input", async () => {
+    const fetch = mockFetch(
+      crossRealmJsonResponse({
+        id: jobId,
+        state: "collecting_list",
+        bridgeToken
+      }),
+      acceptedListResponse()
+    );
+    const options = runInNewContext(
+      "({ jobId, claimCode, fetch })",
+      { jobId, claimCode, fetch }
+    ) as Parameters<typeof claimJiaoyimaoBrowserJob>[0];
+    const crossRealmBatch = crossRealmValue(listBatch());
+
+    const client = await claimJiaoyimaoBrowserJob(options);
+    const accepted = await client.submitListBatch(crossRealmBatch);
+
+    expect(accepted).toEqual({
+      acceptedCount: 1,
+      uniqueItemCount: 1,
+      nextSequence: 2
+    });
+    expect(bodyOf(fetch, 1)).toEqual(listBatch());
+  });
+
+  it("accepts a null-prototype JSON object without exposing its bridge token", async () => {
+    const payload = Object.assign(Object.create(null), {
+      id: jobId,
+      state: "collecting_list",
+      bridgeToken
+    });
+    const fetch = mockFetch(valueResponse(payload));
+
+    const client = await claimWith(fetch);
+
+    expect(JSON.stringify(client)).toBe("{}");
+    expect(JSON.stringify(client)).not.toContain(bridgeToken);
+    expect(Object.values(client)).not.toContain(bridgeToken);
+  });
+
+  it.each([
+    {
+      name: "array",
+      payload: [{
+        id: jobId,
+        state: "collecting_list",
+        bridgeToken
+      }]
+    },
+    {
+      name: "Date",
+      payload: new Date("2026-07-30T10:00:00.000Z")
+    },
+    {
+      name: "class instance",
+      payload: runInNewContext(
+        "Object.assign(new (class ClaimPayload {})(), value)",
+        {
+          value: {
+            id: jobId,
+            state: "collecting_list",
+            bridgeToken
+          }
+        }
+      ) as unknown
+    },
+    {
+      name: "custom prototype",
+      payload: Object.assign(Object.create({ inherited: true }), {
+        id: jobId,
+        state: "collecting_list",
+        bridgeToken
+      })
+    },
+    {
+      name: "throwing Proxy",
+      payload: new Proxy(
+        {
+          id: jobId,
+          state: "collecting_list",
+          bridgeToken
+        },
+        {
+          getPrototypeOf() {
+            throw new Error("proxy-trap-secret");
+          }
+        }
+      )
+    }
+  ])("rejects a $name server payload without leaking credentials", async ({
+    payload
+  }) => {
+    const fetch = mockFetch(valueResponse(payload));
+
+    let failure: unknown;
+    try {
+      await claimWith(fetch);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({ code: "invalid_server_response" });
+    expect(JSON.stringify(failure)).not.toContain(bridgeToken);
+    expect(JSON.stringify(failure)).not.toContain("proxy-trap-secret");
+  });
+
+  it.each([
+    {
+      name: "recursive sensitive field",
+      payload: {
+        id: jobId,
+        state: "collecting_list",
+        bridgeToken,
+        nested: {
+          credential: "cross-realm-response-secret"
+        }
+      }
+    },
+    {
+      name: "malformed claim identity",
+      payload: {
+        id: "wrong-job",
+        state: "collecting_list",
+        bridgeToken
+      }
+    }
+  ])("rejects a cross-realm $name response fail-closed", async ({
+    payload
+  }) => {
+    const fetch = mockFetch(crossRealmJsonResponse(payload));
+
+    let failure: unknown;
+    try {
+      await claimWith(fetch);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({ code: "invalid_server_response" });
+    expect(JSON.stringify(failure)).not.toContain(bridgeToken);
+    expect(JSON.stringify(failure)).not.toContain(
+      "cross-realm-response-secret"
+    );
+  });
+
+  it("rejects exceptional cross-realm outgoing options before fetch", async () => {
+    const fetch = mockFetch(claimResponse());
+    const options = runInNewContext(
+      `new Proxy(
+        { jobId, claimCode, fetch },
+        {
+          getPrototypeOf() {
+            throw new Error("outgoing-proxy-secret");
+          }
+        }
+      )`,
+      { jobId, claimCode, fetch }
+    ) as Parameters<typeof claimJiaoyimaoBrowserJob>[0];
+
+    let failure: unknown;
+    try {
+      await claimJiaoyimaoBrowserJob(options);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({ code: "invalid_bridge_payload" });
+    expect(JSON.stringify(failure)).not.toContain("outgoing-proxy-secret");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "extra schema field",
+      batch: {
+        ...listBatch(),
+        debug: "not-allowed"
+      }
+    },
+    {
+      name: "recursive sensitive field",
+      batch: {
+        ...listBatch(),
+        items: [{
+          ...listBatch().items[0],
+          nested: {
+            authorization: "cross-realm-outgoing-secret"
+          }
+        }]
+      }
+    }
+  ])("rejects a cross-realm outgoing $name before fetch", async ({
+    batch
+  }) => {
+    const fetch = mockFetch(claimResponse());
+    const client = await claimWith(fetch);
+
+    let failure: unknown;
+    try {
+      await client.submitListBatch(crossRealmValue(batch));
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({ code: "invalid_bridge_payload" });
+    expect(JSON.stringify(failure)).not.toContain(
+      "cross-realm-outgoing-secret"
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the claimed token only in a closure and uses the default localhost API", async () => {
     const fetch = mockFetch(
       claimResponse(),

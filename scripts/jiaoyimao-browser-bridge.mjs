@@ -125,8 +125,23 @@ function normalizedFieldName(value) {
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object") return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  try {
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype === null) return true;
+    if (Reflect.getPrototypeOf(prototype) !== null) return false;
+    const constructor = Reflect.getOwnPropertyDescriptor(
+      prototype,
+      "constructor"
+    )?.value;
+    return (
+      typeof constructor === "function" &&
+      constructor.prototype === prototype &&
+      Function.prototype.toString.call(constructor) ===
+        Function.prototype.toString.call(Object)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function assertNoForbiddenFields(value, seen = new WeakSet()) {
