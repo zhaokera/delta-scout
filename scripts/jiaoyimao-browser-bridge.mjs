@@ -90,7 +90,10 @@ const FORBIDDEN_VISIBLE_TEXT = [
   /<!(?:--|doctype\b|\[CDATA\[)/i
 ];
 const FILTER_ORIGIN = "https://www.jiaoyimao.com";
-const FILTER_PATH = "/jg2007840/f8845003-c8845004/o110/";
+const FILTER_PATHS = new Set([
+  "/jg2007840/f8845003-c8845004/o110/",
+  "/jg2007840/f8845003-c8845004/o1687157900084320/"
+]);
 const DETAIL_PATH = /^\/jg2007840\/(\d+)\.html$/;
 const ISO_OFFSET_DATETIME =
   /^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))$/;
@@ -283,7 +286,8 @@ function validateFilterProof(value) {
     "m7FilterLabels",
     "observedAt"
   ]);
-  parseApprovedUrl(proof.currentUrl, FILTER_PATH);
+  const filterUrl = parseApprovedUrl(proof.currentUrl);
+  if (!FILTER_PATHS.has(filterUrl.pathname)) throw bridgeError();
   assertSafeText(proof.gameLabel, 1, 100);
   assertSafeText(proof.platformLabel, 1, 100);
   assertSafeText(proof.categoryLabel, 1, 100);

@@ -18,8 +18,10 @@ export const BROWSER_REFRESH_LIMITS = {
 } as const;
 
 const APPROVED_ORIGIN = "https://www.jiaoyimao.com";
-const APPROVED_FILTER_PATH =
-  "/jg2007840/f8845003-c8845004/o110/";
+const APPROVED_FILTER_PATHS = new Set([
+  "/jg2007840/f8845003-c8845004/o110/",
+  "/jg2007840/f8845003-c8845004/o1687157900084320/"
+]);
 const DETAIL_PATH_PATTERN = /^\/jg2007840\/(\d+)\.html$/;
 const FORBIDDEN_VISIBLE_TEXT_PATTERNS = [
   /cookie\s*[:=]/i,
@@ -104,7 +106,7 @@ function parseApprovedUrl(value: string): URL | null {
 
 export const JiaoyimaoFilterUrlSchema = z.string().refine((value) => {
   const url = parseApprovedUrl(value);
-  return url !== null && url.pathname === APPROVED_FILTER_PATH;
+  return url !== null && APPROVED_FILTER_PATHS.has(url.pathname);
 }, "Expected the approved Jiaoyimao game catalog URL");
 
 export const JiaoyimaoDetailUrlSchema = z.string().refine((value) => {

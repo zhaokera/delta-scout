@@ -13,6 +13,9 @@ const claimCode = "claim-secret";
 const bridgeToken = "bridge-secret";
 const filterUrl =
   "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/";
+const qqFilterUrl =
+  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/" +
+  "o1687157900084320/?searchCondition=%7B%7D&enforcePlat=2&newPage=true";
 const observedAt = "2026-07-30T10:00:00.000Z";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -1010,6 +1013,30 @@ describe("Jiaoyimao Codex browser bridge", () => {
     });
 
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("accepts the live QQ category URL but rejects unknown category paths", async () => {
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({ state: "collecting_list" })
+    );
+    const client = await claimWith(fetch);
+
+    await client.submitFilterProof({
+      ...filterProof(),
+      currentUrl: qqFilterUrl
+    });
+
+    expect(bodyOf(fetch, 1).currentUrl).toBe(qqFilterUrl);
+    await expect(
+      client.submitFilterProof({
+        ...filterProof(),
+        currentUrl:
+          "https://www.jiaoyimao.com/" +
+          "jg2007840/f8845003-c8845004/o999/"
+      })
+    ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it.each([

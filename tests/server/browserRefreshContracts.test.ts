@@ -17,6 +17,9 @@ const now = "2026-07-30T12:42:09.000Z";
 const filterUrl =
   "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/" +
   "?searchCondition=%7B%7D";
+const qqFilterUrl =
+  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/" +
+  "o1687157900084320/?searchCondition=%7B%7D&enforcePlat=2&newPage=true";
 
 function listItem(overrides: Record<string, unknown> = {}) {
   return {
@@ -132,6 +135,9 @@ describe("Jiaoyimao URL and scalar validation", () => {
     expect(BrowserFilterProofSchema.parse(filterProof())).toEqual(
       filterProof()
     );
+    expect(BrowserFilterProofSchema.parse(
+      filterProof({ currentUrl: qqFilterUrl })
+    ).currentUrl).toBe(qqFilterUrl);
     expect(BrowserListBatchSchema.parse({
       sequence: 1,
       observedAt: now,
@@ -149,6 +155,11 @@ describe("Jiaoyimao URL and scalar validation", () => {
     ) }],
     ["wrong game catalog path", {
       currentUrl: "https://www.jiaoyimao.com/jg9999999/list/"
+    }],
+    ["unapproved category path", {
+      currentUrl:
+        "https://www.jiaoyimao.com/" +
+        "jg2007840/f8845003-c8845004/o999/"
     }],
     ["filter URL credentials", {
       currentUrl:
