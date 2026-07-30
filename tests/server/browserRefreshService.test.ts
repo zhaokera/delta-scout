@@ -736,7 +736,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     });
   });
 
-  it("pauses an exhausted consumed attempt-four permit after restart", () => {
+  it("requires explicit resume after exhausted stage four and restarts at stage one", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
     let permit: string | undefined;
@@ -776,13 +776,78 @@ describe("JiaoyimaoBrowserTaskService", () => {
       actionPermitConsumedAt: null
     });
     expectCode(
-      () => f.service.resume(f.id, f.token),
+      () => f.service.getWork(f.id, f.token),
       "invalid_transition"
     );
-    expect(f.repository.getJob(f.id, new Date(recoveryTime))).toMatchObject({
-      state: "paused",
-      reason: "rate_limited",
-      cooldownAttempt: 4
+
+    const resumed = f.service.resume(f.id, f.token);
+    expect(resumed).toMatchObject({
+      state: "collecting_list",
+      reason: null,
+      cooldownAttempt: 0,
+      cooldownUntil: null,
+      nextActionAt: new Date(recoveryTime + 1_200).toISOString(),
+      actionPermitExpiresAt: null,
+      actionPermitConsumedAt: null
+    });
+    expectCode(
+      () => f.service.getWork(f.id, f.token),
+      "action_too_early"
+    );
+    f.advance(1_200);
+    const manualWork = f.service.getWork(f.id, f.token);
+    expect(manualWork.kind).toBe("list");
+    expect(manualWork.actionPermit).toBeUndefined();
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(5, 0, 0, {
+        blockingState: "rate_limited"
+      })
+    );
+    expect(f.service.startCooldown(f.id, f.token)).toMatchObject({
+      state: "cooling_down",
+      cooldownAttempt: 1,
+      cooldownUntil: new Date(
+        recoveryTime + 1_200 + 30_000
+      ).toISOString(),
+      loadActionCount: 5
+    });
+  });
+
+  it("uses the normal detail delay for explicit exhausted-stage continuation", () => {
+    const f = claimed();
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+    f.repository.transition(
+      f.id,
+      ["collecting_details"],
+      "paused",
+      {
+        stage: "collecting_details",
+        reason: "rate_limited",
+        cooldownAttempt: 4,
+        cooldownUntil: null,
+        nextActionAt: null,
+        actionPermit: null,
+        actionPermitExpiresAt: null
+      },
+      baseTime
+    );
+    expect(f.service.resume(f.id, f.token)).toMatchObject({
+      state: "collecting_details",
+      cooldownAttempt: 0,
+      nextActionAt: new Date(
+        baseTime.getTime() + 2_000
+      ).toISOString()
     });
   });
 

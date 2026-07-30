@@ -511,9 +511,26 @@ export class JiaoyimaoBrowserTaskService {
         job.reason === "rate_limited" &&
         job.cooldownAttempt >= COOLDOWN_DELAYS_MS.length
       ) {
-        throw new BrowserRefreshServiceError(
-          "invalid_transition",
-          "Rate-limit retries are exhausted"
+        return this.repository.transition(
+          id,
+          ["paused"],
+          target,
+          {
+            stage: target,
+            reason: null,
+            lastError: null,
+            cooldownAttempt: 0,
+            cooldownUntil: null,
+            nextActionAt: target === "validating"
+              ? null
+              : this.nextActionTimestamp(
+                  target === "collecting_details" ? "detail" : "list",
+                  now
+                ),
+            actionPermit: null,
+            actionPermitExpiresAt: null
+          },
+          now
         );
       }
       return this.repository.transition(
