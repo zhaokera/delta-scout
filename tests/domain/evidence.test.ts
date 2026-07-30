@@ -1,9 +1,11 @@
 import {
   parseJulang,
   parseM7,
+  parseM7RareFinishes,
   parseRedSkins,
   toEvidenceRecords
 } from "../../src/domain/evidence";
+import type { EvidenceRecord } from "../../src/domain/evidence";
 
 describe("M7 棱镜攻势 evidence", () => {
   it.each([
@@ -177,6 +179,91 @@ describe("M7 棱镜攻势 evidence", () => {
     ["非M7战斗步枪-棱镜攻势S2(极品A)", "absent"]
   ] as const)("does not positively match a prefixed target: %s", (text, status) => {
     expect(parseM7(toEvidenceRecords([text])).status).toBe(status);
+  });
+});
+
+describe("M7 rare-finish evidence", () => {
+  it.each([
+    ["市场价5万+三角券的珠光粉M7", ["pearl"]],
+    ["极品炫彩镭射M7", ["iridescent"]],
+    ["M7的局内表现效果很好炫彩渐变", ["iridescent"]],
+    ["M7极品A 400发AWM子弹 7000点券 全炫彩", ["iridescent"]],
+    ["M7战斗步枪-棱镜攻势S2极品A 全炫彩", ["iridescent"]],
+    ["棱镜攻势M7—极品B糖果纸", ["candy"]],
+    [
+      "白灯糖果纸m7，珠光粉M7，全炫彩M7",
+      ["pearl", "iridescent", "candy"]
+    ]
+  ] as const)("extracts rare M7 finishes from %s", (text, finishes) => {
+    expect(
+      parseM7RareFinishes(toEvidenceRecords([text])).finishes
+    ).toEqual([...finishes]);
+  });
+
+  it.each([
+    "XM7炫彩",
+    "M7无炫彩",
+    "M7不带珠光",
+    "不是糖果纸M7",
+    "极品M7说明文字炫彩MP7",
+    "M7说明文字巨浪是蓝紫粉炫彩",
+    "M7说明文字AUG珠光",
+    "有三个赛季的炫彩3×3",
+    "炫彩挂饰",
+    `M7${"普通说明".repeat(10)}珠光`,
+    "M7普通说明，珠光挂饰"
+  ])("does not misassign %s", (text) => {
+    expect(
+      parseM7RareFinishes(toEvidenceRecords([text])).finishes
+    ).toEqual([]);
+  });
+
+  it("deduplicates finishes in fixed order and keeps only supporting records", () => {
+    const result = parseM7RareFinishes(
+      toEvidenceRecords([
+        "全炫彩M7",
+        "普通账号说明",
+        "M7糖果纸和珠光，M7珠光"
+      ])
+    );
+
+    expect(result.finishes).toEqual(["pearl", "iridescent", "candy"]);
+    expect(result.evidence.map(({ text }) => text)).toEqual([
+      "全炫彩M7",
+      "M7糖果纸和珠光，M7珠光"
+    ]);
+  });
+
+  it("skips a keyword tied equally to M7 and another subject", () => {
+    expect(
+      parseM7RareFinishes(toEvidenceRecords(["M7x炫彩xMP7"])).finishes
+    ).toEqual([]);
+  });
+
+  it.each([
+    "M7普通说明/珠光挂饰",
+    "M7普通说明；糖果纸收藏品",
+    "M7普通说明\n炫彩3×3"
+  ])("does not pair finishes across clause boundaries: %s", (text) => {
+    expect(
+      parseM7RareFinishes(toEvidenceRecords([text])).finishes
+    ).toEqual([]);
+  });
+
+  it("isolates malformed records without discarding the caller-owned input", () => {
+    const malformed = {
+      get text() {
+        throw new Error("malformed evidence");
+      },
+      truncated: false
+    } as unknown as EvidenceRecord;
+    const records = [malformed];
+
+    expect(parseM7RareFinishes(records)).toEqual({
+      finishes: [],
+      evidence: []
+    });
+    expect(records).toEqual([malformed]);
   });
 });
 

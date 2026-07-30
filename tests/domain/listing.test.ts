@@ -17,6 +17,10 @@ const validListing = {
   m7PrismStatus: "peak",
   m7PrismQuality: "A",
   m7Evidence: [],
+  m7RareFinishes: ["pearl", "iridescent", "candy"] as const,
+  m7RareFinishEvidence: [
+    { text: "珠光粉M7", truncated: false }
+  ],
   redSkins: ["威龙"],
   redSkinCount: 1,
   redSkinUnnamed: false,
@@ -58,6 +62,19 @@ describe("ListingSchema", () => {
     delete (legacy as Partial<typeof validListing>).m7PrismQuality;
 
     expect(ListingSchema.parse(legacy).m7PrismQuality).toBeNull();
+  });
+
+  it("defaults legacy snapshots without M7 rare finishes", () => {
+    const {
+      m7RareFinishes: _legacyFinishes,
+      m7RareFinishEvidence: _legacyFinishEvidence,
+      ...legacy
+    } = validListing;
+
+    expect(ListingSchema.parse(legacy)).toMatchObject({
+      m7RareFinishes: [],
+      m7RareFinishEvidence: []
+    });
   });
 
   it("defaults legacy snapshots without scan stability", () => {

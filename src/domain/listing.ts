@@ -15,6 +15,11 @@ export const M7PrismStatusSchema = z.enum([
   "peak",
   "conflicting"
 ]);
+export const M7RareFinishSchema = z.enum([
+  "pearl",
+  "iridescent",
+  "candy"
+]);
 export const JulangStatusSchema = z.enum(["unknown", "absent", "owned"]);
 export const RealNameStatusSchema = z.enum([
   "unknown",
@@ -80,6 +85,10 @@ export const ListingSchema = z.object({
     .nullable()
     .default(null),
   m7Evidence: z.array(EvidenceRecordSchema),
+  m7RareFinishes: z.array(M7RareFinishSchema).default([]),
+  m7RareFinishEvidence: z
+    .array(EvidenceRecordSchema)
+    .default([]),
   redSkins: z.array(z.string().min(1)),
   redSkinCount: z.number().int().nonnegative().nullable(),
   redSkinUnnamed: z.boolean(),
@@ -110,5 +119,6 @@ export type LoginPlatform = z.infer<typeof LoginPlatformSchema>;
 export type Service = z.infer<typeof ServiceSchema>;
 export type Eligibility = z.infer<typeof EligibilitySchema>;
 export type RealNameStatus = z.infer<typeof RealNameStatusSchema>;
+export type M7RareFinish = z.infer<typeof M7RareFinishSchema>;
 export type Listing = z.infer<typeof ListingSchema>;
 export type Score = z.infer<typeof ScoreSchema>;

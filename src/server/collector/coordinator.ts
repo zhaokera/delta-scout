@@ -292,6 +292,8 @@ function buildListing(
     m7PrismStatus: m7.status,
     m7PrismQuality: m7.quality ?? null,
     m7Evidence: m7.evidence,
+    m7RareFinishes: [],
+    m7RareFinishEvidence: [],
     redSkins: redSkins.names,
     redSkinCount:
       redSkins.names.length > 0

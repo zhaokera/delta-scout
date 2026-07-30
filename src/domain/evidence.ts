@@ -1,3 +1,5 @@
+import type { M7RareFinish } from "./listing.js";
+
 export interface EvidenceRecord {
   text: string;
   truncated: boolean;
@@ -171,6 +173,181 @@ export function parseM7(
       : undefined;
 
   return { status, evidence: relevant, quality };
+}
+
+const M7_RARE_FINISH_PATTERNS = [
+  { finish: "pearl", pattern: /珠光/g },
+  { finish: "iridescent", pattern: /炫彩/g },
+  { finish: "candy", pattern: /糖果(?:纸)?/g }
+] as const satisfies ReadonlyArray<{
+  finish: M7RareFinish;
+  pattern: RegExp;
+}>;
+const M7_RARE_FINISH_ORDER: readonly M7RareFinish[] = [
+  "pearl",
+  "iridescent",
+  "candy"
+];
+const M7_SUBJECT_TOKEN = /(?<![A-Za-z0-9])M7(?![A-Za-z0-9])/gi;
+const NAMED_OTHER_SUBJECT =
+  /巨浪|MP7|AUG|KC17|K416|M250|腾龙|挂饰|3[×xX*]3|(?<!\d)33(?!\d)|收藏品|手办/gi;
+const GENERIC_MODEL_SUBJECT =
+  /(?<![A-Za-z0-9])(?=[A-Z0-9-]{2,12}(?![A-Za-z0-9]))(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z][A-Z0-9-]{1,11}(?![A-Za-z0-9])/gi;
+const M7_RARE_FINISH_NEGATION = /无|非|不是|不带|没有|未有|不含/;
+const MAX_M7_RARE_FINISH_DISTANCE = 24;
+
+interface RareFinishSubject {
+  kind: "m7" | "other";
+  start: number;
+  end: number;
+}
+
+function matchRanges(text: string, pattern: RegExp): Array<{
+  text: string;
+  start: number;
+  end: number;
+}> {
+  return [...text.matchAll(pattern)].flatMap((match) =>
+    match.index === undefined
+      ? []
+      : [
+          {
+            text: match[0],
+            start: match.index,
+            end: match.index + match[0].length
+          }
+        ]
+  );
+}
+
+function isM7SeasonSuffix(text: string, start: number, token: string): boolean {
+  if (token.toUpperCase() !== "S2") return false;
+  return /棱镜攻势\s*$/i.test(text.slice(Math.max(0, start - 16), start));
+}
+
+function rareFinishSubjects(text: string): RareFinishSubject[] {
+  const subjects: RareFinishSubject[] = matchRanges(
+    text,
+    M7_SUBJECT_TOKEN
+  ).map(({ start, end }) => ({ kind: "m7", start, end }));
+
+  for (const { text: token, start, end } of [
+    ...matchRanges(text, NAMED_OTHER_SUBJECT),
+    ...matchRanges(text, GENERIC_MODEL_SUBJECT)
+  ]) {
+    if (token.toUpperCase() === "M7") continue;
+    if (isM7SeasonSuffix(text, start, token)) continue;
+    const existing = subjects.find(
+      (subject) => subject.start === start && subject.end === end
+    );
+    if (existing) {
+      if (existing.kind !== "m7") existing.kind = "other";
+      continue;
+    }
+    subjects.push({ kind: "other", start, end });
+  }
+
+  return subjects;
+}
+
+function visibleDistance(
+  text: string,
+  left: { start: number; end: number },
+  right: { start: number; end: number }
+): number {
+  const between =
+    left.end <= right.start
+      ? text.slice(left.end, right.start)
+      : right.end <= left.start
+        ? text.slice(right.end, left.start)
+        : "";
+  return [...between].filter((character) => !/\s/u.test(character)).length;
+}
+
+function hasRareFinishNegation(
+  text: string,
+  subject: RareFinishSubject,
+  keyword: { start: number; end: number }
+): boolean {
+  const visiblePrefix = text
+    .slice(0, keyword.start)
+    .replace(/\s/gu, "")
+    .slice(-4);
+  const between =
+    subject.end <= keyword.start
+      ? text.slice(subject.end, keyword.start)
+      : text.slice(keyword.end, subject.start);
+  return (
+    M7_RARE_FINISH_NEGATION.test(visiblePrefix) ||
+    M7_RARE_FINISH_NEGATION.test(between)
+  );
+}
+
+function parseM7RareFinishesUnsafe(records: EvidenceRecord[]): {
+  finishes: M7RareFinish[];
+  evidence: EvidenceRecord[];
+} {
+  const matchedFinishes = new Set<M7RareFinish>();
+  const matchedRecords = new Set<EvidenceRecord>();
+
+  for (const record of records) {
+    for (const clause of splitEvidenceClauses(record.text)) {
+      const subjects = rareFinishSubjects(clause);
+      for (const { finish, pattern } of M7_RARE_FINISH_PATTERNS) {
+        for (const keyword of matchRanges(clause, pattern)) {
+          const candidates = subjects
+            .map((subject) => ({
+              subject,
+              distance: visibleDistance(clause, subject, keyword)
+            }))
+            .filter(
+              ({ distance }) =>
+                distance <= MAX_M7_RARE_FINISH_DISTANCE
+            )
+            .sort((left, right) => left.distance - right.distance);
+          const nearest = candidates[0];
+          if (!nearest) continue;
+          if (
+            candidates.filter(
+              ({ distance }) => distance === nearest.distance
+            ).length !== 1
+          ) {
+            continue;
+          }
+          if (nearest.subject.kind !== "m7") continue;
+          if (
+            hasRareFinishNegation(
+              clause,
+              nearest.subject,
+              keyword
+            )
+          ) {
+            continue;
+          }
+          matchedFinishes.add(finish);
+          matchedRecords.add(record);
+        }
+      }
+    }
+  }
+
+  return {
+    finishes: M7_RARE_FINISH_ORDER.filter((finish) =>
+      matchedFinishes.has(finish)
+    ),
+    evidence: records.filter((record) => matchedRecords.has(record))
+  };
+}
+
+export function parseM7RareFinishes(records: EvidenceRecord[]): {
+  finishes: M7RareFinish[];
+  evidence: EvidenceRecord[];
+} {
+  try {
+    return parseM7RareFinishesUnsafe(records);
+  } catch {
+    return { finishes: [], evidence: [] };
+  }
 }
 
 function findJymTruncatedPeakQualities(
