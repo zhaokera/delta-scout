@@ -16,6 +16,7 @@ import {
   BrowserRefreshJobStateSchema,
   type BrowserDetailBatch,
   type BrowserFilterProof,
+  type BrowserListItem,
   type BrowserListBatch,
   type BrowserLoadEvent,
   type BrowserRefreshJobState
@@ -118,6 +119,11 @@ export interface DetailProgressView {
   detailRequiredCount: number;
   nextSourceListingId: string | null;
   nextSequence: number;
+}
+
+export interface RequiredDetailWork {
+  sourceListingId: string;
+  url: string;
 }
 
 const AcceptedBatchViewSchema = z.strictObject({
@@ -473,6 +479,242 @@ export class BrowserRefreshRepository {
     return toView(row);
   }
 
+  getFilterProof(
+    id: string,
+    now = new Date()
+  ): BrowserFilterProof | null {
+    this.expireJobs(now);
+    this.requireRow(id);
+    const row = this.database.prepare(`
+      SELECT current_url, game_label, platform_label, category_label,
+             m7_filter_labels_json, observed_at
+      FROM browser_refresh_filter_proofs
+      WHERE job_id = ?
+    `).get(id) as {
+      current_url: string;
+      game_label: string;
+      platform_label: string;
+      category_label: string;
+      m7_filter_labels_json: string;
+      observed_at: string;
+    } | undefined;
+    if (!row) return null;
+    return BrowserFilterProofSchema.parse({
+      currentUrl: row.current_url,
+      gameLabel: row.game_label,
+      platformLabel: row.platform_label,
+      categoryLabel: row.category_label,
+      m7FilterLabels: JSON.parse(row.m7_filter_labels_json),
+      observedAt: row.observed_at
+    });
+  }
+
+  getLoadEvents(
+    id: string,
+    now = new Date()
+  ): BrowserLoadEvent[] {
+    this.expireJobs(now);
+    this.requireRow(id);
+    const rows = this.database.prepare(`
+      SELECT sequence, observed_unique_count, new_item_count,
+             visible_total_count, end_marker_visible, loading_visible,
+             blocking_state, observed_at
+      FROM browser_refresh_load_events
+      WHERE job_id = ?
+      ORDER BY sequence
+    `).all(id) as Array<{
+      sequence: number;
+      observed_unique_count: number;
+      new_item_count: number;
+      visible_total_count: number | null;
+      end_marker_visible: number;
+      loading_visible: number;
+      blocking_state: BrowserLoadEvent["blockingState"];
+      observed_at: string;
+    }>;
+    return rows.map((row) => BrowserLoadEventSchema.parse({
+      sequence: row.sequence,
+      observedUniqueCount: row.observed_unique_count,
+      newItemCount: row.new_item_count,
+      visibleTotalCount: row.visible_total_count,
+      endMarkerVisible: row.end_marker_visible === 1,
+      loadingVisible: row.loading_visible === 1,
+      blockingState: row.blocking_state,
+      observedAt: row.observed_at
+    }));
+  }
+
+  getListItems(
+    id: string,
+    now = new Date()
+  ): BrowserListItem[] {
+    this.expireJobs(now);
+    this.requireRow(id);
+    const rows = this.database.prepare(`
+      SELECT source_listing_id, url, title, raw_text, price_cny
+      FROM browser_refresh_list_items
+      WHERE job_id = ?
+      ORDER BY rowid
+    `).all(id) as Array<{
+      source_listing_id: string;
+      url: string;
+      title: string;
+      raw_text: string;
+      price_cny: number | null;
+    }>;
+    return rows.map((row) => ({
+      sourceListingId: row.source_listing_id,
+      url: row.url,
+      title: row.title,
+      rawText: row.raw_text,
+      priceCny: row.price_cny
+    }));
+  }
+
+  getCompletedDetailIds(
+    id: string,
+    now = new Date()
+  ): Set<string> {
+    this.expireJobs(now);
+    this.requireRow(id);
+    const rows = this.database.prepare(`
+      SELECT source_listing_id
+      FROM browser_refresh_details
+      WHERE job_id = ?
+    `).all(id) as Array<{ source_listing_id: string }>;
+    return new Set(rows.map((row) => row.source_listing_id));
+  }
+
+  getNextRequiredDetail(
+    id: string,
+    now = new Date()
+  ): RequiredDetailWork | null {
+    this.expireJobs(now);
+    this.requireRow(id);
+    const row = this.database.prepare(`
+      SELECT li.source_listing_id, li.url
+      FROM browser_refresh_list_items li
+      LEFT JOIN browser_refresh_details d
+        ON d.job_id = li.job_id
+        AND d.source_listing_id = li.source_listing_id
+      WHERE li.job_id = ?
+        AND (li.price_cny IS NULL OR li.price_cny <= 6000)
+        AND d.source_listing_id IS NULL
+      ORDER BY li.rowid
+      LIMIT 1
+    `).get(id) as {
+      source_listing_id: string;
+      url: string;
+    } | undefined;
+    return row
+      ? { sourceListingId: row.source_listing_id, url: row.url }
+      : null;
+  }
+
+  getNextDetailSequence(
+    id: string,
+    now = new Date()
+  ): number {
+    this.expireJobs(now);
+    this.requireRow(id);
+    const row = this.database.prepare(`
+      SELECT COALESCE(MAX(sequence), 0) AS sequence
+      FROM browser_refresh_batches
+      WHERE job_id = ? AND kind = 'detail'
+    `).get(id) as { sequence: number };
+    return row.sequence + 1;
+  }
+
+  replayListBatch(
+    id: string,
+    batch: BrowserListBatch,
+    now = new Date()
+  ): AcceptedBatchView | null {
+    this.expireJobs(now);
+    this.requireActiveRow(id);
+    const parsed = BrowserListBatchSchema.parse(batch);
+    const replay = this.findBatch(id, "list", parsed.sequence);
+    if (!replay) return null;
+    if (replay.payload_hash !== payloadHash(parsed)) {
+      throw new BrowserRefreshRepositoryError(
+        "batch_conflict",
+        "List batch sequence was already used with a different hash"
+      );
+    }
+    return parseStoredResult(
+      replay.accepted_result_json,
+      AcceptedBatchViewSchema
+    );
+  }
+
+  replayLoadEvent(
+    id: string,
+    event: BrowserLoadEvent,
+    now = new Date()
+  ): AcceptedLoadEventView | null {
+    this.expireJobs(now);
+    this.requireActiveRow(id);
+    const parsed = BrowserLoadEventSchema.parse(event);
+    const row = this.database.prepare(`
+      SELECT payload_hash, accepted_result_json
+      FROM browser_refresh_load_events
+      WHERE job_id = ? AND sequence = ?
+    `).get(id, parsed.sequence) as {
+      payload_hash: string;
+      accepted_result_json: string;
+    } | undefined;
+    if (!row) return null;
+    if (row.payload_hash !== payloadHash(parsed)) {
+      throw new BrowserRefreshRepositoryError(
+        "batch_conflict",
+        "Load event sequence was already used with a different hash"
+      );
+    }
+    return parseStoredResult(
+      row.accepted_result_json,
+      AcceptedLoadEventViewSchema
+    );
+  }
+
+  replayDetailBatch(
+    id: string,
+    batch: BrowserDetailBatch,
+    now = new Date()
+  ): DetailProgressView | null {
+    this.expireJobs(now);
+    this.requireActiveRow(id);
+    const parsed = BrowserDetailBatchSchema.parse(batch);
+    const replay = this.findBatch(id, "detail", parsed.sequence);
+    if (!replay) return null;
+    if (replay.payload_hash !== payloadHash(parsed)) {
+      throw new BrowserRefreshRepositoryError(
+        "batch_conflict",
+        "Detail batch sequence was already used with a different hash"
+      );
+    }
+    return parseStoredResult(
+      replay.accepted_result_json,
+      DetailProgressViewSchema
+    );
+  }
+
+  keepWaiting(id: string, now = new Date()): BrowserRefreshJobView {
+    this.expireJobs(now);
+    const timestamp = now.toISOString();
+    const expiresAt = new Date(
+      now.getTime() + JOB_LIFETIME_MS
+    ).toISOString();
+    this.runTransaction(() => {
+      this.requireActiveRow(id);
+      this.database.prepare(`
+        UPDATE browser_refresh_jobs
+        SET updated_at = ?, expires_at = ?
+        WHERE id = ?
+      `).run(timestamp, expiresAt, id);
+    });
+    return toView(this.requireRow(id));
+  }
+
   saveFilterProof(
     id: string,
     proof: BrowserFilterProof,
@@ -677,7 +919,7 @@ export class BrowserRefreshRepository {
       if (
         parsed.observedUniqueCount <
           (previous?.observed_unique_count ?? 0) ||
-        parsed.newItemCount >
+        parsed.newItemCount !==
           parsed.observedUniqueCount -
             (previous?.observed_unique_count ?? 0) ||
         parsed.observedUniqueCount > job.unique_item_count ||
@@ -802,7 +1044,12 @@ export class BrowserRefreshRepository {
       }
       const completed = this.database.prepare(`
         SELECT COUNT(*) AS count
-        FROM browser_refresh_details WHERE job_id = ?
+        FROM browser_refresh_details d
+        JOIN browser_refresh_list_items li
+          ON li.job_id = d.job_id
+          AND li.source_listing_id = d.source_listing_id
+        WHERE d.job_id = ?
+          AND (li.price_cny IS NULL OR li.price_cny <= 6000)
       `).get(id) as { count: number };
       const next = this.database.prepare(`
         SELECT li.source_listing_id
@@ -810,8 +1057,10 @@ export class BrowserRefreshRepository {
         LEFT JOIN browser_refresh_details d
           ON d.job_id = li.job_id
           AND d.source_listing_id = li.source_listing_id
-        WHERE li.job_id = ? AND d.source_listing_id IS NULL
-        ORDER BY li.last_batch_sequence, li.source_listing_id
+        WHERE li.job_id = ?
+          AND (li.price_cny IS NULL OR li.price_cny <= 6000)
+          AND d.source_listing_id IS NULL
+        ORDER BY li.rowid
         LIMIT 1
       `).get(id) as { source_listing_id: string } | undefined;
       const result: DetailProgressView = {
@@ -1095,7 +1344,6 @@ export class BrowserRefreshRepository {
       this.database.prepare(`
         UPDATE browser_refresh_jobs
         SET state = 'paused',
-            stage = 'paused',
             reason = 'process_interrupted',
             last_error = 'process_interrupted',
             updated_at = ?,
