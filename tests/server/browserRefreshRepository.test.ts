@@ -562,6 +562,203 @@ describe("BrowserRefreshRepository staging", () => {
     ).toThrow(/sequence|hash|序号/i);
   });
 
+  it("accepts maximum bounded progress and replays its detail result exactly", () => {
+    const { database, repository } = makeRepository();
+    const { id } = claim(repository);
+    repository.acceptListBatch(id, listBatch(), now);
+    const insertListItem = database.prepare(`
+      INSERT INTO browser_refresh_list_items (
+        job_id, source_listing_id, url, title, raw_text,
+        price_cny, last_batch_sequence, observed_at
+      ) VALUES (?, ?, ?, 'fixture', 'fixture', NULL, 1, ?)
+    `);
+    const insertDetail = database.prepare(`
+      INSERT INTO browser_refresh_details (
+        job_id, source_listing_id, url, evidence_json, observed_at
+      ) VALUES (?, ?, ?, '{}', ?)
+    `);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      for (let index = 1; index < 2_000; index += 1) {
+        const sourceListingId = `${1_000_000 + index}`;
+        const url =
+          `https://www.jiaoyimao.com/jg2007840/` +
+          `${sourceListingId}.html`;
+        insertListItem.run(
+          id,
+          sourceListingId,
+          url,
+          now.toISOString()
+        );
+        insertDetail.run(
+          id,
+          sourceListingId,
+          url,
+          now.toISOString()
+        );
+      }
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    const bounded = repository.transition(
+      id,
+      ["collecting_list"],
+      "collecting_details",
+      {
+        detailRequiredCount: 2_000,
+        detailCompletedCount: 2_000,
+        uniqueItemCount: 2_000,
+        itemCount: 2_000,
+        listBatchCursor: 2_000,
+        loadActionCount: 100,
+        cooldownAttempt: 4
+      },
+      now
+    );
+    expect(bounded).toMatchObject({
+      detailRequiredCount: 2_000,
+      detailCompletedCount: 2_000,
+      uniqueItemCount: 2_000,
+      itemCount: 2_000,
+      listBatchCursor: 2_000,
+      loadActionCount: 100,
+      cooldownAttempt: 4
+    });
+
+    const batch = detailBatch();
+    const accepted = repository.acceptDetailBatch(id, batch, now);
+    expect(accepted).toMatchObject({
+      detailCompletedCount: 2_000,
+      detailRequiredCount: 2_000
+    });
+    expect(repository.acceptDetailBatch(id, batch, now)).toEqual(
+      accepted
+    );
+  });
+
+  it("rejects operational counters above their safety limits before persistence", () => {
+    const { repository } = makeRepository();
+    const { id } = claim(repository);
+    const invalidPatches = [
+      { detailRequiredCount: 2_001 },
+      { detailCompletedCount: 2_001 },
+      { uniqueItemCount: 2_001 },
+      { itemCount: 2_001 },
+      { listBatchCursor: 2_001 },
+      { loadActionCount: 101 },
+      { cooldownAttempt: 5 }
+    ];
+
+    for (const patch of invalidPatches) {
+      expect(() =>
+        repository.transition(
+          id,
+          ["collecting_list"],
+          "collecting_list",
+          patch,
+          now
+        )
+      ).toThrow(/limit|bounded|counter/i);
+      expect(repository.getJob(id, now)).toMatchObject({
+        detailRequiredCount: 0,
+        detailCompletedCount: 0,
+        uniqueItemCount: 0,
+        itemCount: 0,
+        listBatchCursor: 0,
+        loadActionCount: 0,
+        cooldownAttempt: 0
+      });
+    }
+  });
+
+  it("rejects list, detail, and load sequences beyond bounded cursors", () => {
+    const list = makeRepository();
+    const listJob = claim(list.repository);
+    list.repository.transition(
+      listJob.id,
+      ["collecting_list"],
+      "collecting_list",
+      { listBatchCursor: 2_000 },
+      now
+    );
+    expect(() =>
+      list.repository.acceptListBatch(
+        listJob.id,
+        listBatch(2_001),
+        now
+      )
+    ).toThrow(/limit|bounded/i);
+
+    const detail = makeRepository();
+    const detailJob = claim(detail.repository);
+    detail.repository.acceptListBatch(
+      detailJob.id,
+      listBatch(),
+      now
+    );
+    detail.database.prepare(`
+      INSERT INTO browser_refresh_batches (
+        job_id, kind, sequence, payload_hash, accepted_count,
+        accepted_result_json, created_at
+      ) VALUES (?, 'detail', 2000, 'fixture', 1, ?, ?)
+    `).run(
+      detailJob.id,
+      JSON.stringify({
+        acceptedCount: 1,
+        detailCompletedCount: 0,
+        detailRequiredCount: 0,
+        nextSourceListingId: "1785384225212552",
+        nextSequence: 2001
+      }),
+      now.toISOString()
+    );
+    expect(() =>
+      detail.repository.acceptDetailBatch(
+        detailJob.id,
+        detailBatch(2_001),
+        now
+      )
+    ).toThrow(/limit|bounded/i);
+
+    const load = makeRepository();
+    const loadJob = claim(load.repository);
+    load.repository.acceptListBatch(loadJob.id, listBatch(), now);
+    load.repository.transition(
+      loadJob.id,
+      ["collecting_list"],
+      "collecting_list",
+      { loadActionCount: 99 },
+      now
+    );
+    load.database.prepare(`
+      INSERT INTO browser_refresh_load_events (
+        job_id, sequence, payload_hash, accepted_result_json,
+        observed_unique_count, new_item_count, visible_total_count,
+        end_marker_visible, loading_visible, blocking_state, observed_at
+      ) VALUES (?, 100, 'fixture', ?, 1, 0, NULL, 0, 0, 'none', ?)
+    `).run(
+      loadJob.id,
+      JSON.stringify({
+        acceptedCount: 1,
+        loadActionCount: 99,
+        nextSequence: 101
+      }),
+      now.toISOString()
+    );
+    expect(() =>
+      load.repository.acceptLoadEvent(
+        loadJob.id,
+        loadEvent(101, {
+          observedUniqueCount: 1,
+          newItemCount: 0
+        }),
+        now
+      )
+    ).toThrow(/limit|bounded/i);
+  });
+
   it("validates load event ordering, monotonic counts, and exact replay", () => {
     const { repository } = makeRepository();
     const { id } = claim(repository);

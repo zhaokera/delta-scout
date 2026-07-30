@@ -23,6 +23,8 @@ import {
 
 const JOB_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const TERMINAL_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1_000;
+const MAX_BATCH_SEQUENCE = BROWSER_REFRESH_LIMITS.maxUniqueItems;
+const MAX_COOLDOWN_ATTEMPTS = 4;
 const TERMINAL_STATES: readonly BrowserRefreshJobState[] = [
   "success",
   "quarantined",
@@ -124,6 +126,7 @@ const AcceptedBatchViewSchema = z.strictObject({
   uniqueItemCount: z.number().int().nonnegative()
     .max(BROWSER_REFRESH_LIMITS.maxUniqueItems),
   nextSequence: z.number().int().positive()
+    .max(MAX_BATCH_SEQUENCE + 1)
 });
 
 const AcceptedLoadEventViewSchema = z.strictObject({
@@ -131,6 +134,7 @@ const AcceptedLoadEventViewSchema = z.strictObject({
   loadActionCount: z.number().int().nonnegative()
     .max(BROWSER_REFRESH_LIMITS.maxLoadEvents),
   nextSequence: z.number().int().positive()
+    .max(BROWSER_REFRESH_LIMITS.maxLoadEvents + 1)
 });
 
 const DetailProgressViewSchema = z.strictObject({
@@ -142,6 +146,7 @@ const DetailProgressViewSchema = z.strictObject({
     .max(BROWSER_REFRESH_LIMITS.maxUniqueItems),
   nextSourceListingId: z.string().regex(/^\d+$/).nullable(),
   nextSequence: z.number().int().positive()
+    .max(MAX_BATCH_SEQUENCE + 1)
 });
 
 export interface BrowserRefreshTransitionPatch {
@@ -303,6 +308,19 @@ function canonicalIsoTimestamp(value: string): boolean {
     Number.isFinite(milliseconds) &&
     new Date(milliseconds).toISOString() === value
   );
+}
+
+function assertSequenceWithinLimit(
+  sequence: number,
+  maximum: number,
+  label: string
+): void {
+  if (sequence > maximum) {
+    throw new BrowserRefreshRepositoryError(
+      "sequence_conflict",
+      `${label} sequence exceeds the safety limit of ${maximum}`
+    );
+  }
 }
 
 export class BrowserRefreshRepository {
@@ -500,6 +518,11 @@ export class BrowserRefreshRepository {
   ): AcceptedBatchView {
     this.expireJobs(now);
     const parsed = BrowserListBatchSchema.parse(batch);
+    assertSequenceWithinLimit(
+      parsed.sequence,
+      MAX_BATCH_SEQUENCE,
+      "List batch"
+    );
     const hash = payloadHash(parsed);
     return this.runTransaction(() => {
       const job = this.requireActiveRow(id);
@@ -598,6 +621,11 @@ export class BrowserRefreshRepository {
   ): AcceptedLoadEventView {
     this.expireJobs(now);
     const parsed = BrowserLoadEventSchema.parse(event);
+    assertSequenceWithinLimit(
+      parsed.sequence,
+      BROWSER_REFRESH_LIMITS.maxLoadEvents,
+      "Load event"
+    );
     const hash = payloadHash(parsed);
     return this.runTransaction(() => {
       const job = this.requireActiveRow(id);
@@ -669,11 +697,11 @@ export class BrowserRefreshRepository {
       }
       this.consumeActionPermit(job, parsed.actionPermit, now);
       const loadActionCount = job.load_action_count + 1;
-      const result: AcceptedLoadEventView = {
+      const result = AcceptedLoadEventViewSchema.parse({
         acceptedCount: 1,
         loadActionCount,
         nextSequence: parsed.sequence + 1
-      };
+      });
       this.database.prepare(`
         INSERT INTO browser_refresh_load_events (
           job_id, sequence, payload_hash, accepted_result_json,
@@ -709,6 +737,11 @@ export class BrowserRefreshRepository {
   ): DetailProgressView {
     this.expireJobs(now);
     const parsed = BrowserDetailBatchSchema.parse(batch);
+    assertSequenceWithinLimit(
+      parsed.sequence,
+      MAX_BATCH_SEQUENCE,
+      "Detail batch"
+    );
     const hash = payloadHash(parsed);
     return this.runTransaction(() => {
       const job = this.requireActiveRow(id);
@@ -898,19 +931,54 @@ export class BrowserRefreshRepository {
             ? row.published_run_id
             : patch.publishedRunId
       };
-      for (const count of [
-        values.detailRequiredCount,
-        values.detailCompletedCount,
-        values.uniqueItemCount,
-        values.itemCount,
-        values.listBatchCursor,
-        values.loadActionCount,
-        values.cooldownAttempt
-      ]) {
-        if (!Number.isSafeInteger(count) || count < 0) {
+      const boundedCounters: ReadonlyArray<
+        readonly [name: string, value: number, maximum: number]
+      > = [
+        [
+          "detailRequiredCount",
+          values.detailRequiredCount,
+          BROWSER_REFRESH_LIMITS.maxUniqueItems
+        ],
+        [
+          "detailCompletedCount",
+          values.detailCompletedCount,
+          BROWSER_REFRESH_LIMITS.maxUniqueItems
+        ],
+        [
+          "uniqueItemCount",
+          values.uniqueItemCount,
+          BROWSER_REFRESH_LIMITS.maxUniqueItems
+        ],
+        [
+          "itemCount",
+          values.itemCount,
+          BROWSER_REFRESH_LIMITS.maxUniqueItems
+        ],
+        [
+          "listBatchCursor",
+          values.listBatchCursor,
+          MAX_BATCH_SEQUENCE
+        ],
+        [
+          "loadActionCount",
+          values.loadActionCount,
+          BROWSER_REFRESH_LIMITS.maxLoadEvents
+        ],
+        [
+          "cooldownAttempt",
+          values.cooldownAttempt,
+          MAX_COOLDOWN_ATTEMPTS
+        ]
+      ];
+      for (const [name, count, maximum] of boundedCounters) {
+        if (
+          !Number.isSafeInteger(count) ||
+          count < 0 ||
+          count > maximum
+        ) {
           throw new BrowserRefreshRepositoryError(
             "invalid_transition",
-            "Transition counters must be non-negative integers"
+            `${name} must be an integer bounded from 0 to ${maximum}`
           );
         }
       }
@@ -1247,6 +1315,9 @@ export class BrowserRefreshRepository {
     result: AcceptedBatchView | DetailProgressView,
     now: Date
   ): void {
+    const storedResult = kind === "list"
+      ? AcceptedBatchViewSchema.parse(result)
+      : DetailProgressViewSchema.parse(result);
     this.database.prepare(`
       INSERT INTO browser_refresh_batches (
         job_id, kind, sequence, payload_hash, accepted_count,
@@ -1258,7 +1329,7 @@ export class BrowserRefreshRepository {
       sequence,
       hash,
       acceptedCount,
-      JSON.stringify(result),
+      JSON.stringify(storedResult),
       now.toISOString()
     );
   }
