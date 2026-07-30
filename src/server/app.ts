@@ -152,40 +152,111 @@ function hasJsonContentType(contentType: string | undefined): boolean {
     .test(contentType.trim());
 }
 
-const decodeBrowserJson: RequestHandler = (
+const readBrowserBody: RequestHandler = (
   request,
   response,
   next
 ) => {
-  if (request.method === "GET" || request.method === "HEAD") {
-    next();
-    return;
-  }
-  if (!hasJsonContentType(request.get("content-type"))) {
-    response.status(400).json({
-      error: "invalid_browser_payload",
-      message: "浏览器刷新请求必须使用 application/json"
+  const limit = BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes;
+  let settled = false;
+  let received = 0;
+  const chunks: Buffer[] = [];
+
+  const rejectTooLarge = (): void => {
+    if (settled) return;
+    settled = true;
+    chunks.length = 0;
+    request.off("data", onData);
+    request.resume();
+    response.status(413).json({
+      error: "browser_payload_too_large",
+      message: "浏览器刷新请求超过 128 KiB 限制"
     });
-    return;
-  }
-  if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
-    response.status(400).json({
+  };
+  const rejectInvalid = (
+    status: 400 | 415,
+    message: string
+  ): void => {
+    if (settled) return;
+    settled = true;
+    chunks.length = 0;
+    response.status(status).json({
       error: "invalid_browser_payload",
-      message: "浏览器刷新请求格式无效"
+      message
     });
-    return;
+  };
+
+  const contentLength = request.get("content-length");
+  if (contentLength !== undefined) {
+    if (!/^\d+$/.test(contentLength)) {
+      request.resume();
+      rejectInvalid(400, "浏览器刷新请求格式无效");
+      return;
+    }
+    if (BigInt(contentLength) > BigInt(limit)) {
+      rejectTooLarge();
+      return;
+    }
   }
-  try {
-    const text = new TextDecoder("utf-8", { fatal: true })
-      .decode(request.body);
-    request.body = JSON.parse(text);
-    next();
-  } catch {
-    response.status(400).json({
-      error: "invalid_browser_payload",
-      message: "浏览器刷新请求格式无效"
-    });
+
+  function onData(chunk: Buffer | string): void {
+    if (settled) return;
+    const buffer = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(chunk);
+    received += buffer.length;
+    if (received > limit) {
+      rejectTooLarge();
+      return;
+    }
+    chunks.push(buffer);
   }
+  request.on("data", onData);
+  request.once("aborted", () => {
+    settled = true;
+    chunks.length = 0;
+  });
+  request.once("error", () => {
+    rejectInvalid(400, "浏览器刷新请求格式无效");
+  });
+  request.once("end", () => {
+    if (settled) return;
+    const body = Buffer.concat(chunks, received);
+    chunks.length = 0;
+    const contentEncoding = (
+      request.get("content-encoding") ?? "identity"
+    ).trim().toLowerCase();
+    if (contentEncoding !== "identity") {
+      rejectInvalid(415, "浏览器刷新请求编码不受支持");
+      return;
+    }
+    if (request.method === "GET" || request.method === "HEAD") {
+      settled = true;
+      request.body = body;
+      next();
+      return;
+    }
+    if (!hasJsonContentType(request.get("content-type"))) {
+      rejectInvalid(
+        400,
+        "浏览器刷新请求必须使用 application/json"
+      );
+      return;
+    }
+    if (body.length === 0) {
+      rejectInvalid(400, "浏览器刷新请求格式无效");
+      return;
+    }
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true })
+        .decode(body);
+      request.body = JSON.parse(text);
+      settled = true;
+      next();
+    } catch {
+      rejectInvalid(400, "浏览器刷新请求格式无效");
+    }
+  });
 };
 
 interface CurrentListingSnapshot {
@@ -275,12 +346,8 @@ function derivedSourceStatuses(
 export function createApp(dependencies?: AppDependencies): Express {
   const app = express();
 
-  const browserBody = express.raw({
-    limit: BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes,
-    type: () => true
-  });
   for (const prefix of BROWSER_REFRESH_PATH_PREFIXES) {
-    app.use(prefix, browserBody, decodeBrowserJson);
+    app.use(prefix, readBrowserBody);
   }
   app.use(express.json({ limit: "256kb" }));
   app.get("/api/health", (_request, response) => {

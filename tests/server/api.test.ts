@@ -1,4 +1,7 @@
 // @vitest-environment node
+import { request as nodeRequest } from "node:http";
+import type { AddressInfo } from "node:net";
+import { gzipSync, gunzipSync } from "node:zlib";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -286,6 +289,82 @@ async function createAndClaimBrowserJob(
 
 function bearer(token: string): string {
   return `Bearer ${token}`;
+}
+
+function gzipWithOversizedMetadata(): Buffer {
+  const compressed = gzipSync(Buffer.from("{}"));
+  const header = Buffer.from(compressed.subarray(0, 10));
+  header[3] |= 0x10;
+  const wireBody = Buffer.concat([
+    header,
+    Buffer.alloc(140 * 1_024, 0x61),
+    Buffer.from([0]),
+    compressed.subarray(10)
+  ]);
+  expect(wireBody.length).toBeGreaterThan(
+    BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes
+  );
+  expect(gunzipSync(wireBody).toString("utf8")).toBe("{}");
+  return wireBody;
+}
+
+async function postChunkedBrowserBody(
+  app: ReturnType<typeof createApp>,
+  body: Buffer
+): Promise<{
+  status: number;
+  type: string;
+  body: unknown;
+}> {
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject);
+  });
+  const address = server.address() as AddressInfo;
+  try {
+    return await new Promise((resolve, reject) => {
+      const operation = nodeRequest({
+        hostname: "127.0.0.1",
+        port: address.port,
+        path: "/api/sources/jiaoyimao/browser-refresh",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Encoding": "gzip",
+          "Transfer-Encoding": "chunked"
+        }
+      }, (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          try {
+            resolve({
+              status: response.statusCode ?? 0,
+              type: String(response.headers["content-type"] ?? ""),
+              body: JSON.parse(text)
+            });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+      operation.once("error", reject);
+      for (
+        let offset = 0;
+        offset < body.length;
+        offset += 8 * 1_024
+      ) {
+        operation.write(body.subarray(offset, offset + 8 * 1_024));
+      }
+      operation.end();
+    });
+  } finally {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  }
 }
 
 describe("listing API", () => {
@@ -1897,12 +1976,12 @@ describe("browser refresh API", () => {
     {
       encoding: "gzip",
       body: Buffer.from("not-a-gzip-stream"),
-      expectedStatus: 400
+      expectedStatus: 415
     },
     {
       encoding: "deflate",
       body: Buffer.from("not-a-deflate-stream"),
-      expectedStatus: 400
+      expectedStatus: 415
     }
   ])(
     "safely maps browser raw-parser $encoding errors",
@@ -1926,6 +2005,58 @@ describe("browser refresh API", () => {
       expect(f.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
     }
   );
+
+  it("rejects oversized gzip wire bytes before their tiny JSON expands", async () => {
+    const f = browserApiSetup();
+    const response = await request(f.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .set("Content-Type", "application/json")
+      .set("Content-Encoding", "gzip")
+      .send(gzipWithOversizedMetadata());
+
+    expect(response.status).toBe(413);
+    expect(response.body).toEqual({
+      error: "browser_payload_too_large",
+      message: expect.stringContaining("128 KiB")
+    });
+    expect(f.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
+  });
+
+  it("counts oversized chunked gzip wire bytes without Content-Length", async () => {
+    const f = browserApiSetup();
+    const response = await postChunkedBrowserBody(
+      f.app,
+      gzipWithOversizedMetadata()
+    );
+
+    expect(response.status).toBe(413);
+    expect(response.type).toMatch(/json/);
+    expect(response.body).toEqual({
+      error: "browser_payload_too_large",
+      message: expect.stringContaining("128 KiB")
+    });
+    expect(f.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
+  });
+
+  it("safely rejects a compressed body within the wire-byte limit", async () => {
+    const f = browserApiSetup();
+    const compressed = gzipSync(Buffer.from("{}"));
+    expect(compressed.length).toBeLessThanOrEqual(
+      BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes
+    );
+    const response = await request(f.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .set("Content-Type", "application/json")
+      .set("Content-Encoding", "gzip")
+      .send(compressed);
+
+    expect(response.status).toBe(415);
+    expect(response.body).toEqual({
+      error: "invalid_browser_payload",
+      message: expect.stringMatching(/[\u3400-\u9fff]/)
+    });
+    expect(f.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
+  });
 
   it("does not apply browser parser errors to ordinary routes", async () => {
     const { app } = setup();
