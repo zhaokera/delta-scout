@@ -15,6 +15,29 @@ export interface JiaoyimaoVisibleSections {
   description: string;
 }
 
+const MAX_STORED_EVIDENCE_CHARS = 2_000;
+const STORED_EVIDENCE_SUFFIX_CHARS =
+  Math.floor(MAX_STORED_EVIDENCE_CHARS / 2);
+const STORED_EVIDENCE_PREFIX_CHARS =
+  MAX_STORED_EVIDENCE_CHARS - STORED_EVIDENCE_SUFFIX_CHARS - 1;
+
+function toBoundedEvidenceRecords(lines: string[]) {
+  return lines.flatMap((line) => {
+    const record = toEvidenceRecords([line])[0];
+    if (!record || !record.truncated) return record ? [record] : [];
+
+    const characters = [...line.trim()];
+    return [{
+      text: [
+        ...characters.slice(0, STORED_EVIDENCE_PREFIX_CHARS),
+        "…",
+        ...characters.slice(-STORED_EVIDENCE_SUFFIX_CHARS)
+      ].join(""),
+      truncated: true
+    }];
+  });
+}
+
 function parseNumber(value: string | undefined): number | null {
   if (!value) return null;
   const parsed = Number(value.replaceAll(",", ""));
@@ -42,10 +65,11 @@ export function parseJiaoyimaoVisibleDetail(
     return { kind: "blocked", reason: "structure_changed" };
   }
 
-  const evidence = toEvidenceRecords(
-    [...new Set([head, report, safety, description].filter(Boolean))]
-  );
-  const currentProductText = evidence.map(({ text }) => text).join("\n");
+  const fullSections = [
+    ...new Set([head, report, safety, description].filter(Boolean))
+  ];
+  const evidence = toBoundedEvidenceRecords(fullSections);
+  const currentProductText = fullSections.join("\n");
   const totalAssetsRaw = parseChineseAmount(
     currentProductText,
     "总资产"

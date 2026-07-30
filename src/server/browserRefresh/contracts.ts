@@ -32,7 +32,8 @@ const FORBIDDEN_VISIBLE_TEXT_PATTERNS = [
   /校验码\s*[:=]/i,
   /<script/i,
   /javascript:/i,
-  /<(?:!doctype\s+html|html\b|head\b|body\b)/i
+  /<\/?[A-Za-z][A-Za-z0-9:-]*(?:(?:\s|\/)[^<>]*)?>/i,
+  /<!(?:--|doctype\b|\[CDATA\[)/i
 ] as const;
 
 function containsForbiddenVisibleText(value: string): boolean {
@@ -78,11 +79,19 @@ export const IsoDateTimeSchema = z.iso.datetime({ offset: true });
 export const DigitIdSchema = z.string().regex(/^\d+$/);
 
 function parseApprovedUrl(value: string): URL | null {
+  if (
+    value.trim() !== value ||
+    /[\u0000-\u001F\u007F]/.test(value)
+  ) {
+    return null;
+  }
   try {
     const url = new URL(value);
     return url.origin === APPROVED_ORIGIN &&
+      url.toString() === value &&
       url.username === "" &&
       url.password === "" &&
+      url.port === "" &&
       url.hash === ""
       ? url
       : null;

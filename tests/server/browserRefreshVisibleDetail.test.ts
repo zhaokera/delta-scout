@@ -89,4 +89,50 @@ describe("parseJiaoyimaoVisibleDetail", () => {
       "M7棱镜攻势S2 珠光 炫彩 糖果纸"
     );
   });
+
+  it("parses late facts from full sections without enlarging stored evidence", () => {
+    const padding = "普通可见说明".repeat(350);
+    const result = parseJiaoyimaoVisibleDetail(
+      {
+        head:
+          `QQ双端帐号 ${padding} ` +
+          "M7棱镜攻势S2 极品A 珠光",
+        report:
+          `${padding} 总资产88M 哈夫币数量123,456 ` +
+          "验号时间：2026-07-30 13:00:00",
+        safety:
+          `${padding} 可二次实名 永久包赔 ` +
+          "黑号校验异常",
+        description:
+          `${padding} M7棱镜攻势S2 炫彩 糖果纸`
+      },
+      summary
+    );
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected parsed detail");
+    expect(result.detail).toMatchObject({
+      loginPlatform: "qq",
+      service: "official",
+      totalAssetsM: 88,
+      hafCoins: 123_456,
+      realNameStatus: "second_available",
+      secondRealNameAvailable: true,
+      recoveryCoverage: true,
+      verificationAt: "2026-07-30T05:00:00.000Z",
+      banNotes: ["页面提示存在封号或黑号风险"]
+    });
+    expect(
+      result.detail.evidence.every(
+        ({ text }) => [...text].length <= 2_000
+      )
+    ).toBe(true);
+    expect(
+      result.detail.evidence.some(
+        ({ text, truncated }) =>
+          truncated &&
+          text.includes("M7棱镜攻势S2 炫彩 糖果纸")
+      )
+    ).toBe(true);
+  });
 });

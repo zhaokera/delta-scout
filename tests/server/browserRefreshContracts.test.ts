@@ -85,7 +85,10 @@ const forbiddenVisibleText = [
   "验证码答案=1234",
   "校验码 : 1234",
   "<ScRiPt>alert(1)</script>",
-  "JaVaScRiPt:alert(1)"
+  "JaVaScRiPt:alert(1)",
+  "<svg onload=alert(1)>visible</svg>",
+  "<iframe src=https://evil.example>visible</iframe>",
+  "<div>visible text</div>"
 ] as const;
 
 describe("browser refresh contract constants", () => {
@@ -158,6 +161,26 @@ describe("Jiaoyimao URL and scalar validation", () => {
   });
 
   it.each([
+    ["surrounding whitespace", ` ${filterUrl}`],
+    ["leading control whitespace", `\t${filterUrl}`],
+    [
+      "an explicit default port",
+      filterUrl.replace(
+        "https://www.jiaoyimao.com",
+        "https://www.jiaoyimao.com:443"
+      )
+    ],
+    [
+      "a dot segment",
+      filterUrl.replace("/o110/", "/ignored/../o110/")
+    ]
+  ])("rejects a non-canonical filter URL with %s", (_label, currentUrl) => {
+    expect(() =>
+      BrowserFilterProofSchema.parse(filterProof({ currentUrl }))
+    ).toThrow();
+  });
+
+  it.each([
     ["external detail origin", {
       url: "https://evil.example/jg2007840/1785384225212552.html"
     }],
@@ -178,6 +201,99 @@ describe("Jiaoyimao URL and scalar validation", () => {
     expect(() =>
       BrowserDetailInputSchema.parse(detailItem(override))
     ).toThrow();
+  });
+
+  it.each([
+    [
+      "surrounding whitespace",
+      ` ${detailItem().url}`
+    ],
+    [
+      "leading control whitespace",
+      `\n${detailItem().url}`
+    ],
+    [
+      "an explicit default port",
+      detailItem().url.replace(
+        "https://www.jiaoyimao.com",
+        "https://www.jiaoyimao.com:443"
+      )
+    ],
+    [
+      "a dot segment",
+      detailItem().url.replace(
+        "/1785384225212552.html",
+        "/ignored/../1785384225212552.html"
+      )
+    ],
+    [
+      "textual path and ID disagreement",
+      detailItem().url.replace(
+        "/1785384225212552.html",
+        "/999.html/../1785384225212552.html"
+      )
+    ]
+  ])("rejects a non-canonical detail URL with %s", (_label, url) => {
+    expect(() =>
+      BrowserDetailInputSchema.parse(detailItem({ url }))
+    ).toThrow();
+  });
+
+  it.each([
+    [
+      "surrounding whitespace",
+      ` ${listItem().url}`
+    ],
+    [
+      "leading control whitespace",
+      `\t${listItem().url}`
+    ],
+    [
+      "an explicit default port",
+      listItem().url.replace(
+        "https://www.jiaoyimao.com",
+        "https://www.jiaoyimao.com:443"
+      )
+    ],
+    [
+      "a dot segment",
+      listItem().url.replace(
+        "/1785384225212552.html",
+        "/ignored/../1785384225212552.html"
+      )
+    ],
+    [
+      "textual path and ID disagreement",
+      listItem().url.replace(
+        "/1785384225212552.html",
+        "/999.html/../1785384225212552.html"
+      )
+    ]
+  ])("rejects a non-canonical list URL with %s", (_label, url) => {
+    expect(() =>
+      BrowserListBatchSchema.parse({
+        sequence: 1,
+        observedAt: now,
+        items: [listItem({ url })]
+      })
+    ).toThrow();
+  });
+
+  it("preserves canonical query strings on approved URLs", () => {
+    const detailUrl =
+      `${detailItem().url}?isGray=true&from=list`;
+    expect(BrowserFilterProofSchema.parse(filterProof()).currentUrl)
+      .toBe(filterUrl);
+    expect(
+      BrowserDetailInputSchema.parse(detailItem({ url: detailUrl })).url
+    ).toBe(detailUrl);
+    expect(
+      BrowserListBatchSchema.parse({
+        sequence: 1,
+        observedAt: now,
+        items: [listItem({ url: detailUrl })]
+      }).items[0].url
+    ).toBe(detailUrl);
   });
 
   it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])(
@@ -350,6 +466,38 @@ describe("safe visible text", () => {
         }
       }))
     ).toThrow();
+  });
+
+  it("allows comparison symbols when they do not form markup", () => {
+    const comparison = "价格 < 6000 且数量 > 0";
+    expect(BrowserListBatchSchema.safeParse({
+      sequence: 1,
+      observedAt: now,
+      items: [listItem({ title: comparison, rawText: comparison })]
+    }).success).toBe(true);
+    expect(BrowserDetailInputSchema.safeParse(detailItem({
+      sections: {
+        head: comparison,
+        report: comparison,
+        safety: comparison,
+        description: comparison
+      }
+    })).success).toBe(true);
+    expect(BrowserFilterProofSchema.safeParse(filterProof({
+      gameLabel: comparison,
+      platformLabel: comparison,
+      categoryLabel: comparison,
+      m7FilterLabels: [
+        comparison,
+        comparison,
+        comparison,
+        comparison
+      ]
+    })).success).toBe(true);
+    expect(BrowserPauseSchema.safeParse({
+      reason: "captcha_required",
+      message: comparison
+    }).success).toBe(true);
   });
 });
 
