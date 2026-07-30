@@ -66,8 +66,7 @@ const PoolModeSchema = z.enum(["balanced", "global"]);
 const HistoryLimitSchema = z.coerce.number().int().min(1).max(50);
 const EmptyBodySchema = z.strictObject({});
 const ClaimBodySchema = z.strictObject({
-  claimCode: z.string().min(1)
-    .max(BROWSER_REFRESH_LIMITS.maxClaimCodeChars)
+  claimCode: z.string()
 });
 type PoolMode = z.infer<typeof PoolModeSchema>;
 
@@ -128,10 +127,10 @@ function sendBrowserError(
   });
 }
 
-function readBearerToken(authorization: string | undefined): string | null {
-  if (!authorization) return null;
-  const match = authorization.match(/^Bearer ([A-Za-z0-9_-]{16,256})$/);
-  return match?.[1] ?? null;
+function readBearerToken(authorization: string | undefined): string {
+  if (!authorization) return "";
+  const match = authorization.match(/^Bearer[ \t]+(.*)$/i);
+  return match?.[1] ?? authorization;
 }
 
 const BROWSER_REFRESH_PATH_PREFIXES = [
@@ -369,17 +368,8 @@ export function createApp(dependencies?: AppDependencies): Express {
   } = dependencies;
 
   const bridgeToken = (
-    authorization: string | undefined,
-    response: Response
-  ): string | null => {
-    const token = readBearerToken(authorization);
-    if (token !== null) return token;
-    response.status(401).json({
-      error: "bridge_unauthorized",
-      message: BROWSER_ERROR_MESSAGES.bridge_unauthorized
-    });
-    return null;
-  };
+    authorization: string | undefined
+  ): string => readBearerToken(authorization);
 
   app.post(
     "/api/sources/jiaoyimao/browser-refresh",
@@ -459,8 +449,7 @@ export function createApp(dependencies?: AppDependencies): Express {
   });
 
   app.get("/api/browser-refresh/:id/work", (request, response) => {
-    const token = bridgeToken(request.get("authorization"), response);
-    if (token === null) return;
+    const token = bridgeToken(request.get("authorization"));
     try {
       response.json(browserService.getWork(request.params.id, token));
     } catch (error) {
@@ -471,14 +460,17 @@ export function createApp(dependencies?: AppDependencies): Express {
   app.post(
     "/api/browser-refresh/:id/filter-proof",
     (request, response) => {
-      const token = bridgeToken(request.get("authorization"), response);
-      if (token === null) return;
+      const token = bridgeToken(request.get("authorization"));
       try {
+        const authorization = browserService.authorize(
+          request.params.id,
+          token
+        );
         const body = BrowserFilterProofSchema.parse(request.body);
         response.json(
           browserService.saveFilterProof(
             request.params.id,
-            token,
+            authorization,
             body
           )
         );
@@ -491,14 +483,17 @@ export function createApp(dependencies?: AppDependencies): Express {
   app.post(
     "/api/browser-refresh/:id/list-batches",
     (request, response) => {
-      const token = bridgeToken(request.get("authorization"), response);
-      if (token === null) return;
+      const token = bridgeToken(request.get("authorization"));
       try {
+        const authorization = browserService.authorize(
+          request.params.id,
+          token
+        );
         const body = BrowserListBatchSchema.parse(request.body);
         response.json(
           browserService.submitListBatch(
             request.params.id,
-            token,
+            authorization,
             body
           )
         );
@@ -511,14 +506,17 @@ export function createApp(dependencies?: AppDependencies): Express {
   app.post(
     "/api/browser-refresh/:id/load-events",
     (request, response) => {
-      const token = bridgeToken(request.get("authorization"), response);
-      if (token === null) return;
+      const token = bridgeToken(request.get("authorization"));
       try {
+        const authorization = browserService.authorize(
+          request.params.id,
+          token
+        );
         const body = BrowserLoadEventSchema.parse(request.body);
         response.json(
           browserService.submitLoadEvent(
             request.params.id,
-            token,
+            authorization,
             body
           )
         );
@@ -531,14 +529,17 @@ export function createApp(dependencies?: AppDependencies): Express {
   app.post(
     "/api/browser-refresh/:id/details",
     (request, response) => {
-      const token = bridgeToken(request.get("authorization"), response);
-      if (token === null) return;
+      const token = bridgeToken(request.get("authorization"));
       try {
+        const authorization = browserService.authorize(
+          request.params.id,
+          token
+        );
         const body = BrowserDetailBatchSchema.parse(request.body);
         response.json(
           browserService.submitDetails(
             request.params.id,
-            token,
+            authorization,
             body
           )
         );
@@ -549,12 +550,19 @@ export function createApp(dependencies?: AppDependencies): Express {
   );
 
   app.post("/api/browser-refresh/:id/pause", (request, response) => {
-    const token = bridgeToken(request.get("authorization"), response);
-    if (token === null) return;
+    const token = bridgeToken(request.get("authorization"));
     try {
+      const authorization = browserService.authorize(
+        request.params.id,
+        token
+      );
       const body = BrowserPauseSchema.parse(request.body);
       response.json(
-        browserService.pause(request.params.id, token, body)
+        browserService.pause(
+          request.params.id,
+          authorization,
+          body
+        )
       );
     } catch (error) {
       sendBrowserError(response, error, true);
@@ -562,11 +570,16 @@ export function createApp(dependencies?: AppDependencies): Express {
   });
 
   app.post("/api/browser-refresh/:id/resume", (request, response) => {
-    const token = bridgeToken(request.get("authorization"), response);
-    if (token === null) return;
+    const token = bridgeToken(request.get("authorization"));
     try {
+      const authorization = browserService.authorize(
+        request.params.id,
+        token
+      );
       EmptyBodySchema.parse(request.body);
-      response.json(browserService.resume(request.params.id, token));
+      response.json(
+        browserService.resume(request.params.id, authorization)
+      );
     } catch (error) {
       sendBrowserError(response, error, true);
     }
@@ -575,12 +588,18 @@ export function createApp(dependencies?: AppDependencies): Express {
   app.post(
     "/api/browser-refresh/:id/cooldown",
     (request, response) => {
-      const token = bridgeToken(request.get("authorization"), response);
-      if (token === null) return;
+      const token = bridgeToken(request.get("authorization"));
       try {
+        const authorization = browserService.authorize(
+          request.params.id,
+          token
+        );
         BrowserCooldownSchema.parse(request.body);
         response.json(
-          browserService.startCooldown(request.params.id, token)
+          browserService.startCooldown(
+            request.params.id,
+            authorization
+          )
         );
       } catch (error) {
         sendBrowserError(response, error, true);
@@ -589,11 +608,16 @@ export function createApp(dependencies?: AppDependencies): Express {
   );
 
   app.post("/api/browser-refresh/:id/complete", (request, response) => {
-    const token = bridgeToken(request.get("authorization"), response);
-    if (token === null) return;
+    const token = bridgeToken(request.get("authorization"));
     try {
+      const authorization = browserService.authorize(
+        request.params.id,
+        token
+      );
       EmptyBodySchema.parse(request.body);
-      response.json(browserService.complete(request.params.id, token));
+      response.json(
+        browserService.complete(request.params.id, authorization)
+      );
     } catch (error) {
       sendBrowserError(response, error, true);
     }

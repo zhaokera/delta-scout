@@ -302,6 +302,18 @@ function credentialMatches(value: string, encoded: string): boolean {
   }
 }
 
+const PROCESS_DUMMY_CREDENTIAL_HASH = encodeCredential(
+  "browser-refresh-process-dummy-credential"
+);
+
+export interface BrowserRefreshRepositoryOptions {
+  credentialVerifier?: (
+    value: string,
+    encoded: string
+  ) => boolean;
+  dummyCredentialHash?: string;
+}
+
 function payloadHash(value: unknown): string {
   return createHash("sha256")
     .update(JSON.stringify(value), "utf8")
@@ -409,8 +421,22 @@ export class BrowserRefreshRepository {
   private readonly savepointPrefix =
     randomBytes(8).toString("hex");
   private savepointSequence = 0;
+  private readonly credentialVerifier: (
+    value: string,
+    encoded: string
+  ) => boolean;
+  private readonly dummyCredentialHash: string;
 
-  constructor(private readonly database: DatabaseSync) {}
+  constructor(
+    private readonly database: DatabaseSync,
+    options: BrowserRefreshRepositoryOptions = {}
+  ) {
+    this.credentialVerifier =
+      options.credentialVerifier ?? credentialMatches;
+    this.dummyCredentialHash =
+      options.dummyCredentialHash ??
+      PROCESS_DUMMY_CREDENTIAL_HASH;
+  }
 
   createJob(now = new Date()): CreatedBrowserRefreshJob {
     this.expireJobs(now);
@@ -505,19 +531,24 @@ export class BrowserRefreshRepository {
     const timestamp = now.toISOString();
     const bridgeToken = opaqueCredential();
     this.runTransaction(() => {
-      const row = this.requireRow(id);
+      const row = this.findRow(id);
+      const suppliedCredentialMatches =
+        this.verifyStoredOrDummyCredential(
+          claimCode,
+          row?.claim_code_hash ?? null
+        );
       const claimableAfterRestart =
-        row.state === "paused" &&
+        row?.state === "paused" &&
         row.reason === "process_interrupted" &&
         row.claimed_at === null &&
         row.bridge_token_hash === null;
       if (
+        row === undefined ||
+        !suppliedCredentialMatches ||
         (
           row.state !== "awaiting_codex" &&
           !claimableAfterRestart
-        ) ||
-        row.claim_code_hash === null ||
-        !credentialMatches(claimCode, row.claim_code_hash)
+        )
       ) {
         throw new BrowserRefreshRepositoryError(
           "invalid_claim_code",
@@ -549,11 +580,17 @@ export class BrowserRefreshRepository {
     now = new Date()
   ): BrowserRefreshJobView {
     this.expireJobs(now);
-    const row = this.requireRow(id);
+    const row = this.findRow(id);
+    const suppliedCredentialMatches =
+      this.verifyStoredOrDummyCredential(
+        token,
+        row?.bridge_token_hash ?? null
+      );
     if (
+      row === undefined ||
+      !suppliedCredentialMatches ||
       isTerminal(row.state) ||
-      row.bridge_token_hash === null ||
-      !credentialMatches(token, row.bridge_token_hash)
+      row.bridge_token_hash === null
     ) {
       throw new BrowserRefreshRepositoryError(
         "invalid_bridge_token",
@@ -561,6 +598,17 @@ export class BrowserRefreshRepository {
       );
     }
     return toView(row);
+  }
+
+  private verifyStoredOrDummyCredential(
+    supplied: string,
+    storedHash: string | null
+  ): boolean {
+    const matched = this.credentialVerifier(
+      supplied,
+      storedHash ?? this.dummyCredentialHash
+    );
+    return storedHash !== null && matched;
   }
 
   getFilterProof(

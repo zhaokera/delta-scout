@@ -147,6 +147,20 @@ interface PlannedOutcome {
   transition: BrowserRefreshOutcomeTransition;
 }
 
+const AUTHORIZED_BROWSER_REFRESH = Symbol(
+  "authorized-browser-refresh"
+);
+
+interface AuthorizedBrowserRefresh {
+  readonly [AUTHORIZED_BROWSER_REFRESH]: true;
+  readonly id: string;
+  readonly job: BrowserRefreshJobView;
+}
+
+type BrowserRefreshCredential =
+  | string
+  | AuthorizedBrowserRefresh;
+
 const COOLDOWN_DELAYS_MS = [30_000, 120_000, 300_000, 900_000] as const;
 const ACTION_PERMIT_LIFETIME_MS = 60_000;
 
@@ -183,20 +197,6 @@ export class JiaoyimaoBrowserTaskService {
 
   claim(id: string, claimCode: string): ClaimedBrowserRefreshJob {
     const now = this.now();
-    const job = this.requireJob(id, now);
-    this.assertCommand(job, "claim");
-    if (
-      job.state === "paused" &&
-      (
-        job.reason !== "process_interrupted" ||
-        job.claimedAt !== null
-      )
-    ) {
-      throw new BrowserRefreshServiceError(
-        "invalid_transition",
-        "Only an interrupted unclaimed job may be claimed from paused"
-      );
-    }
     try {
       return this.repository.claimJob(id, claimCode, now);
     } catch (error) {
@@ -204,7 +204,22 @@ export class JiaoyimaoBrowserTaskService {
     }
   }
 
-  getWork(id: string, bridgeToken: string): BrowserRefreshWork {
+  authorize(
+    id: string,
+    bridgeToken: string
+  ): AuthorizedBrowserRefresh {
+    const job = this.authenticate(id, bridgeToken, this.now());
+    return {
+      [AUTHORIZED_BROWSER_REFRESH]: true,
+      id,
+      job
+    };
+  }
+
+  getWork(
+    id: string,
+    bridgeToken: BrowserRefreshCredential
+  ): BrowserRefreshWork {
     const now = this.now();
     let job = this.authenticate(id, bridgeToken, now);
     this.assertCommand(job, "getWork");
@@ -309,7 +324,7 @@ export class JiaoyimaoBrowserTaskService {
 
   saveFilterProof(
     id: string,
-    bridgeToken: string,
+    bridgeToken: BrowserRefreshCredential,
     proof: BrowserFilterProof
   ): BrowserRefreshJobView {
     const now = this.now();
@@ -345,7 +360,7 @@ export class JiaoyimaoBrowserTaskService {
 
   submitListBatch(
     id: string,
-    bridgeToken: string,
+    bridgeToken: BrowserRefreshCredential,
     batch: BrowserListBatch
   ): AcceptedBatchView {
     const now = this.now();
@@ -382,7 +397,7 @@ export class JiaoyimaoBrowserTaskService {
 
   submitLoadEvent(
     id: string,
-    bridgeToken: string,
+    bridgeToken: BrowserRefreshCredential,
     event: BrowserLoadEvent
   ): AcceptedLoadEventView {
     const now = this.now();
@@ -424,7 +439,7 @@ export class JiaoyimaoBrowserTaskService {
 
   submitDetails(
     id: string,
-    bridgeToken: string,
+    bridgeToken: BrowserRefreshCredential,
     batch: BrowserDetailBatch
   ): DetailProgressView {
     const now = this.now();
@@ -482,7 +497,7 @@ export class JiaoyimaoBrowserTaskService {
 
   pause(
     id: string,
-    bridgeToken: string,
+    bridgeToken: BrowserRefreshCredential,
     pause: BrowserPause
   ): BrowserRefreshJobView {
     const now = this.now();
@@ -511,7 +526,10 @@ export class JiaoyimaoBrowserTaskService {
     }
   }
 
-  resume(id: string, bridgeToken: string): BrowserRefreshJobView {
+  resume(
+    id: string,
+    bridgeToken: BrowserRefreshCredential
+  ): BrowserRefreshJobView {
     const now = this.now();
     const job = this.authenticate(id, bridgeToken, now);
     this.assertCommand(job, "resume");
@@ -582,7 +600,7 @@ export class JiaoyimaoBrowserTaskService {
 
   startCooldown(
     id: string,
-    bridgeToken: string
+    bridgeToken: BrowserRefreshCredential
   ): BrowserRefreshJobView {
     const now = this.now();
     const job = this.authenticate(id, bridgeToken, now);
@@ -667,7 +685,7 @@ export class JiaoyimaoBrowserTaskService {
 
   complete(
     id: string,
-    bridgeToken: string
+    bridgeToken: BrowserRefreshCredential
   ): CommitBrowserSourceRefreshResult {
     const now = this.now();
     const job = this.authenticate(id, bridgeToken, now);
@@ -1053,10 +1071,21 @@ export class JiaoyimaoBrowserTaskService {
 
   private authenticate(
     id: string,
-    bridgeToken: string,
+    bridgeToken: BrowserRefreshCredential,
     now: Date
   ): BrowserRefreshJobView {
-    this.requireJob(id, now);
+    if (typeof bridgeToken !== "string") {
+      if (
+        bridgeToken[AUTHORIZED_BROWSER_REFRESH] &&
+        bridgeToken.id === id
+      ) {
+        return bridgeToken.job;
+      }
+      throw new BrowserRefreshServiceError(
+        "bridge_unauthorized",
+        "The bridge credential is invalid"
+      );
+    }
     try {
       return this.repository.verifyBridgeToken(id, bridgeToken, now);
     } catch (error) {

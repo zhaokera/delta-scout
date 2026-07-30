@@ -188,7 +188,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     expect(result.state).toBe("collecting_list");
     expectCode(
       () => f.service.claim(created.id, created.claimCode),
-      "invalid_transition"
+      "bridge_unauthorized"
     );
   });
 
@@ -693,7 +693,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     );
     expectCode(
       () => arbitrary.service.claim(other.id, other.claimCode),
-      "invalid_transition"
+      "bridge_unauthorized"
     );
   });
 

@@ -314,6 +314,40 @@ describe("browser refresh database migration", () => {
 });
 
 describe("BrowserRefreshRepository credentials and jobs", () => {
+  it("runs unknown claim and token secrets through the injected dummy verifier", () => {
+    const database = createDatabase(":memory:");
+    const verifier = vi.fn(() => false);
+    const repository = new BrowserRefreshRepository(database, {
+      credentialVerifier: verifier,
+      dummyCredentialHash: "fixed-process-dummy-hash"
+    });
+
+    expect(() =>
+      repository.claimJob("unknown-job", "x", now)
+    ).toThrow(expect.objectContaining({
+      code: "invalid_claim_code"
+    }));
+    expect(verifier).toHaveBeenCalledWith(
+      "x",
+      "fixed-process-dummy-hash"
+    );
+
+    verifier.mockClear();
+    expect(() =>
+      repository.verifyBridgeToken(
+        "unknown-job",
+        "malformed token",
+        now
+      )
+    ).toThrow(expect.objectContaining({
+      code: "invalid_bridge_token"
+    }));
+    expect(verifier).toHaveBeenCalledWith(
+      "malformed token",
+      "fixed-process-dummy-hash"
+    );
+  });
+
   it("allows only one non-terminal job and releases the slot after terminal transition", () => {
     const { repository } = makeRepository();
     const first = repository.createJob(now);

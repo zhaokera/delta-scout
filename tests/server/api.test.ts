@@ -1533,13 +1533,135 @@ describe("browser refresh API", () => {
     const replay = await request(f.app)
       .post(`/api/browser-refresh/${created.body.jobId}/claim`)
       .send({ claimCode: created.body.claimCode });
-    expect(replay.status).toBe(409);
+    expect(replay.status).toBe(401);
+    expect(replay.body).toEqual({
+      error: "bridge_unauthorized",
+      message: "浏览器桥接凭据无效或已过期"
+    });
     expect(JSON.stringify(replay.body)).not.toContain(
       created.body.claimCode
     );
     expect(JSON.stringify(replay.body)).not.toContain(
       claimed.body.bridgeToken
     );
+  });
+
+  it("makes unknown, wrong, expired, and consumed claims indistinguishable", async () => {
+    const unauthorized = {
+      error: "bridge_unauthorized",
+      message: "浏览器桥接凭据无效或已过期"
+    };
+
+    const unknown = browserApiSetup();
+    const unknownResponse = await request(unknown.app)
+      .post("/api/browser-refresh/unknown-job/claim")
+      .send({ claimCode: "x" });
+
+    const wrong = browserApiSetup();
+    const wrongCreated = await request(wrong.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .send({});
+    const wrongResponse = await request(wrong.app)
+      .post(`/api/browser-refresh/${wrongCreated.body.jobId}/claim`)
+      .send({ claimCode: "x" });
+
+    const expired = browserApiSetup();
+    const expiredCreated = await request(expired.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .send({});
+    expired.database.prepare(`
+      UPDATE browser_refresh_jobs SET expires_at = ?
+      WHERE id = ?
+    `).run(
+      new Date(browserBaseTime.getTime() - 1).toISOString(),
+      expiredCreated.body.jobId
+    );
+    const expiredResponse = await request(expired.app)
+      .post(`/api/browser-refresh/${expiredCreated.body.jobId}/claim`)
+      .send({ claimCode: expiredCreated.body.claimCode });
+
+    const consumed = browserApiSetup();
+    const consumedCreated = await request(consumed.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .send({});
+    await request(consumed.app)
+      .post(`/api/browser-refresh/${consumedCreated.body.jobId}/claim`)
+      .send({ claimCode: consumedCreated.body.claimCode })
+      .expect(200);
+    const consumedResponse = await request(consumed.app)
+      .post(`/api/browser-refresh/${consumedCreated.body.jobId}/claim`)
+      .send({ claimCode: consumedCreated.body.claimCode });
+
+    for (const response of [
+      unknownResponse,
+      wrongResponse,
+      expiredResponse,
+      consumedResponse
+    ]) {
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual(unauthorized);
+    }
+  });
+
+  it("makes unknown, wrong, expired, terminal, and malformed Bearer tokens indistinguishable", async () => {
+    const unauthorized = {
+      error: "bridge_unauthorized",
+      message: "浏览器桥接凭据无效或已过期"
+    };
+
+    const unknown = browserApiSetup();
+    const unknownResponse = await request(unknown.app)
+      .get("/api/browser-refresh/unknown-job/work")
+      .set("Authorization", "Bearer x");
+
+    const wrong = browserApiSetup();
+    const wrongJob = await createAndClaimBrowserJob(wrong);
+    const wrongResponse = await request(wrong.app)
+      .get(`/api/browser-refresh/${wrongJob.id}/work`)
+      .set("Authorization", "Basic malformed");
+
+    const expired = browserApiSetup();
+    const expiredJob = await createAndClaimBrowserJob(expired);
+    expired.database.prepare(`
+      UPDATE browser_refresh_jobs SET expires_at = ?
+      WHERE id = ?
+    `).run(
+      new Date(browserBaseTime.getTime() - 1).toISOString(),
+      expiredJob.id
+    );
+    const expiredResponse = await request(expired.app)
+      .get(`/api/browser-refresh/${expiredJob.id}/work`)
+      .set("Authorization", bearer(expiredJob.token));
+
+    const terminal = browserApiSetup();
+    const terminalJob = await createAndClaimBrowserJob(terminal);
+    await request(terminal.app)
+      .post(
+        `/api/sources/jiaoyimao/browser-refresh/${
+          terminalJob.id
+        }/cancel`
+      )
+      .send({})
+      .expect(200);
+    const terminalResponse = await request(terminal.app)
+      .get(`/api/browser-refresh/${terminalJob.id}/work`)
+      .set("Authorization", bearer(terminalJob.token));
+
+    const missing = browserApiSetup();
+    const missingJob = await createAndClaimBrowserJob(missing);
+    const missingResponse = await request(missing.app)
+      .get(`/api/browser-refresh/${missingJob.id}/work`);
+
+    for (const response of [
+      unknownResponse,
+      wrongResponse,
+      expiredResponse,
+      terminalResponse,
+      missingResponse
+    ]) {
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual(unauthorized);
+    }
   });
 
   it("requires a valid unexpired Bearer credential on every bridge route", async () => {
