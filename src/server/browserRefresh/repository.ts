@@ -6,6 +6,7 @@ import {
   timingSafeEqual
 } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { z } from "zod";
 import {
   BROWSER_REFRESH_LIMITS,
   BrowserDetailBatchSchema,
@@ -42,7 +43,8 @@ export type BrowserRefreshRepositoryErrorCode =
   | "missing_list_item"
   | "invalid_load_event"
   | "invalid_action_permit"
-  | "invalid_terminal_linkage";
+  | "invalid_terminal_linkage"
+  | "browser_refresh_corrupt_replay";
 
 export class BrowserRefreshRepositoryError extends Error {
   constructor(
@@ -82,7 +84,7 @@ export interface BrowserRefreshJobView {
   publishedRunId: number | null;
 }
 
-export interface BrowserRefreshJobRecord extends BrowserRefreshJobView {
+interface BrowserRefreshJobRecord extends BrowserRefreshJobView {
   claimCodeHash: string | null;
   bridgeTokenHash: string | null;
   actionPermitHash: string | null;
@@ -115,6 +117,32 @@ export interface DetailProgressView {
   nextSourceListingId: string | null;
   nextSequence: number;
 }
+
+const AcceptedBatchViewSchema = z.strictObject({
+  acceptedCount: z.number().int().nonnegative()
+    .max(BROWSER_REFRESH_LIMITS.maxListItemsPerBatch),
+  uniqueItemCount: z.number().int().nonnegative()
+    .max(BROWSER_REFRESH_LIMITS.maxUniqueItems),
+  nextSequence: z.number().int().positive()
+});
+
+const AcceptedLoadEventViewSchema = z.strictObject({
+  acceptedCount: z.literal(1),
+  loadActionCount: z.number().int().nonnegative()
+    .max(BROWSER_REFRESH_LIMITS.maxLoadEvents),
+  nextSequence: z.number().int().positive()
+});
+
+const DetailProgressViewSchema = z.strictObject({
+  acceptedCount: z.number().int().nonnegative()
+    .max(BROWSER_REFRESH_LIMITS.maxDetailsPerBatch),
+  detailCompletedCount: z.number().int().nonnegative()
+    .max(BROWSER_REFRESH_LIMITS.maxUniqueItems),
+  detailRequiredCount: z.number().int().nonnegative()
+    .max(BROWSER_REFRESH_LIMITS.maxUniqueItems),
+  nextSourceListingId: z.string().regex(/^\d+$/).nullable(),
+  nextSequence: z.number().int().positive()
+});
 
 export interface BrowserRefreshTransitionPatch {
   stage?: string;
@@ -255,11 +283,33 @@ function toView(row: JobRow): BrowserRefreshJobView {
   return view;
 }
 
-function parseStoredResult<T>(json: string): T {
-  return JSON.parse(json) as T;
+function parseStoredResult<T>(
+  json: string,
+  schema: z.ZodType<T>
+): T {
+  try {
+    return schema.parse(JSON.parse(json));
+  } catch {
+    throw new BrowserRefreshRepositoryError(
+      "browser_refresh_corrupt_replay",
+      "Stored browser refresh replay result is corrupt"
+    );
+  }
+}
+
+function canonicalIsoTimestamp(value: string): boolean {
+  const milliseconds = Date.parse(value);
+  return (
+    Number.isFinite(milliseconds) &&
+    new Date(milliseconds).toISOString() === value
+  );
 }
 
 export class BrowserRefreshRepository {
+  private readonly savepointPrefix =
+    randomBytes(8).toString("hex");
+  private savepointSequence = 0;
+
   constructor(private readonly database: DatabaseSync) {}
 
   createJob(now = new Date()): CreatedBrowserRefreshJob {
@@ -271,41 +321,36 @@ export class BrowserRefreshRepository {
       now.getTime() + JOB_LIFETIME_MS
     ).toISOString();
     try {
-      this.database.exec("BEGIN IMMEDIATE");
-      const active = this.database.prepare(`
-        SELECT id FROM browser_refresh_jobs
-        WHERE source = 'jiaoyimao'
-          AND state NOT IN (
-            'success', 'quarantined', 'failed', 'cancelled', 'expired'
-          )
-        LIMIT 1
-      `).get();
-      if (active) {
-        throw new BrowserRefreshRepositoryError(
-          "active_job_exists",
-          "A browser refresh job is already active"
+      this.runTransaction(() => {
+        const active = this.database.prepare(`
+          SELECT id FROM browser_refresh_jobs
+          WHERE source = 'jiaoyimao'
+            AND state NOT IN (
+              'success', 'quarantined', 'failed', 'cancelled', 'expired'
+            )
+          LIMIT 1
+        `).get();
+        if (active) {
+          throw new BrowserRefreshRepositoryError(
+            "active_job_exists",
+            "A browser refresh job is already active"
+          );
+        }
+        this.database.prepare(`
+          INSERT INTO browser_refresh_jobs (
+            id, source, state, stage, claim_code_hash,
+            created_at, updated_at, expires_at
+          ) VALUES (?, 'jiaoyimao', 'awaiting_codex', 'awaiting_claim',
+            ?, ?, ?, ?)
+        `).run(
+          id,
+          encodeCredential(claimCode),
+          timestamp,
+          timestamp,
+          expiresAt
         );
-      }
-      this.database.prepare(`
-        INSERT INTO browser_refresh_jobs (
-          id, source, state, stage, claim_code_hash,
-          created_at, updated_at, expires_at
-        ) VALUES (?, 'jiaoyimao', 'awaiting_codex', 'awaiting_claim',
-          ?, ?, ?, ?)
-      `).run(
-        id,
-        encodeCredential(claimCode),
-        timestamp,
-        timestamp,
-        expiresAt
-      );
-      this.database.exec("COMMIT");
+      });
     } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
-      }
       if (error instanceof BrowserRefreshRepositoryError) throw error;
       if (
         error instanceof Error &&
@@ -345,10 +390,10 @@ export class BrowserRefreshRepository {
   getJobRecord(
     id: string,
     now = new Date()
-  ): BrowserRefreshJobRecord | null {
+  ): BrowserRefreshJobView | null {
     this.expireJobs(now);
     const row = this.findRow(id);
-    return row ? toRecord(row) : null;
+    return row ? toView(row) : null;
   }
 
   claimJob(
@@ -359,8 +404,7 @@ export class BrowserRefreshRepository {
     this.expireJobs(now);
     const timestamp = now.toISOString();
     const bridgeToken = opaqueCredential();
-    try {
-      this.database.exec("BEGIN IMMEDIATE");
+    this.runTransaction(() => {
       const row = this.requireRow(id);
       if (
         row.state !== "awaiting_codex" ||
@@ -387,15 +431,7 @@ export class BrowserRefreshRepository {
         timestamp,
         id
       );
-      this.database.exec("COMMIT");
-    } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
-      }
-      throw error;
-    }
+    });
     return { ...toView(this.requireRow(id)), bridgeToken };
   }
 
@@ -403,7 +439,7 @@ export class BrowserRefreshRepository {
     id: string,
     token: string,
     now = new Date()
-  ): BrowserRefreshJobRecord {
+  ): BrowserRefreshJobView {
     this.expireJobs(now);
     const row = this.requireRow(id);
     if (
@@ -416,7 +452,7 @@ export class BrowserRefreshRepository {
         "The bridge credential is invalid or the job is terminal"
       );
     }
-    return toRecord(row);
+    return toView(row);
   }
 
   saveFilterProof(
@@ -425,34 +461,36 @@ export class BrowserRefreshRepository {
     now = new Date()
   ): void {
     this.expireJobs(now);
-    this.requireActiveRow(id);
     const parsed = BrowserFilterProofSchema.parse(proof);
-    this.database.prepare(`
-      INSERT INTO browser_refresh_filter_proofs (
-        job_id, current_url, game_label, platform_label,
-        category_label, m7_filter_labels_json, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(job_id) DO UPDATE SET
-        current_url = excluded.current_url,
-        game_label = excluded.game_label,
-        platform_label = excluded.platform_label,
-        category_label = excluded.category_label,
-        m7_filter_labels_json = excluded.m7_filter_labels_json,
-        observed_at = excluded.observed_at
-    `).run(
-      id,
-      parsed.currentUrl,
-      parsed.gameLabel,
-      parsed.platformLabel,
-      parsed.categoryLabel,
-      JSON.stringify(parsed.m7FilterLabels),
-      parsed.observedAt
-    );
-    this.database.prepare(`
-      UPDATE browser_refresh_jobs
-      SET filter_url = ?, updated_at = ?
-      WHERE id = ?
-    `).run(parsed.currentUrl, now.toISOString(), id);
+    this.runTransaction(() => {
+      this.requireActiveRow(id);
+      this.database.prepare(`
+        INSERT INTO browser_refresh_filter_proofs (
+          job_id, current_url, game_label, platform_label,
+          category_label, m7_filter_labels_json, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(job_id) DO UPDATE SET
+          current_url = excluded.current_url,
+          game_label = excluded.game_label,
+          platform_label = excluded.platform_label,
+          category_label = excluded.category_label,
+          m7_filter_labels_json = excluded.m7_filter_labels_json,
+          observed_at = excluded.observed_at
+      `).run(
+        id,
+        parsed.currentUrl,
+        parsed.gameLabel,
+        parsed.platformLabel,
+        parsed.categoryLabel,
+        JSON.stringify(parsed.m7FilterLabels),
+        parsed.observedAt
+      );
+      this.database.prepare(`
+        UPDATE browser_refresh_jobs
+        SET filter_url = ?, updated_at = ?
+        WHERE id = ?
+      `).run(parsed.currentUrl, now.toISOString(), id);
+    });
   }
 
   acceptListBatch(
@@ -463,8 +501,7 @@ export class BrowserRefreshRepository {
     this.expireJobs(now);
     const parsed = BrowserListBatchSchema.parse(batch);
     const hash = payloadHash(parsed);
-    try {
-      this.database.exec("BEGIN IMMEDIATE");
+    return this.runTransaction(() => {
       const job = this.requireActiveRow(id);
       const replay = this.findBatch(id, "list", parsed.sequence);
       if (replay) {
@@ -474,9 +511,9 @@ export class BrowserRefreshRepository {
             "List batch sequence was already used with a different hash"
           );
         }
-        this.database.exec("COMMIT");
         return parseStoredResult<AcceptedBatchView>(
-          replay.accepted_result_json
+          replay.accepted_result_json,
+          AcceptedBatchViewSchema
         );
       }
       if (parsed.sequence !== job.list_batch_cursor + 1) {
@@ -550,16 +587,8 @@ export class BrowserRefreshRepository {
         now.toISOString(),
         id
       );
-      this.database.exec("COMMIT");
       return result;
-    } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
-      }
-      throw error;
-    }
+    });
   }
 
   acceptLoadEvent(
@@ -570,8 +599,7 @@ export class BrowserRefreshRepository {
     this.expireJobs(now);
     const parsed = BrowserLoadEventSchema.parse(event);
     const hash = payloadHash(parsed);
-    try {
-      this.database.exec("BEGIN IMMEDIATE");
+    return this.runTransaction(() => {
       const job = this.requireActiveRow(id);
       const existing = this.database.prepare(`
         SELECT payload_hash, accepted_result_json
@@ -597,9 +625,9 @@ export class BrowserRefreshRepository {
               nextSequence: parsed.sequence + 1
             }
           : parseStoredResult<AcceptedLoadEventView>(
-              existing.accepted_result_json
+              existing.accepted_result_json,
+              AcceptedLoadEventViewSchema
             );
-        this.database.exec("COMMIT");
         return result;
       }
       const previous = this.database.prepare(`
@@ -670,16 +698,8 @@ export class BrowserRefreshRepository {
         SET load_action_count = ?, updated_at = ?
         WHERE id = ?
       `).run(loadActionCount, now.toISOString(), id);
-      this.database.exec("COMMIT");
       return result;
-    } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
-      }
-      throw error;
-    }
+    });
   }
 
   acceptDetailBatch(
@@ -690,8 +710,7 @@ export class BrowserRefreshRepository {
     this.expireJobs(now);
     const parsed = BrowserDetailBatchSchema.parse(batch);
     const hash = payloadHash(parsed);
-    try {
-      this.database.exec("BEGIN IMMEDIATE");
+    return this.runTransaction(() => {
       const job = this.requireActiveRow(id);
       const replay = this.findBatch(id, "detail", parsed.sequence);
       if (replay) {
@@ -701,9 +720,9 @@ export class BrowserRefreshRepository {
             "Detail batch sequence was already used with a different hash"
           );
         }
-        this.database.exec("COMMIT");
         return parseStoredResult<DetailProgressView>(
-          replay.accepted_result_json
+          replay.accepted_result_json,
+          DetailProgressViewSchema
         );
       }
       const sequence = this.database.prepare(`
@@ -783,16 +802,8 @@ export class BrowserRefreshRepository {
         SET detail_completed_count = ?, updated_at = ?
         WHERE id = ?
       `).run(completed.count, now.toISOString(), id);
-      this.database.exec("COMMIT");
       return result;
-    } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
-      }
-      throw error;
-    }
+    });
   }
 
   transition(
@@ -810,9 +821,18 @@ export class BrowserRefreshRepository {
         "At least one expected state is required"
       );
     }
+    if (
+      patch.actionPermitExpiresAt !== undefined &&
+      patch.actionPermitExpiresAt !== null &&
+      !canonicalIsoTimestamp(patch.actionPermitExpiresAt)
+    ) {
+      throw new BrowserRefreshRepositoryError(
+        "invalid_transition",
+        "Action permit expiry must be a canonical UTC timestamp"
+      );
+    }
     const timestamp = now.toISOString();
-    try {
-      this.database.exec("BEGIN IMMEDIATE");
+    return this.runTransaction(() => {
       const row = this.requireRow(id);
       if (!expected.includes(row.state)) {
         throw new BrowserRefreshRepositoryError(
@@ -820,9 +840,9 @@ export class BrowserRefreshRepository {
           `Cannot transition from ${row.state} to ${next}`
         );
       }
-      if (isTerminal(row.state) && row.state !== next) {
+      if (isTerminal(row.state)) {
         throw new BrowserRefreshRepositoryError(
-          "invalid_transition",
+          "job_terminal",
           "Terminal browser refresh jobs cannot transition"
         );
       }
@@ -982,23 +1002,14 @@ export class BrowserRefreshRepository {
         terminal ? null : row.bridge_token_hash,
         id
       );
-      this.database.exec("COMMIT");
       return toView(this.requireRow(id));
-    } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
-      }
-      throw error;
-    }
+    });
   }
 
   recoverInterruptedJobs(now = new Date()): void {
     this.expireJobs(now);
     const timestamp = now.toISOString();
-    try {
-      this.database.exec("BEGIN IMMEDIATE");
+    this.runTransaction(() => {
       this.database.prepare(`
         UPDATE browser_refresh_jobs
         SET state = 'failed',
@@ -1028,15 +1039,7 @@ export class BrowserRefreshRepository {
           'committing'
         )
       `).run(timestamp);
-      this.database.exec("COMMIT");
-    } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
-      }
-      throw error;
-    }
+    });
   }
 
   expireJobs(now = new Date()): number {
@@ -1066,8 +1069,7 @@ export class BrowserRefreshRepository {
     const cutoff = new Date(
       now.getTime() - TERMINAL_AUDIT_RETENTION_MS
     ).toISOString();
-    try {
-      this.database.exec("BEGIN IMMEDIATE");
+    return this.runTransaction(() => {
       const invalidTerminal = this.database.prepare(`
         SELECT id, state FROM browser_refresh_jobs
         WHERE (
@@ -1149,13 +1151,44 @@ export class BrowserRefreshRepository {
           AND COALESCE(finished_at, updated_at) <= ?
       `).run(cutoff);
       changes += Number(aged.changes);
-      this.database.exec("COMMIT");
       return changes;
+    });
+  }
+
+  private runTransaction<T>(operation: () => T): T {
+    const callerOwnsTransaction = this.database.isTransaction;
+    const savepoint = callerOwnsTransaction
+      ? `browser_refresh_${this.savepointPrefix}_` +
+        `${++this.savepointSequence}`
+      : null;
+    let started = false;
+    try {
+      this.database.exec(
+        savepoint === null
+          ? "BEGIN IMMEDIATE"
+          : `SAVEPOINT ${savepoint}`
+      );
+      started = true;
+      const result = operation();
+      this.database.exec(
+        savepoint === null
+          ? "COMMIT"
+          : `RELEASE SAVEPOINT ${savepoint}`
+      );
+      started = false;
+      return result;
     } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
+      if (started) {
+        try {
+          if (savepoint === null) {
+            this.database.exec("ROLLBACK");
+          } else {
+            this.database.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+            this.database.exec(`RELEASE SAVEPOINT ${savepoint}`);
+          }
+        } catch {
+          // Preserve the original transaction failure.
+        }
       }
       throw error;
     }
@@ -1248,7 +1281,8 @@ export class BrowserRefreshRepository {
       supplied === undefined ||
       job.action_permit_consumed_at !== null ||
       job.action_permit_expires_at === null ||
-      job.action_permit_expires_at <= now.toISOString() ||
+      !Number.isFinite(Date.parse(job.action_permit_expires_at)) ||
+      Date.parse(job.action_permit_expires_at) <= now.getTime() ||
       !credentialMatches(supplied, job.action_permit_hash)
     ) {
       throw new BrowserRefreshRepositoryError(

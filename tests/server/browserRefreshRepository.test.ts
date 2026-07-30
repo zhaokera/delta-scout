@@ -3,7 +3,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { createDatabase } from "../../src/server/db.js";
 import {
   BrowserRefreshRepository
@@ -180,6 +180,137 @@ describe("browser refresh database migration", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("migrates a real pre-browser schema without losing existing data", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sjz-pre-browser-"));
+    const path = join(directory, "database.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE listings (
+        listing_key TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        eligibility TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE TABLE source_status (
+        source TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        last_attempt_at TEXT,
+        last_success_at TEXT,
+        item_count INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        pages_scanned INTEGER NOT NULL DEFAULT 0,
+        stop_reason TEXT
+      );
+      CREATE TABLE scan_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        state TEXT NOT NULL,
+        error TEXT,
+        is_baseline INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE scan_source_results (
+        run_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        state TEXT NOT NULL,
+        pages_scanned INTEGER NOT NULL,
+        observed_item_count INTEGER NOT NULL,
+        eligible_count INTEGER NOT NULL,
+        balanced_candidate_count INTEGER NOT NULL,
+        global_candidate_count INTEGER NOT NULL,
+        anomaly_state TEXT NOT NULL DEFAULT 'none',
+        published INTEGER NOT NULL DEFAULT 1,
+        stop_reason TEXT,
+        error TEXT,
+        PRIMARY KEY (run_id, source),
+        FOREIGN KEY (run_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+      );
+      CREATE TABLE listing_observations (
+        run_id INTEGER NOT NULL,
+        listing_key TEXT NOT NULL,
+        source TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        eligibility TEXT NOT NULL,
+        material_hash TEXT NOT NULL,
+        stability TEXT NOT NULL,
+        consecutive_unchanged_scans INTEGER NOT NULL,
+        snapshot_json TEXT,
+        changes_json TEXT NOT NULL DEFAULT '[]',
+        availability TEXT NOT NULL DEFAULT 'active',
+        trusted INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (run_id, listing_key),
+        FOREIGN KEY (run_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+      );
+      CREATE TABLE source_anomaly_guards (
+        source TEXT PRIMARY KEY,
+        state TEXT NOT NULL DEFAULT 'clear',
+        baseline_item_count INTEGER,
+        baseline_pages_scanned INTEGER,
+        observed_item_count INTEGER,
+        observed_pages_scanned INTEGER,
+        confirmation_count INTEGER NOT NULL DEFAULT 0,
+        first_detected_at TEXT,
+        last_detected_at TEXT,
+        reason TEXT
+      );
+      INSERT INTO listings (
+        listing_key, source, eligibility, payload
+      ) VALUES ('panzhi:sentinel', 'panzhi', 'eligible',
+        '{"sentinel":true}');
+      INSERT INTO source_status (
+        source, state, last_attempt_at, last_success_at,
+        item_count, error, pages_scanned, stop_reason
+      ) VALUES ('panzhi', 'success', '2026-07-29T10:00:00.000Z',
+        '2026-07-29T10:00:00.000Z', 1, NULL, 3, 'end_of_pages');
+      INSERT INTO scan_runs (
+        id, started_at, finished_at, state, error, is_baseline
+      ) VALUES (7, '2026-07-29T10:00:00.000Z',
+        '2026-07-29T10:01:00.000Z', 'success', NULL, 0);
+    `);
+    legacy.close();
+
+    try {
+      const migrated = createDatabase(path);
+      expect(
+        migrated.prepare(`
+          SELECT listing_key, payload FROM listings
+          WHERE listing_key = 'panzhi:sentinel'
+        `).get()
+      ).toEqual({
+        listing_key: "panzhi:sentinel",
+        payload: '{"sentinel":true}'
+      });
+      expect(
+        migrated.prepare(`
+          SELECT state, item_count, pages_scanned
+          FROM source_status WHERE source = 'panzhi'
+        `).get()
+      ).toEqual({
+        state: "success",
+        item_count: 1,
+        pages_scanned: 3
+      });
+      expect(
+        migrated.prepare(`
+          SELECT scope, requested_source FROM scan_runs WHERE id = 7
+        `).get()
+      ).toEqual({
+        scope: "all_sources",
+        requested_source: null
+      });
+      expect(
+        migrated.prepare(`
+          SELECT COUNT(*) AS count FROM sqlite_master
+          WHERE type = 'table' AND name LIKE 'browser_refresh_%'
+        `).get()
+      ).toEqual({ count: 6 });
+      migrated.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("BrowserRefreshRepository credentials and jobs", () => {
@@ -212,11 +343,29 @@ describe("BrowserRefreshRepository credentials and jobs", () => {
       now
     );
     expect(JSON.stringify(claimed)).not.toMatch(/hash/i);
-    expect(repository.verifyBridgeToken(
+    const verified = repository.verifyBridgeToken(
       created.id,
       claimed.bridgeToken,
       now
-    ).id).toBe(created.id);
+    );
+    expect(verified.id).toBe(created.id);
+    expect(Object.keys(verified)).not.toEqual(
+      expect.arrayContaining([
+        "claimCodeHash",
+        "bridgeTokenHash",
+        "actionPermitHash"
+      ])
+    );
+    expect(JSON.stringify(verified)).not.toMatch(/hash/i);
+    const internalStatus = repository.getJobRecord(created.id, now);
+    expect(Object.keys(internalStatus ?? {})).not.toEqual(
+      expect.arrayContaining([
+        "claimCodeHash",
+        "bridgeTokenHash",
+        "actionPermitHash"
+      ])
+    );
+    expect(JSON.stringify(internalStatus)).not.toMatch(/hash/i);
     expect(() =>
       repository.claimJob(created.id, created.claimCode, now)
     ).toThrow(/claim|接管/i);
@@ -275,6 +424,62 @@ describe("BrowserRefreshRepository credentials and jobs", () => {
 });
 
 describe("BrowserRefreshRepository staging", () => {
+  it("preserves a caller-owned transaction when an inner write fails", () => {
+    const { database, repository } = makeRepository();
+    const { id } = claim(repository);
+    const batch = listBatch();
+    repository.acceptListBatch(id, batch, now);
+    database.exec(`
+      CREATE TABLE transaction_sentinel (value TEXT NOT NULL);
+      BEGIN;
+      INSERT INTO transaction_sentinel (value) VALUES ('preserve-me');
+    `);
+
+    try {
+      expect(() =>
+        repository.acceptListBatch(id, {
+          ...batch,
+          items: [{ ...batch.items[0], title: "conflict" }]
+        }, now)
+      ).toThrow(/sequence|hash/i);
+      expect(database.isTransaction).toBe(true);
+      expect(
+        database.prepare(`
+          SELECT value FROM transaction_sentinel
+        `).get()
+      ).toEqual({ value: "preserve-me" });
+    } finally {
+      if (database.isTransaction) database.exec("ROLLBACK");
+    }
+  });
+
+  it("rolls back proof and job updates together when the second statement fails", () => {
+    const { database, repository } = makeRepository();
+    const { id } = claim(repository);
+    database.exec(`
+      CREATE TRIGGER fail_filter_url_update
+      BEFORE UPDATE OF filter_url ON browser_refresh_jobs
+      BEGIN
+        SELECT RAISE(ABORT, 'injected filter update failure');
+      END;
+    `);
+
+    expect(() => repository.saveFilterProof(id, proof(), now)).toThrow(
+      /injected filter update failure/
+    );
+    expect(
+      database.prepare(`
+        SELECT COUNT(*) AS count FROM browser_refresh_filter_proofs
+        WHERE job_id = ?
+      `).get(id)
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare(`
+        SELECT filter_url FROM browser_refresh_jobs WHERE id = ?
+      `).get(id)
+    ).toEqual({ filter_url: null });
+  });
+
   it("persists filter proof and idempotently accepts an identical list batch", () => {
     const { database, repository } = makeRepository();
     const { id } = claim(repository);
@@ -405,9 +610,130 @@ describe("BrowserRefreshRepository staging", () => {
 
     expect(repository.acceptLoadEvent(id, first, now)).toEqual(original);
   });
+
+  it("rejects noncanonical action-permit expiry timestamps", () => {
+    const { repository } = makeRepository();
+    const { id } = claim(repository);
+    for (const expiresAt of [
+      "2026-07-30T18:01:00.000+08:00",
+      "2026-07-30T10:01:00Z",
+      "not-a-date"
+    ]) {
+      expect(() =>
+        repository.transition(
+          id,
+          ["collecting_list"],
+          "collecting_list",
+          {
+            actionPermit: "permit",
+            actionPermitExpiresAt: expiresAt
+          },
+          now
+        )
+      ).toThrow(/canonical|timestamp|expiry/i);
+    }
+  });
+
+  it("compares persisted action-permit expiry by epoch milliseconds", () => {
+    const { database, repository } = makeRepository();
+    const { id } = claim(repository);
+    repository.acceptListBatch(id, listBatch(), now);
+    repository.transition(
+      id,
+      ["collecting_list"],
+      "collecting_list",
+      {
+        actionPermit: "permit",
+        actionPermitExpiresAt: new Date(
+          now.getTime() + 60_000
+        ).toISOString()
+      },
+      now
+    );
+    database.prepare(`
+      UPDATE browser_refresh_jobs
+      SET action_permit_expires_at = 'not-a-date'
+      WHERE id = ?
+    `).run(id);
+
+    expect(() =>
+      repository.acceptLoadEvent(
+        id,
+        { ...loadEvent(), actionPermit: "permit" },
+        now
+      )
+    ).toThrow(/permit|expiry|expired/i);
+  });
+
+  it("reports corrupted replay JSON with a stable sanitized error", () => {
+    const { database, repository } = makeRepository();
+    const { id } = claim(repository);
+    const batch = listBatch();
+    repository.acceptListBatch(id, batch, now);
+    database.prepare(`
+      UPDATE browser_refresh_batches
+      SET accepted_result_json = '{"private":"raw-corruption"}'
+      WHERE job_id = ? AND kind = 'list' AND sequence = 1
+    `).run(id);
+
+    let caught: unknown;
+    try {
+      repository.acceptListBatch(id, batch, now);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      code: "browser_refresh_corrupt_replay",
+      message: "Stored browser refresh replay result is corrupt"
+    });
+    expect(String(caught)).not.toContain("raw-corruption");
+  });
 });
 
 describe("BrowserRefreshRepository recovery and cleanup", () => {
+  it("rejects every transition from an already terminal job", () => {
+    const cancelled = makeRepository();
+    const cancelledJob = cancelled.repository.createJob(now);
+    cancelled.repository.transition(
+      cancelledJob.id,
+      ["awaiting_codex"],
+      "cancelled",
+      { reason: "first" },
+      now
+    );
+    expect(() =>
+      cancelled.repository.transition(
+        cancelledJob.id,
+        ["cancelled"],
+        "cancelled",
+        { reason: "rewrite", listBatchCursor: 9 },
+        new Date(now.getTime() + 1_000)
+      )
+    ).toThrow(/terminal/i);
+
+    const successful = makeRepository();
+    const scanRunId = new ListingRepository(
+      successful.database
+    ).startScan(now);
+    const successJob = successful.repository.createJob(now);
+    successful.repository.transition(
+      successJob.id,
+      ["awaiting_codex"],
+      "success",
+      { scanRunId, publishedRunId: scanRunId },
+      now
+    );
+    expect(() =>
+      successful.repository.transition(
+        successJob.id,
+        ["success"],
+        "success",
+        { reason: "rewrite", listBatchCursor: 9 },
+        new Date(now.getTime() + 1_000)
+      )
+    ).toThrow(/terminal/i);
+  });
+
   it("enforces terminal run linkage for direct database writes", () => {
     const { database, repository } = makeRepository();
     const created = repository.createJob(now);
