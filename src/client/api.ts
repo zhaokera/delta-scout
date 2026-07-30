@@ -222,6 +222,17 @@ async function requestJson<T>(
   return response.json() as Promise<T>;
 }
 
+function postBrowserJson<T>(
+  input: string,
+  body: Record<string, never> = {}
+): Promise<T> {
+  return requestJson<T>(input, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+}
+
 export const httpScoutApi: ScoutApi = {
   getSources: (mode = "balanced") =>
     requestJson<SourceStatusView[]>(`/api/sources?mode=${mode}`),
@@ -254,22 +265,19 @@ export const httpScoutApi: ScoutApi = {
       "/api/sources/jiaoyimao/browser-refresh/current"
     ),
   startJiaoyimaoBrowserRefresh: () =>
-    requestJson<StartedJiaoyimaoBrowserRefresh>(
-      "/api/sources/jiaoyimao/browser-refresh",
-      { method: "POST" }
+    postBrowserJson<StartedJiaoyimaoBrowserRefresh>(
+      "/api/sources/jiaoyimao/browser-refresh"
     ),
   cancelJiaoyimaoBrowserRefresh: (jobId) =>
-    requestJson<JiaoyimaoBrowserRefreshJob>(
+    postBrowserJson<JiaoyimaoBrowserRefreshJob>(
       `/api/sources/jiaoyimao/browser-refresh/${
         encodeURIComponent(jobId)
-      }/cancel`,
-      { method: "POST" }
+      }/cancel`
     ),
   keepWaitingForJiaoyimaoBrowserRefresh: (jobId) =>
-    requestJson<JiaoyimaoBrowserRefreshJob>(
+    postBrowserJson<JiaoyimaoBrowserRefreshJob>(
       `/api/sources/jiaoyimao/browser-refresh/${
         encodeURIComponent(jobId)
-      }/keep-waiting`,
-      { method: "POST" }
+      }/keep-waiting`
     )
 };

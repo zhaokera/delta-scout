@@ -296,14 +296,29 @@ describe("httpScoutApi Jiaoyimao browser refresh", () => {
 
     expect(fetchMock.mock.calls).toEqual([
       ["/api/sources/jiaoyimao/browser-refresh/current", undefined],
-      ["/api/sources/jiaoyimao/browser-refresh", { method: "POST" }],
+      [
+        "/api/sources/jiaoyimao/browser-refresh",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        }
+      ],
       [
         `/api/sources/jiaoyimao/browser-refresh/${job.id}/keep-waiting`,
-        { method: "POST" }
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        }
       ],
       [
         `/api/sources/jiaoyimao/browser-refresh/${job.id}/cancel`,
-        { method: "POST" }
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        }
       ]
     ]);
   });
