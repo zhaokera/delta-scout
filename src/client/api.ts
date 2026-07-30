@@ -208,16 +208,69 @@ const LISTING_QUERIES: Record<ListingView, string> = {
   rejected: "view=all&status=rejected"
 };
 
+const SAFE_API_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  refresh_conflict: "另一个刷新任务正在进行",
+  invalid_browser_payload: "浏览器刷新请求格式无效",
+  browser_payload_too_large: "浏览器刷新请求超过大小限制",
+  browser_refresh_failed: "交易猫浏览器刷新操作失败",
+  browser_job_not_found: "交易猫浏览器刷新任务不存在",
+  browser_job_conflict: "交易猫浏览器刷新任务已存在",
+  browser_job_expired: "交易猫浏览器刷新任务已过期",
+  bridge_unauthorized: "浏览器桥接授权无效或已过期",
+  invalid_transition: "当前任务状态不允许此操作",
+  filter_mismatch: "页面筛选条件与目标不一致",
+  staging_invalid: "浏览器采集数据无效",
+  list_incomplete: "列表采集尚未完成",
+  details_incomplete: "详情采集尚未完成",
+  safety_limit: "浏览器采集已达到安全上限",
+  cooldown_active: "浏览器采集仍在冷却中",
+  action_too_early: "尚未到下一次浏览器操作时间",
+  action_permit_required: "本次操作缺少一次性许可",
+  action_permit_invalid: "一次性操作许可无效或已过期"
+};
+
+const SENSITIVE_ERROR_PATTERN =
+  /claim[\s_-]*code|bridge[\s_-]*token|action[\s_-]*permit|credential|secret|token|password|captcha|cookie|local[\s_-]*storage|验证码(?:答案|结果|内容)?\s*[:=]/i;
+
+function safeApiErrorMessage(
+  payload: unknown,
+  status: number
+): string {
+  const fallback = `请求失败（${status}）`;
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    return fallback;
+  }
+  const candidate = payload as Record<string, unknown>;
+  const code = candidate.error;
+  if (typeof code === "string" && SAFE_API_ERROR_MESSAGES[code]) {
+    return SAFE_API_ERROR_MESSAGES[code];
+  }
+  const message = candidate.message;
+  if (
+    typeof message !== "string" ||
+    message.length === 0 ||
+    message.length > 160 ||
+    message.trim() !== message ||
+    /[\u0000-\u001F\u007F]/.test(message) ||
+    SENSITIVE_ERROR_PATTERN.test(message)
+  ) {
+    return fallback;
+  }
+  return message;
+}
+
 async function requestJson<T>(
   input: string,
   init?: RequestInit
 ): Promise<T> {
   const response = await fetch(input, init);
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as
-      | { message?: string }
-      | null;
-    throw new Error(payload?.message ?? `请求失败（${response.status}）`);
+    const payload: unknown = await response.json().catch(() => null);
+    throw new Error(safeApiErrorMessage(payload, response.status));
   }
   return response.json() as Promise<T>;
 }

@@ -1,6 +1,12 @@
-import { render, screen, within } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  waitFor,
+  within
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
 import {
   JiaoyimaoBrowserRefreshPanel,
   type JiaoyimaoBrowserRefreshPanelProps
@@ -10,6 +16,11 @@ import {
   type JiaoyimaoBrowserRefreshJob,
   type JiaoyimaoBrowserRefreshState
 } from "../../src/client/api";
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 function makeJob(
   overrides: Partial<JiaoyimaoBrowserRefreshJob> = {}
@@ -103,6 +114,9 @@ describe("JiaoyimaoBrowserRefreshPanel", () => {
 
     expect(screen.getByText("等待 Codex 接管")).toBeInTheDocument();
     expect(screen.getByText("JYM-ONE-TIME-7")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("交易猫接管码 JYM-ONE-TIME-7")
+    ).toBeInTheDocument();
     expect(screen.getByText(/仅显示一次/)).toBeInTheDocument();
 
     rerender(
@@ -168,6 +182,31 @@ describe("JiaoyimaoBrowserRefreshPanel", () => {
     expect(screen.queryByText(/3小时/)).not.toBeInTheDocument();
   });
 
+  it("ticks cooldown from cooldownUntil and cleans up its timer", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-31T01:00:00.000Z"));
+    const { unmount } = render(
+      <JiaoyimaoBrowserRefreshPanel
+        {...makeProps({
+          now: undefined,
+          job: makeJob({
+            state: "cooling_down",
+            cooldownUntil: "2026-07-31T01:02:05.000Z",
+            nextActionAt: "2026-07-31T08:00:00.000Z"
+          })
+        })}
+      />
+    );
+
+    expect(screen.getByText("剩余 2分05秒")).toBeInTheDocument();
+    expect(vi.getTimerCount()).toBe(1);
+    act(() => vi.advanceTimersByTime(66_000));
+    expect(screen.getByText("剩余 59秒")).toBeInTheDocument();
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("asks for verification in the same Codex browser tab", () => {
     render(
       <JiaoyimaoBrowserRefreshPanel
@@ -216,6 +255,124 @@ describe("JiaoyimaoBrowserRefreshPanel", () => {
     expect(dialog).toHaveTextContent("现有候选和旧快照都会保留");
     await user.click(within(dialog).getByRole("button", { name: "确认取消" }));
     expect(onCancel).toHaveBeenCalledWith("job-17");
+  });
+
+  it("closes cancellation if the job disappears and never targets a later job", async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn();
+    const props = makeProps({ job: makeJob(), onCancel });
+    const { rerender } = render(
+      <JiaoyimaoBrowserRefreshPanel {...props} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "取消本次刷新" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    rerender(<JiaoyimaoBrowserRefreshPanel {...props} job={null} />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    rerender(
+      <JiaoyimaoBrowserRefreshPanel
+        {...props}
+        job={makeJob({ id: "job-18" })}
+      />
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("invalidates cancellation when id, state, or terminal status changes", async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn();
+    const props = makeProps({ job: makeJob(), onCancel });
+    const { rerender } = render(
+      <JiaoyimaoBrowserRefreshPanel {...props} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "取消本次刷新" }));
+    rerender(
+      <JiaoyimaoBrowserRefreshPanel
+        {...props}
+        job={makeJob({ state: "validating" })}
+      />
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "取消本次刷新" }));
+    rerender(
+      <JiaoyimaoBrowserRefreshPanel
+        {...props}
+        job={makeJob({ id: "job-18", state: "validating" })}
+      />
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "取消本次刷新" }));
+    rerender(
+      <JiaoyimaoBrowserRefreshPanel
+        {...props}
+        job={makeJob({ id: "job-18", state: "success" })}
+      />
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("traps modal focus, closes on Escape, and restores trigger focus", async () => {
+    const user = userEvent.setup();
+    render(
+      <JiaoyimaoBrowserRefreshPanel
+        {...makeProps({ job: makeJob() })}
+      />
+    );
+    const trigger = screen.getByRole("button", {
+      name: "取消本次刷新"
+    });
+
+    await user.click(trigger);
+    const dialog = screen.getByRole("dialog");
+    const safeButton = within(dialog).getByRole("button", {
+      name: "继续刷新"
+    });
+    const dangerButton = within(dialog).getByRole("button", {
+      name: "确认取消"
+    });
+    expect(safeButton).toHaveFocus();
+    expect(
+      document.querySelector(".browser-refresh-panel__content")
+    ).toHaveAttribute("inert");
+
+    await user.tab({ shift: true });
+    expect(dangerButton).toHaveFocus();
+    await user.tab();
+    expect(safeButton).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("fails closed for an unknown runtime state", () => {
+    const unknownJob = {
+      ...makeJob(),
+      state: "new_server_state"
+    } as unknown as JiaoyimaoBrowserRefreshJob;
+    render(
+      <JiaoyimaoBrowserRefreshPanel
+        {...makeProps({ job: unknownJob })}
+      />
+    );
+
+    expect(screen.getByTestId("browser-refresh-state"))
+      .toHaveTextContent("未知状态");
+    expect(screen.getByText(/状态无法识别，请刷新页面后重试/))
+      .toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "取消本次刷新" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "重新刷新交易猫" })
+    ).not.toBeInTheDocument();
   });
 
   it("announces conflicts and exposes busy state accessibly", () => {
@@ -339,5 +496,24 @@ describe("httpScoutApi Jiaoyimao browser refresh", () => {
     const promise = httpScoutApi.startJiaoyimaoBrowserRefresh();
     await expect(promise).rejects.toThrow("另一个刷新任务正在进行");
     await expect(promise).rejects.not.toThrow(/never-show-this|private payload/);
+  });
+
+  it("rejects a sensitive server message instead of echoing a claim code", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        error: "unexpected_failure",
+        message: "claimCode=ONE-TIME-SECRET"
+      }), {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const error = await httpScoutApi.startJiaoyimaoBrowserRefresh()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("请求失败（409）");
+    expect((error as Error).message).not.toContain("ONE-TIME-SECRET");
+    expect((error as Error).cause).toBeUndefined();
   });
 });
