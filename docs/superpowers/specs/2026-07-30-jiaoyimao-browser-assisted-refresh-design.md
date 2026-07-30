@@ -109,11 +109,13 @@ flowchart LR
 负责不可信桥接输入的严格校验：
 
 - 只接受交易猫固定列表页和 `/jg2007840/<数字>.html` 商品页；
-- 只接受允许的文本、价格、商品 ID、URL、加载序号和结束证据；
+- 只接受允许的原始可见文本、价格、商品 ID、URL、加载序号和结束证据；
 - 限制字符串长度、批次数量和累计商品数量；
 - 拒绝包含 Cookie、认证头、Token、密码、验证码或脚本内容的字段；
 - 将相同商品 ID 的重复观察归并为一条，保留最新合法列表字段；
 - 详情只能关联本任务已发现的商品。
+
+浏览器桥梁不提交已经分类的 `loginPlatform`、`service`、M7 品质、实名或包赔结论，也不提交整页 HTML。它只提交指定页面区域中的原始可见文本。本地服务新增纯函数 `parseJiaoyimaoVisibleDetail`，以交易猫现有详情适配器相同的规则把这些文本解析为 `ListingDetail`，再进入既有证据、分类、置信度和评分链路。这样业务判断始终在受测试的本地代码中完成。
 
 ### `JiaoyimaoBrowserTaskService`
 
@@ -153,6 +155,20 @@ flowchart LR
 - 只为交易猫写本轮来源结果和 Listing 观察；
 - 不为未刷新的盼之与螃蟹生成虚假重复观察；
 - 在一个 SQLite 事务中提交任务、正式快照、来源状态、扫描历史和异常保护结果。
+
+### `RefreshAdmissionController`
+
+这是普通三平台刷新和浏览器任务共用的服务端原子准入门：
+
+- `POST /api/refresh` 和创建交易猫浏览器任务都必须先同步取得唯一刷新租约；
+- 普通刷新租约从创建 `scan_run` 起保持到异步协调器成功或失败结束；
+- 浏览器租约从任务创建保持到成功、隔离、失败、取消或过期；
+- 服务启动时从 `scan_runs` 和非终态 `browser_refresh_jobs` 重建占用状态；
+- 同一 Node 进程中的检查与占用在一个同步临界区完成，SQLite 任务创建使用 `BEGIN IMMEDIATE` 保证持久化唯一性；
+- 任一刷新已占用时，另一类入口返回 HTTP 409 和稳定错误码 `refresh_conflict`，并只暴露活动类型及脱敏任务 ID；
+- `CollectionCoordinator` 现有的内部 `refreshInProgress` 继续作为第二道防线，但不再是 API 层的唯一互斥依据。
+
+暂停中的浏览器任务仍占用租约。用户必须继续、取消或等待其 24 小时过期后，才能启动普通三平台刷新。
 
 ### 前端 `JiaoyimaoBrowserRefreshPanel`
 
@@ -224,6 +240,8 @@ Codex在采集前必须验证页面 URL 或页面可见筛选摘要能证明上�
 
 为防止页面异常循环，单任务保留 2,000 个唯一商品和 100 次加载动作的硬上限。命中上限时任务进入 `safety_limit`，不能发布为完整成功。
 
+筛选证明和每次加载观察必须先持久化，不能只保留在 Codex 会话内。最终完成请求只声明结束原因；服务端必须使用已保存的筛选证明、加载事件和当前唯一商品数独立验证上述条件。
+
 ## 详情覆盖范围
 
 所有列表商品都进入暂存区。
@@ -248,6 +266,24 @@ Codex在采集前必须验证页面 URL 或页面可见筛选摘要能证明上�
 
 单条详情结构变化或证据不足时，该商品进入待人工核验；详情页登录/验证码阻塞则暂停整个浏览器任务，等待用户处理。
 
+桥接详情请求使用原始可见区域，不使用 Codex 侧解析结论：
+
+```json
+{
+  "sourceListingId": "1785384225212552",
+  "url": "https://www.jiaoyimao.com/jg2007840/1785384225212552.html",
+  "observedAt": "2026-07-30T12:42:09.000Z",
+  "sections": {
+    "head": "页面头部可见文本",
+    "report": "验号报告可见文本",
+    "safety": "安全与包赔区域可见文本",
+    "description": "商品描述可见文本"
+  }
+}
+```
+
+四个字段都有长度上限，允许空字符串但不允许额外键。服务端以该结构调用 `parseJiaoyimaoVisibleDetail`。若 `head` 或 `report` 缺少适配器要求的最小结构，该详情被记录为结构异常而不是由 Codex 猜测字段。
+
 ## 任务状态机
 
 任务状态使用以下稳定值：
@@ -261,6 +297,7 @@ cooling_down
 validating
 committing
 success
+quarantined
 paused
 failed
 cancelled
@@ -288,11 +325,20 @@ process_interrupted
 - 采集状态可进入人工验证、冷却、暂停、失败或校验；
 - `awaiting_user_verification` 只能由 Codex确认页面恢复后继续；
 - `validating` 失败不能进入 `committing`；
-- `success`、`failed`、`cancelled` 和 `expired` 是终态；
+- `success`、`quarantined`、`failed`、`cancelled` 和 `expired` 是终态；
 - 任何终态都使接管码失效；
 - 进程启动时，遗留在 `committing` 的任务标为 `failed/process_interrupted`；
 - 其它未结束任务恢复为 `paused/process_interrupted`，保留断点；
 - 同一时间只允许一个未结束的交易猫浏览器任务。
+
+`quarantined` 专门表示“浏览器采集完整，但首次数量异常未发布”。此时：
+
+- 创建并关联一个 `scan_runs.state = partial` 的扫描记录；
+- 交易猫 `scan_source_results.state = partial`、`anomaly_state = suspect`、`published = 0`、`stop_reason = anomaly_guard`；
+- `source_status` 保留旧成功时间、商品数和正式 Listing，只更新本次尝试时间与异常提示；
+- 任务设置 `scan_run_id`，但 `published_run_id` 保持空；
+- 前端显示“数据量异常，已隔离本次结果，继续使用旧快照”；
+- 重启后该任务保持终态，不恢复采集，也不继续占用刷新租约。
 
 ## 冷却与退避
 
@@ -340,6 +386,7 @@ cooldown_until
 filter_url
 last_error
 published_run_id
+scan_run_id
 ```
 
 约束：
@@ -349,7 +396,38 @@ published_run_id
 - 计数非负；
 - 接管码只保存带随机盐的安全哈希；
 - 接管成功后立即使接管码失效，短期桥接凭据也只保存带随机盐的安全哈希；
-- `published_run_id` 只能在成功提交后设置。
+- `scan_run_id` 在成功发布或异常隔离形成扫描记录后设置；
+- `published_run_id` 只能在成功发布后设置，且必须等于 `scan_run_id`。
+
+### `browser_refresh_filter_proofs`
+
+```text
+job_id
+current_url
+game_label
+platform_label
+category_label
+m7_filter_labels_json
+observed_at
+```
+
+每个任务只保留一个当前证明。服务端验证固定游戏、QQ、账号分类以及极品 S/A/B/C 四个 M7 条件，不能仅凭 URL 中存在一段不透明查询字符串通过。
+
+### `browser_refresh_load_events`
+
+```text
+job_id
+sequence
+observed_unique_count
+new_item_count
+visible_total_count
+end_marker_visible
+loading_visible
+blocking_state
+observed_at
+```
+
+主键为 `(job_id, sequence)`。计数必须单调合理；事件序号连续；相同序号只能幂等重传。自然末页由持久化事件推导：明确总数/末页，或最后两个正常事件均为零新增且没有加载中、错误、验证码或登录状态。任务恢复后继续追加下一序号，不能丢失原有完整性证据。
 
 ### `browser_refresh_list_items`
 
@@ -393,6 +471,8 @@ created_at
 
 任务成功、取消、失败或过期后可清理大体积暂存行，但保留轻量任务审计记录。暂停任务默认保留 24 小时。
 
+成功或隔离任务至少保留筛选证明、末尾加载事件、计数和扫描记录关联，随现有最近 50 轮扫描历史一起裁剪。列表和详情原始暂存可以在正式事务完成后清理。
+
 ## 本地 API
 
 ### 用户与前端接口
@@ -422,7 +502,9 @@ POST   /api/sources/jiaoyimao/browser-refresh/:id/keep-waiting
 ```text
 POST /api/browser-refresh/:id/claim
 GET  /api/browser-refresh/:id/work
+POST /api/browser-refresh/:id/filter-proof
 POST /api/browser-refresh/:id/list-batches
+POST /api/browser-refresh/:id/load-events
 POST /api/browser-refresh/:id/details
 POST /api/browser-refresh/:id/pause
 POST /api/browser-refresh/:id/resume
@@ -440,6 +522,26 @@ POST /api/browser-refresh/:id/complete
 - 本机来源。
 
 桥接凭据不进入数据库明文、日志、Listing 证据或浏览器页面。任务终止或 24 小时过期后失效。
+
+列表批次示例：
+
+```json
+{
+  "sequence": 3,
+  "observedAt": "2026-07-30T13:00:00.000Z",
+  "items": [
+    {
+      "sourceListingId": "1785384225212552",
+      "url": "https://www.jiaoyimao.com/jg2007840/1785384225212552.html",
+      "title": "商品卡片可见标题",
+      "rawText": "商品卡片全部相关可见文本",
+      "priceCny": 4300
+    }
+  ]
+}
+```
+
+接受响应返回 `acceptedCount`、`uniqueItemCount` 和下一批序号。详情接口逐条或小批提交上述原始 `sections` 结构，响应返回 `detailCompletedCount`、`detailRequiredCount` 和下一条未完成商品 ID。所有响应都不返回页面会话数据。
 
 ## 单平台发布与历史
 
@@ -463,6 +565,8 @@ requested_source = nullable SourceId
 9. 在同一事务内完成正式 Listing、来源状态、异常保护、扫描历史、任务成功状态和 `published_run_id`。
 
 如果提交失败，整个事务回滚，任务进入 `failed`，三个平台正式快照与历史均保持提交前状态。
+
+实现不得直接把“仅交易猫的新 Listing”交给当前 `commitScanRefresh` 后假设其它来源会自动参与评分。发布器必须显式读取三平台正式 Listing，以新交易猫替换旧交易猫，清空三平台派生分数与重复键，重新运行跨平台重复检测和评分；随后只为本轮 `requested_source = jiaoyimao` 写来源结果与观察。该行为由单平台 Repository 测试固定。
 
 ## 数量异常保护
 
@@ -502,6 +606,8 @@ requested_source = nullable SourceId
 - 页面刷新或重开后可以重新读取当前任务状态；
 - 用户可以取消任务，但取消确认文案必须说明“不会删除现有候选数据”。
 
+两个刷新入口的互斥由服务端保证，前端禁用仅是体验优化。直接 API 调用或多个标签同时提交时，失败方收到 HTTP 409 `refresh_conflict`，页面显示当前正在运行的刷新类型，不会先创建孤立 `scan_run` 或浏览器任务。
+
 ## 错误处理
 
 | 情况 | 任务结果 | 正式快照 |
@@ -532,6 +638,7 @@ requested_source = nullable SourceId
 - 列表批次幂等重传与哈希冲突；
 - 重复商品归并和详情外键；
 - 自然末页判定；
+- 筛选证明和加载事件在重启后的完整性判定；
 - 详情覆盖清单；
 - 冷却阶梯和成功清零；
 - 进程中断恢复；
@@ -549,6 +656,7 @@ requested_source = nullable SourceId
 - 提交失败完整回滚；
 - 第一次低量隔离和第二次确认；
 - 普通三平台刷新与浏览器任务互斥；
+- 两个入口同时请求时只有一个原子取得租约，失败方不产生孤立记录；
 - 旧数据库幂等迁移。
 
 ### 前端测试
