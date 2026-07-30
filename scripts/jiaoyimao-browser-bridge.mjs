@@ -61,11 +61,14 @@ const FORBIDDEN_VISIBLE_TEXT = [
   /校验码\s*[:=]/i,
   /<script/i,
   /javascript:/i,
-  /<\/?[A-Za-z][A-Za-z0-9:-]*[^>]*>/i
+  /<\/?[A-Za-z][A-Za-z0-9:-]*[^>]*>/i,
+  /<!(?:--|doctype\b|\[CDATA\[)/i
 ];
 const FILTER_ORIGIN = "https://www.jiaoyimao.com";
 const FILTER_PATH = "/jg2007840/f8845003-c8845004/o110/";
 const DETAIL_PATH = /^\/jg2007840\/(\d+)\.html$/;
+const ISO_OFFSET_DATETIME =
+  /^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))$/;
 
 export class JiaoyimaoBrowserBridgeError extends Error {
   constructor(code, message, retryAt) {
@@ -181,10 +184,7 @@ function assertInteger(value, minimum, maximum) {
 
 function assertIsoTimestamp(value) {
   const timestamp = assertString(value, 1, 64);
-  if (
-    !/^\d{4}-\d{2}-\d{2}T/.test(timestamp) ||
-    !Number.isFinite(Date.parse(timestamp))
-  ) {
+  if (!ISO_OFFSET_DATETIME.test(timestamp)) {
     throw bridgeError();
   }
   return timestamp;

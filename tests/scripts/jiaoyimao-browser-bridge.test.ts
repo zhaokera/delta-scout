@@ -329,6 +329,137 @@ describe("Jiaoyimao Codex browser bridge", () => {
     );
   });
 
+  it("accepts Z and legal offset timestamps in outgoing schemas", async () => {
+    const fetch = mockFetch(
+      claimResponse(),
+      jsonResponse({ state: "collecting_list" }),
+      jsonResponse({ acceptedCount: 1 })
+    );
+    const client = await claimWith(fetch);
+
+    await client.submitFilterProof({
+      ...filterProof(),
+      observedAt: "2026-07-30T10:00:00Z"
+    });
+    await client.submitListBatch({
+      ...listBatch(),
+      observedAt: "2026-07-30T18:00:00+08:00"
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    "2026-07-30T10:00:00",
+    "2026-02-30T10:00:00Z",
+    "2026-07-30 10:00:00Z",
+    "2026-07-30T10:00:00+25:00"
+  ])("rejects non-server ISO timestamp %s before fetch", async (timestamp) => {
+    const fetch = mockFetch(claimResponse());
+    const client = await claimWith(fetch);
+
+    await expect(
+      client.submitFilterProof({
+        ...filterProof(),
+        observedAt: timestamp
+      })
+    ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies offset timestamp validation to every outgoing timestamp field", async () => {
+    const fetch = mockFetch(claimResponse());
+    const client = await claimWith(fetch);
+    const withoutOffset = "2026-07-30T10:00:00";
+
+    await expect(
+      client.submitListBatch({
+        ...listBatch(),
+        observedAt: withoutOffset
+      })
+    ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    await expect(
+      client.submitLoadEvent({
+        ...loadEvent(),
+        observedAt: withoutOffset
+      })
+    ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    await expect(
+      client.submitDetails({
+        ...detailBatch(),
+        items: detailBatch().items.map((item) => ({
+          ...item,
+          observedAt: withoutOffset
+        }))
+      })
+    ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects comments, DOCTYPE, and CDATA from every visible-text family before fetch", async () => {
+    const fetch = mockFetch(claimResponse());
+    const client = await claimWith(fetch);
+    const markup = [
+      "<!--hidden-->",
+      "<!DOCTYPE html>",
+      "<![CDATA[secret]]>"
+    ];
+    const invalidProofs = [
+      { ...filterProof(), gameLabel: markup[0] },
+      { ...filterProof(), platformLabel: markup[1] },
+      { ...filterProof(), categoryLabel: markup[2] },
+      {
+        ...filterProof(),
+        m7FilterLabels: [
+          markup[0],
+          ...filterProof().m7FilterLabels.slice(1)
+        ]
+      }
+    ];
+    for (const proof of invalidProofs) {
+      await expect(
+        client.submitFilterProof(proof)
+      ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    }
+
+    for (const item of [
+      { ...listBatch().items[0], title: markup[0] },
+      { ...listBatch().items[0], rawText: markup[1] }
+    ]) {
+      await expect(
+        client.submitListBatch({
+          ...listBatch(),
+          items: [item]
+        })
+      ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    }
+
+    const sectionNames = [
+      "head",
+      "report",
+      "safety",
+      "description"
+    ] as const;
+    for (const [index, sectionName] of sectionNames.entries()) {
+      const item = detailBatch().items[0];
+      await expect(
+        client.submitDetails({
+          ...detailBatch(),
+          items: [
+            {
+              ...item,
+              sections: {
+                ...item.sections,
+                [sectionName]: markup[index % markup.length]
+              }
+            }
+          ]
+        })
+      ).rejects.toMatchObject({ code: "invalid_bridge_payload" });
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes only stable HTTP error fields and never retries by itself", async () => {
     const fetch = mockFetch(
       claimResponse(),
