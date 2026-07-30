@@ -1888,6 +1888,60 @@ describe("browser refresh API", () => {
     }
   );
 
+  it.each([
+    {
+      encoding: "compress",
+      body: Buffer.from("{}"),
+      expectedStatus: 415
+    },
+    {
+      encoding: "gzip",
+      body: Buffer.from("not-a-gzip-stream"),
+      expectedStatus: 400
+    },
+    {
+      encoding: "deflate",
+      body: Buffer.from("not-a-deflate-stream"),
+      expectedStatus: 400
+    }
+  ])(
+    "safely maps browser raw-parser $encoding errors",
+    async ({ encoding, body, expectedStatus }) => {
+      const f = browserApiSetup();
+      const response = await request(f.app)
+        .post("/api/sources/jiaoyimao/browser-refresh")
+        .set("Content-Type", "application/json")
+        .set("Content-Encoding", encoding)
+        .send(body);
+
+      expect(response.status).toBe(expectedStatus);
+      expect(response.type).toMatch(/json/);
+      expect(response.body).toEqual({
+        error: "invalid_browser_payload",
+        message: expect.stringMatching(/[\u3400-\u9fff]/)
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(
+        /node_modules|zlib|incorrect header|unsupported content|src\/server|app\.ts|stack/i
+      );
+      expect(f.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
+    }
+  );
+
+  it("does not apply browser parser errors to ordinary routes", async () => {
+    const { app } = setup();
+    const response = await request(app)
+      .post("/api/refresh")
+      .set("Content-Type", "application/json")
+      .set("Content-Encoding", "compress")
+      .send(Buffer.from("{}"));
+
+    expect(response.status).toBe(415);
+    expect(response.body.error).not.toBe("invalid_browser_payload");
+    expect(JSON.stringify(response.body)).not.toMatch(
+      /browser|浏览器|128 KiB/
+    );
+  });
+
   it("keeps the existing larger JSON limit outside browser refresh routes", async () => {
     const { app } = setup();
     const response = await request(app)

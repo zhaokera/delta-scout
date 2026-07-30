@@ -746,18 +746,28 @@ export function createApp(dependencies?: AppDependencies): Express {
       );
       return;
     }
+    if (browserPath) {
+      const unsupportedEncoding =
+        type === "encoding.unsupported" ||
+        (
+          typeof error === "object" &&
+          error !== null &&
+          "status" in error &&
+          error.status === 415
+        );
+      response.status(unsupportedEncoding ? 415 : 400).json({
+        error: "invalid_browser_payload",
+        message: unsupportedEncoding
+          ? "浏览器刷新请求编码不受支持"
+          : "浏览器刷新请求格式无效"
+      });
+      return;
+    }
     if (type === "entity.parse.failed") {
-      response.status(400).json(
-        browserPath
-          ? {
-              error: "invalid_browser_payload",
-              message: "浏览器刷新请求格式无效"
-            }
-          : {
-              error: "invalid_json",
-              message: "请求 JSON 格式无效"
-            }
-      );
+      response.status(400).json({
+        error: "invalid_json",
+        message: "请求 JSON 格式无效"
+      });
       return;
     }
     next(error);
