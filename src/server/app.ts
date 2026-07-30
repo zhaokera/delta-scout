@@ -140,24 +140,16 @@ const BROWSER_REFRESH_PATH_PREFIXES = [
 ] as const;
 
 function isBrowserRefreshPath(path: string): boolean {
+  const pathname = (path.split("?")[0] ?? "").toLowerCase();
   return BROWSER_REFRESH_PATH_PREFIXES.some((prefix) =>
-    path === prefix || path.startsWith(`${prefix}/`)
+    pathname === prefix || pathname.startsWith(`${prefix}/`)
   );
 }
 
 function hasJsonContentType(contentType: string | undefined): boolean {
   if (!contentType) return false;
-  const [mediaType, ...parameters] = contentType
-    .split(";")
-    .map((part) => part.trim().toLowerCase());
-  if (mediaType !== "application/json") return false;
-  return parameters.every((parameter) => {
-    const [name, value] = parameter
-      .split("=")
-      .map((part) => part.trim());
-    return name === "charset" &&
-      value?.replace(/^"|"$/g, "") === "utf-8";
-  });
+  return /^application\/json\s*(?:;\s*charset\s*=\s*(?:utf-8|"utf-8")\s*)?$/i
+    .test(contentType.trim());
 }
 
 const decodeBrowserJson: RequestHandler = (
@@ -739,9 +731,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     )
       ? String(error.type)
       : "";
-    const browserPath = isBrowserRefreshPath(
-      request.originalUrl.split("?")[0] ?? request.path
-    );
+    const browserPath = isBrowserRefreshPath(request.originalUrl);
     if (type === "entity.too.large") {
       response.status(413).json(
         browserPath

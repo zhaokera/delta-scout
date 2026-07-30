@@ -1833,6 +1833,61 @@ describe("browser refresh API", () => {
     expect(empty.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
   });
 
+  it.each([
+    "application/json",
+    "APPLICATION/JSON; CHARSET=UTF-8",
+    "application/json ; charset = \"utf-8\""
+  ])("accepts the canonical JSON content type %s", async (contentType) => {
+    const f = browserApiSetup();
+    const response = await request(f.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .set("Content-Type", contentType)
+      .send("{}");
+
+    expect(response.status).toBe(202);
+  });
+
+  it.each([
+    "application/json; charset=utf-8=evil",
+    "application/json; charset=\"utf-8",
+    "application/json; charset=utf-8\"",
+    "application/json; charset=utf-8; charset=utf-8",
+    "application/json; charset=utf-8; charset=utf-16",
+    "application/json; charset=utf-16",
+    "application/json; charset",
+    "application/json; charset==utf-8"
+  ])("rejects malformed or unsupported JSON content type %s", async (contentType) => {
+    const f = browserApiSetup();
+    const response = await request(f.app)
+      .post("/api/sources/jiaoyimao/browser-refresh")
+      .set("Content-Type", contentType)
+      .send("{}");
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("invalid_browser_payload");
+    expect(f.browserRepository.getCurrentJob(browserBaseTime)).toBeNull();
+  });
+
+  it.each([
+    "/API/BROWSER-REFRESH/not-a-job/complete?ignored=/api/refresh",
+    "/API/SOURCES/JIAOYIMAO/BROWSER-REFRESH?ignored=/api/refresh"
+  ])(
+    "classifies mixed-case oversized browser path %s with its 128 KiB limit",
+    async (path) => {
+      const f = browserApiSetup();
+      const response = await request(f.app)
+        .post(path)
+        .set("Content-Type", "text/plain")
+        .send("界".repeat(70_000));
+
+      expect(response.status).toBe(413);
+      expect(response.body).toEqual({
+        error: "browser_payload_too_large",
+        message: expect.stringContaining("128 KiB")
+      });
+    }
+  );
+
   it("keeps the existing larger JSON limit outside browser refresh routes", async () => {
     const { app } = setup();
     const response = await request(app)
