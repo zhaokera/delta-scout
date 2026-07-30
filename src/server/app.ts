@@ -34,7 +34,7 @@ interface AppDependencies {
   repository: ListingRepository;
   coordinator: RefreshCoordinator;
   tracker: RefreshTracker;
-  admission?: RefreshAdmissionController;
+  admission: RefreshAdmissionController;
 }
 
 const ListingViewSchema = z.enum(["pool", "all"]);
@@ -139,10 +139,12 @@ export function createApp(dependencies?: AppDependencies): Express {
 
   if (!dependencies) return app;
 
-  const { repository, coordinator, tracker } = dependencies;
-  const admission =
-    dependencies.admission ??
-    RefreshAdmissionController.forAllSources(tracker);
+  const {
+    repository,
+    coordinator,
+    tracker,
+    admission
+  } = dependencies;
 
   app.get("/api/sources", (request, response) => {
     const parsedMode =
@@ -296,29 +298,33 @@ export function createApp(dependencies?: AppDependencies): Express {
     }
     const runId = acquired.value;
 
-    void Promise.resolve()
-      .then(() =>
-        coordinator.refreshAll(
+    const runRefresh = async (): Promise<void> => {
+      try {
+        const state = await coordinator.refreshAll(
           runId,
           (event) => tracker.update(runId, event)
-        )
-      )
-      .then((state) => {
+        );
         tracker.finish(runId, state, new Date());
-      })
-      .catch(() => {
+      } catch {
         const finishedAt = new Date();
-        repository.failScan(runId, "刷新失败", finishedAt);
+        try {
+          repository.failScan(runId, "刷新失败", finishedAt);
+        } catch {
+          // The in-memory tracker must still reach a terminal state.
+        }
         tracker.finish(
           runId,
           "failed",
           finishedAt,
           "刷新失败"
         );
-      })
-      .finally(() => {
+      } finally {
         acquired.lease.release();
-      });
+      }
+    };
+    void runRefresh().catch(() => {
+      // The detached refresh must never create an unhandled rejection.
+    });
 
     response.status(202).json({
       runId,

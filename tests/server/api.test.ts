@@ -19,16 +19,21 @@ import { ListingRepository } from "../../src/server/repository.js";
 import { makeListing, makeScore } from "../domain/listingFactory.js";
 
 function setup() {
-  const repository = new ListingRepository(createDatabase(":memory:"));
+  const database = createDatabase(":memory:");
+  const repository = new ListingRepository(database);
   const coordinator = {
     refreshAll: vi.fn(async () => "success" as const)
   };
   const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+  const admission = new RefreshAdmissionController({
+    browserRepository: new BrowserRefreshRepository(database),
+    tracker
+  });
   return {
     repository,
     coordinator,
     tracker,
-    app: createApp({ repository, coordinator, tracker })
+    app: createApp({ repository, coordinator, tracker, admission })
   };
 }
 
@@ -716,7 +721,8 @@ describe("listing API", () => {
     const blocked = new Promise<void>((resolve) => {
       markBlocked = resolve;
     });
-    const repository = new ListingRepository(createDatabase(":memory:"));
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
     repository.replaceSourceSnapshot(
       "jiaoyimao",
       [
@@ -762,7 +768,16 @@ describe("listing API", () => {
       })
     };
     const tracker = new RefreshTracker(repository.getRefreshSnapshot());
-    const app = createApp({ repository, coordinator, tracker });
+    const admission = new RefreshAdmissionController({
+      browserRepository: new BrowserRefreshRepository(database),
+      tracker
+    });
+    const app = createApp({
+      repository,
+      coordinator,
+      tracker,
+      admission
+    });
 
     const refresh = request(app).post("/api/refresh");
     const pendingRefresh = refresh.then((response) => response);
@@ -823,7 +838,8 @@ describe("listing API", () => {
     const waiting = new Promise<"partial">((resolve) => {
       release = resolve;
     });
-    const repository = new ListingRepository(createDatabase(":memory:"));
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
     const coordinator = {
       refreshAll: vi.fn((
         _runId: number,
@@ -850,7 +866,16 @@ describe("listing API", () => {
       })
     };
     const tracker = new RefreshTracker(repository.getRefreshSnapshot());
-    const app = createApp({ repository, coordinator, tracker });
+    const admission = new RefreshAdmissionController({
+      browserRepository: new BrowserRefreshRepository(database),
+      tracker
+    });
+    const app = createApp({
+      repository,
+      coordinator,
+      tracker,
+      admission
+    });
 
     const first = await request(app).post("/api/refresh");
     expect(first.status).toBe(202);
@@ -893,20 +918,15 @@ describe("listing API", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);
     const browserRepository = new BrowserRefreshRepository(database);
+    const browser = browserRepository.createJob(
+      new Date("2026-07-30T10:00:00.000Z")
+    );
     const tracker = new RefreshTracker(repository.getRefreshSnapshot());
     const admission = new RefreshAdmissionController({
       browserRepository,
       tracker,
       now: () => new Date("2026-07-30T10:00:00.000Z")
     });
-    const browser = admission.withBrowserLease(() =>
-      browserRepository.createJob(
-        new Date("2026-07-30T10:00:00.000Z")
-      )
-    );
-    if (browser.kind !== "acquired") {
-      throw new Error("expected browser admission");
-    }
     const coordinator = {
       refreshAll: vi.fn(async () => "success" as const)
     };
@@ -926,9 +946,9 @@ describe("listing API", () => {
       activeKind: "browser",
       jobId: expect.any(String)
     });
-    expect(response.body.jobId).not.toBe(browser.value.id);
+    expect(response.body.jobId).not.toBe(browser.id);
     expect(JSON.stringify(response.body)).not.toContain(
-      browser.value.claimCode
+      browser.claimCode
     );
     expect(coordinator.refreshAll).not.toHaveBeenCalled();
     expect(repository.getScanHistory(10)).toEqual([]);
@@ -976,15 +996,82 @@ describe("listing API", () => {
     expect(coordinator.refreshAll).toHaveBeenCalledTimes(3);
   });
 
+  it("finishes and releases a failed refresh even when scan persistence cleanup throws", async () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const browserRepository = new BrowserRefreshRepository(database);
+    const tracker = new RefreshTracker(repository.getRefreshSnapshot());
+    const admission = new RefreshAdmissionController({
+      browserRepository,
+      tracker
+    });
+    const coordinator = {
+      refreshAll: vi.fn()
+        .mockRejectedValueOnce(new Error("collector failed"))
+        .mockResolvedValueOnce("success" as const)
+    };
+    vi.spyOn(repository, "failScan").mockImplementationOnce(() => {
+      throw new Error("scan cleanup failed");
+    });
+    const app = createApp({
+      repository,
+      coordinator,
+      tracker,
+      admission
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const first = await request(app).post("/api/refresh");
+      expect(first.status).toBe(202);
+      await vi.waitFor(() => {
+        expect(tracker.snapshot()).toMatchObject({
+          runId: first.body.runId,
+          state: "failed",
+          error: "刷新失败"
+        });
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(unhandled).toEqual([]);
+
+      const second = await request(app).post("/api/refresh");
+      expect(second.status).toBe(202);
+      await vi.waitFor(() => {
+        expect(tracker.snapshot()).toMatchObject({
+          runId: second.body.runId,
+          state: "success"
+        });
+      });
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("records a background refresh rejection without exposing internals", async () => {
-    const repository = new ListingRepository(createDatabase(":memory:"));
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
     const coordinator = {
       refreshAll: vi.fn(async () => {
         throw new Error("database unavailable");
       })
     };
     const tracker = new RefreshTracker(repository.getRefreshSnapshot());
-    const app = createApp({ repository, coordinator, tracker });
+    const admission = new RefreshAdmissionController({
+      browserRepository: new BrowserRefreshRepository(database),
+      tracker
+    });
+    const app = createApp({
+      repository,
+      coordinator,
+      tracker,
+      admission
+    });
 
     const response = await request(app).post("/api/refresh");
     expect(response.status).toBe(202);

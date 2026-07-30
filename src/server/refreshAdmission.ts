@@ -41,7 +41,7 @@ export type RefreshAdmissionView =
   | { activeKind: "browser"; jobId?: string };
 
 interface RefreshAdmissionDependencies {
-  browserRepository?: BrowserRefreshRepository;
+  browserRepository: BrowserRefreshRepository;
   tracker: RefreshTracker;
   now?: () => Date;
 }
@@ -50,6 +50,7 @@ type ActiveLease =
   | {
       kind: "all_sources";
       token: symbol;
+      origin: "acquired" | "restored";
     }
   | {
       kind: "browser";
@@ -69,9 +70,7 @@ function redactJobId(jobId: string): string {
 }
 
 export class RefreshAdmissionController {
-  private readonly browserRepository:
-    | BrowserRefreshRepository
-    | undefined;
+  private readonly browserRepository: BrowserRefreshRepository;
   private readonly tracker: RefreshTracker;
   private readonly now: () => Date;
   private active: ActiveLease | null = null;
@@ -94,7 +93,8 @@ export class RefreshAdmissionController {
     if (tracker.isRunning()) {
       this.active = {
         kind: "all_sources",
-        token: Symbol("restored-all-sources-refresh")
+        token: Symbol("restored-all-sources-refresh"),
+        origin: "restored"
       };
     } else if (currentBrowser) {
       this.active = {
@@ -103,12 +103,6 @@ export class RefreshAdmissionController {
         jobId: currentBrowser.id
       };
     }
-  }
-
-  static forAllSources(
-    tracker: RefreshTracker
-  ): RefreshAdmissionController {
-    return new RefreshAdmissionController({ tracker });
   }
 
   snapshot(): RefreshAdmissionView {
@@ -132,7 +126,11 @@ export class RefreshAdmissionController {
     if (conflict) return conflict;
 
     const token = Symbol("all-sources-refresh");
-    this.active = { kind: "all_sources", token };
+    this.active = {
+      kind: "all_sources",
+      token,
+      origin: "acquired"
+    };
     try {
       const value = createScan();
       return {
@@ -149,9 +147,6 @@ export class RefreshAdmissionController {
   withBrowserLease<T extends { id: string }>(
     createJobInImmediateTransaction: () => T
   ): RefreshAdmissionResult<T> {
-    if (!this.browserRepository) {
-      throw new Error("browser_refresh_repository_required");
-    }
     this.reconcile();
     const conflict = this.conflict();
     if (conflict) return conflict;
@@ -189,27 +184,38 @@ export class RefreshAdmissionController {
   }
 
   reconcile(): void {
-    const currentBrowser = this.readCurrentActiveBrowser();
-
     if (this.active?.kind === "browser") {
       if (this.active.jobId === null) return;
-      const persisted = this.browserRepository?.getJobRecord(
+      const persisted = this.browserRepository.getJobRecord(
         this.active.jobId,
         this.now()
       );
       if (
-        !persisted ||
-        isTerminalBrowserState(persisted.state)
+        persisted &&
+        !isTerminalBrowserState(persisted.state)
       ) {
-        this.active = null;
+        return;
       }
+      this.active = null;
+    }
+
+    const currentBrowser = this.readCurrentActiveBrowser();
+    if (this.active?.kind === "all_sources") {
+      if (
+        this.active.origin === "acquired" ||
+        this.tracker.isRunning()
+      ) {
+        return;
+      }
+      this.active = null;
     }
 
     if (this.active === null) {
       if (this.tracker.isRunning()) {
         this.active = {
           kind: "all_sources",
-          token: Symbol("restored-all-sources-refresh")
+          token: Symbol("restored-all-sources-refresh"),
+          origin: "restored"
         };
       } else if (currentBrowser) {
         this.active = {
@@ -233,9 +239,7 @@ export class RefreshAdmissionController {
   private readCurrentActiveBrowser():
     | { id: string; state: BrowserRefreshJobState }
     | null {
-    if (!this.browserRepository) return null;
     const at = this.now();
-    this.browserRepository.expireJobs(at);
     const current = this.browserRepository.getCurrentJob(at);
     return current && !isTerminalBrowserState(current.state)
       ? current

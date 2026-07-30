@@ -129,6 +129,29 @@ describe("RefreshAdmissionController", () => {
     ).toEqual(["acquired", "conflict"]);
   });
 
+  it("rejects a synchronous reentrant acquisition inside a create callback", () => {
+    const { browserRepository, controller } = setup();
+    let reentrant:
+      | ReturnType<typeof controller.withBrowserLease>
+      | undefined;
+
+    const outer = controller.withAllSourcesLease(() => {
+      reentrant = controller.withBrowserLease(() =>
+        browserRepository.createJob(now)
+      );
+      return "outer";
+    });
+
+    expect(outer).toMatchObject({
+      kind: "acquired",
+      value: "outer"
+    });
+    expect(reentrant).toEqual({
+      kind: "conflict",
+      activeKind: "all_sources"
+    });
+  });
+
   it("releases the browser reservation when job insertion fails", () => {
     const { database, browserRepository, controller } = setup();
     database.exec(`
@@ -416,6 +439,42 @@ describe("RefreshAdmissionController", () => {
     expect(tracker.snapshot()).toMatchObject({
       runId,
       state: "running"
+    });
+  });
+
+  it("releases a restored all-source occupation after its tracker becomes terminal", () => {
+    const database = createDatabase(":memory:");
+    const listingRepository = new ListingRepository(database);
+    const browserRepository = new BrowserRefreshRepository(database);
+    const runId = listingRepository.startScan(now);
+    const tracker = new RefreshTracker(
+      listingRepository.getRefreshSnapshot()
+    );
+    const restored = new RefreshAdmissionController({
+      browserRepository,
+      tracker,
+      now: () => now
+    });
+
+    tracker.finish(
+      runId,
+      "failed",
+      new Date(now.getTime() + 1_000),
+      "进程中断"
+    );
+    restored.reconcile();
+
+    expect(
+      restored.withBrowserLease(() =>
+        browserRepository.createJob(
+          new Date(now.getTime() + 2_000)
+        )
+      )
+    ).toMatchObject({
+      kind: "acquired",
+      value: {
+        state: "awaiting_codex"
+      }
     });
   });
 });
