@@ -14,6 +14,10 @@ import {
   type Listing,
   type SourceId
 } from "../domain/listing.js";
+import {
+  parseManualExclusionInput,
+  type ReviewedListing
+} from "../domain/manualReview.js";
 import { compareRecommendations } from "../domain/score.js";
 import {
   BROWSER_REFRESH_LIMITS,
@@ -32,10 +36,11 @@ import {
   type BrowserRefreshServiceErrorCode,
   type JiaoyimaoBrowserTaskService
 } from "./browserRefresh/service.js";
-import type {
-  ListingRepository,
-  ScanState,
-  SourceStatus
+import {
+  ManualListingReviewError,
+  type ListingRepository,
+  type ScanState,
+  type SourceStatus
 } from "./repository.js";
 import type {
   RefreshProgressEvent
@@ -124,6 +129,37 @@ function sendBrowserError(
   response.status(500).json({
     error: "browser_refresh_failed",
     message: "交易猫浏览器刷新操作失败"
+  });
+}
+
+function sendManualReviewError(
+  response: Response,
+  error: unknown
+): void {
+  if (error instanceof ZodError) {
+    response.status(400).json({
+      error: "invalid_manual_review",
+      message: "人工淘汰信息无效"
+    });
+    return;
+  }
+  if (error instanceof ManualListingReviewError) {
+    if (error.code === "listing_not_found") {
+      response.status(404).json({
+        error: error.code,
+        message: "候选不存在或已下架"
+      });
+      return;
+    }
+    response.status(409).json({
+      error: error.code,
+      message: "该账号不满足候选硬条件，不能人工淘汰"
+    });
+    return;
+  }
+  response.status(500).json({
+    error: "manual_review_failed",
+    message: "人工淘汰操作失败，请稍后重试"
   });
 }
 
@@ -260,17 +296,17 @@ const readBrowserBody: RequestHandler = (
 
 interface CurrentListingSnapshot {
   statuses: SourceStatus[];
-  listings: Listing[];
-  activeEligibleListings: Listing[];
-  balancedPool: Listing[];
-  globalPool: Listing[];
+  listings: ReviewedListing[];
+  activeEligibleListings: ReviewedListing[];
+  balancedPool: ReviewedListing[];
+  globalPool: ReviewedListing[];
 }
 
 function readCurrentListingSnapshot(
   repository: ListingRepository
 ): CurrentListingSnapshot {
   const statuses = repository.getSourceStatuses();
-  const listings = repository.getListings();
+  const listings = repository.getReviewedListings();
   const activeSources = new Set(
     statuses
       .filter(
@@ -281,22 +317,27 @@ function readCurrentListingSnapshot(
   const activeEligibleListings = listings.filter(
     (listing) =>
       activeSources.has(listing.source) &&
-      listing.eligibility === "eligible"
+      listing.eligibility === "eligible" &&
+      listing.manualReview === null
   );
 
   return {
     statuses,
     listings,
     activeEligibleListings,
-    balancedPool: selectBalancedCandidatePool(activeEligibleListings),
-    globalPool: selectGlobalCandidatePool(activeEligibleListings)
+    balancedPool: selectBalancedCandidatePool(
+      activeEligibleListings
+    ) as ReviewedListing[],
+    globalPool: selectGlobalCandidatePool(
+      activeEligibleListings
+    ) as ReviewedListing[]
   };
 }
 
 function candidatePool(
   snapshot: CurrentListingSnapshot,
   mode: PoolMode
-): Listing[] {
+): ReviewedListing[] {
   return mode === "balanced"
     ? snapshot.balancedPool
     : snapshot.globalPool;
@@ -681,15 +722,63 @@ export function createApp(dependencies?: AppDependencies): Express {
     }
 
     const snapshot = readCurrentListingSnapshot(repository);
-    const listings = snapshot.listings.filter(
-      (listing) => listing.eligibility === status
-    );
+    let listings: ReviewedListing[];
+    if (status === "eligible") {
+      listings = snapshot.listings.filter(
+        (listing) =>
+          listing.eligibility === "eligible" &&
+          listing.manualReview === null
+      );
+    } else if (status === "rejected") {
+      listings = Array.from(
+        new Map(
+          snapshot.listings
+            .filter(
+              (listing) =>
+                listing.eligibility === "rejected" ||
+                listing.manualReview !== null
+            )
+            .map((listing) => [listing.key, listing])
+        ).values()
+      );
+    } else {
+      listings = snapshot.listings.filter(
+        (listing) => listing.eligibility === status
+      );
+    }
     response.json(
       view === "pool"
         ? candidatePool(snapshot, mode)
         : listings.sort(compareRecommendations)
     );
   });
+
+  app.put(
+    "/api/listings/:key/manual-exclusion",
+    (request, response) => {
+      try {
+        const input = parseManualExclusionInput(request.body);
+        response.json(
+          repository.excludeListing(request.params.key, input)
+        );
+      } catch (error) {
+        sendManualReviewError(response, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/api/listings/:key/manual-exclusion",
+    (request, response) => {
+      try {
+        response.json(
+          repository.restoreListing(request.params.key)
+        );
+      } catch (error) {
+        sendManualReviewError(response, error);
+      }
+    }
+  );
 
   app.get("/api/listings/:key/history", (request, response) => {
     const parsedLimit = HistoryLimitSchema.safeParse(
@@ -717,7 +806,7 @@ export function createApp(dependencies?: AppDependencies): Express {
   });
 
   app.get("/api/listings/:key", (request, response) => {
-    const listing = repository.getListing(request.params.key);
+    const listing = repository.getReviewedListing(request.params.key);
     if (!listing) {
       response.status(404).json({
         error: "listing_not_found",

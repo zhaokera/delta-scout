@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { Listing } from "./listing";
+import type { Listing } from "./listing.js";
 
 export const ManualReviewReasonSchema = z.enum([
   "price_overvalued",

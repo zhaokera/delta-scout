@@ -9,6 +9,7 @@ import type {
   Listing,
   SourceId
 } from "../../src/domain/listing.js";
+import type { ReviewedListing } from "../../src/domain/manualReview.js";
 import { createApp } from "../../src/server/app.js";
 import {
   BROWSER_REFRESH_LIMITS,
@@ -49,6 +50,7 @@ function setup() {
     }
   );
   return {
+    database,
     repository,
     coordinator,
     tracker,
@@ -768,6 +770,287 @@ describe("listing API", () => {
       balancedCandidateCount: 10,
       globalCandidateCount: 30
     });
+  });
+
+  it("removes a manually excluded account from every candidate view and refills the pools", async () => {
+    const { app, repository } = setup();
+    seedCandidateUniverse(repository);
+    const key = "jiaoyimao:0";
+
+    const excluded = await request(app)
+      .put(
+        `/api/listings/${encodeURIComponent(key)}/manual-exclusion`
+      )
+      .send({
+        reason: "price_overvalued",
+        note: "  同价位有更安全的号  "
+      });
+
+    expect(excluded.status).toBe(200);
+    expect(excluded.body).toMatchObject({
+      key,
+      manualReview: {
+        excluded: true,
+        reason: "price_overvalued",
+        note: "同价位有更安全的号"
+      }
+    });
+
+    const [
+      balanced,
+      global,
+      eligible,
+      rejected,
+      sources,
+      detail
+    ] = await Promise.all([
+      request(app).get("/api/listings?mode=balanced"),
+      request(app).get("/api/listings?mode=global"),
+      request(app).get("/api/listings?view=all&status=eligible"),
+      request(app).get("/api/listings?view=all&status=rejected"),
+      request(app).get("/api/sources"),
+      request(app).get(`/api/listings/${encodeURIComponent(key)}`)
+    ]);
+
+    expect(balanced.body).toHaveLength(30);
+    expect(global.body).toHaveLength(30);
+    expect(
+      balanced.body.map(({ key: listingKey }: ReviewedListing) => listingKey)
+    ).not.toContain(key);
+    expect(
+      global.body.map(({ key: listingKey }: ReviewedListing) => listingKey)
+    ).not.toContain(key);
+    expect(
+      balanced.body
+        .filter(({ source }: ReviewedListing) => source === "jiaoyimao")
+        .map(({ key: listingKey }: ReviewedListing) => listingKey)
+    ).toContain("jiaoyimao:10");
+    expect(eligible.body).toHaveLength(38);
+    expect(
+      eligible.body.map(({ key: listingKey }: ReviewedListing) => listingKey)
+    ).not.toContain(key);
+    expect(
+      rejected.body.filter(
+        ({ key: listingKey }: ReviewedListing) => listingKey === key
+      )
+    ).toHaveLength(1);
+    expect(
+      rejected.body.find(
+        ({ key: listingKey }: ReviewedListing) => listingKey === key
+      )
+    ).toMatchObject({
+      eligibility: "eligible",
+      manualReview: {
+        reason: "price_overvalued",
+        note: "同价位有更安全的号"
+      }
+    });
+    expect(detail.body).toMatchObject({
+      key,
+      manualReview: {
+        reason: "price_overvalued"
+      }
+    });
+
+    const jiaoyimao = sources.body.find(
+      ({ source }: { source: SourceId }) => source === "jiaoyimao"
+    );
+    expect(jiaoyimao).toMatchObject({
+      eligibleCount: 11,
+      candidateCount: 10,
+      balancedCandidateCount: 10
+    });
+    expect(
+      sources.body.reduce(
+        (total: number, source: { candidateCount: number }) =>
+          total + source.candidateCount,
+        0
+      )
+    ).toBe(balanced.body.length);
+    expect(
+      sources.body.reduce(
+        (total: number, source: { eligibleCount: number }) =>
+          total + source.eligibleCount,
+        0
+      )
+    ).toBe(
+      eligible.body.filter(({ score }: ReviewedListing) => score !== null)
+        .length
+    );
+
+    const restored = await request(app).delete(
+      `/api/listings/${encodeURIComponent(key)}/manual-exclusion`
+    );
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({
+      key,
+      manualReview: null
+    });
+
+    const [restoredBalanced, restoredEligible, restoredRejected] =
+      await Promise.all([
+        request(app).get("/api/listings?mode=balanced"),
+        request(app).get("/api/listings?view=all&status=eligible"),
+        request(app).get("/api/listings?view=all&status=rejected")
+      ]);
+    expect(
+      restoredBalanced.body.map(
+        ({ key: listingKey }: ReviewedListing) => listingKey
+      )
+    ).toContain(key);
+    expect(
+      restoredEligible.body.map(
+        ({ key: listingKey }: ReviewedListing) => listingKey
+      )
+    ).toContain(key);
+    expect(
+      restoredRejected.body.map(
+        ({ key: listingKey }: ReviewedListing) => listingKey
+      )
+    ).not.toContain(key);
+  });
+
+  it("keeps a manual exclusion after its source snapshot is replaced", async () => {
+    const { app, repository } = setup();
+    const listing = listingFor("panzhi", 1);
+    repository.replaceSourceSnapshot("panzhi", [listing], "success");
+    await request(app)
+      .put(
+        `/api/listings/${encodeURIComponent(
+          listing.key
+        )}/manual-exclusion`
+      )
+      .send({ reason: "m7_low_value" })
+      .expect(200);
+
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [
+        {
+          ...listing,
+          title: "刷新后仍是同一个账号",
+          capturedAt: "2026-07-31T11:00:00.000Z"
+        }
+      ],
+      "success"
+    );
+
+    const [pool, rejected] = await Promise.all([
+      request(app).get("/api/listings"),
+      request(app).get("/api/listings?view=all&status=rejected")
+    ]);
+    expect(pool.body).toEqual([]);
+    expect(rejected.body).toEqual([
+      expect.objectContaining({
+        key: listing.key,
+        title: "刷新后仍是同一个账号",
+        manualReview: expect.objectContaining({
+          reason: "m7_low_value"
+        })
+      })
+    ]);
+  });
+
+  it("validates manual exclusion requests and keeps restore idempotent", async () => {
+    const { app, repository } = setup();
+    const eligible = listingFor("panzhi", 1);
+    const rejected = listingFor("panzhi", 2, {
+      eligibility: "rejected",
+      score: null
+    });
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [eligible, rejected],
+      "success"
+    );
+    const eligiblePath =
+      `/api/listings/${encodeURIComponent(
+        eligible.key
+      )}/manual-exclusion`;
+
+    for (const body of [
+      { reason: "other", note: "" },
+      { reason: "assets_low", note: "x".repeat(501) },
+      { reason: "price_overvalued", hidden: true }
+    ]) {
+      const response = await request(app).put(eligiblePath).send(body);
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({
+        error: "invalid_manual_review",
+        message: "人工淘汰信息无效"
+      });
+    }
+
+    const missing = await request(app)
+      .put("/api/listings/panzhi%3Amissing/manual-exclusion")
+      .send({ reason: "price_overvalued" });
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({
+      error: "listing_not_found",
+      message: "候选不存在或已下架"
+    });
+
+    const ineligible = await request(app)
+      .put(
+        `/api/listings/${encodeURIComponent(
+          rejected.key
+        )}/manual-exclusion`
+      )
+      .send({ reason: "price_overvalued" });
+    expect(ineligible.status).toBe(409);
+    expect(ineligible.body).toEqual({
+      error: "listing_not_eligible",
+      message: "该账号不满足候选硬条件，不能人工淘汰"
+    });
+
+    const firstRestore = await request(app).delete(eligiblePath);
+    const repeatedRestore = await request(app).delete(eligiblePath);
+    for (const response of [firstRestore, repeatedRestore]) {
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        key: eligible.key,
+        manualReview: null
+      });
+    }
+    expect(
+      await request(app).delete(
+        "/api/listings/panzhi%3Amissing/manual-exclusion"
+      )
+    ).toMatchObject({
+      status: 404,
+      body: {
+        error: "listing_not_found",
+        message: "候选不存在或已下架"
+      }
+    });
+  });
+
+  it("returns a safe stable error when manual review persistence fails", async () => {
+    const { app, database, repository } = setup();
+    const listing = listingFor("panzhi", 1);
+    repository.replaceSourceSnapshot("panzhi", [listing], "success");
+    database.exec(`
+      CREATE TRIGGER force_manual_review_failure
+      BEFORE INSERT ON manual_listing_reviews
+      BEGIN
+        SELECT RAISE(ABORT, 'secret database failure');
+      END;
+    `);
+
+    const response = await request(app)
+      .put(
+        `/api/listings/${encodeURIComponent(
+          listing.key
+        )}/manual-exclusion`
+      )
+      .send({ reason: "price_overvalued" });
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({
+      error: "manual_review_failed",
+      message: "人工淘汰操作失败，请稍后重试"
+    });
+    expect(JSON.stringify(response.body)).not.toContain("secret");
   });
 
   it("rejects an invalid source pool mode", async () => {
