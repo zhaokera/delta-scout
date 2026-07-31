@@ -13,6 +13,8 @@ import { vi } from "vitest";
 import { App } from "../../src/client/App";
 import type {
   JiaoyimaoBrowserRefreshJob,
+  ListingView,
+  PoolMode,
   RefreshStatusView,
   ScoutApi,
   SourceStatusView
@@ -23,6 +25,10 @@ import {
 } from "../../src/client/api";
 import type { Listing, SourceId } from "../../src/domain/listing";
 import { buildListingHistorySnapshot } from "../../src/domain/listingHistory";
+import type {
+  ManualExclusionInput,
+  ReviewedListing
+} from "../../src/domain/manualReview";
 import { makeListing, makeScore } from "../domain/listingFactory";
 
 function makeSourceStatus(
@@ -47,6 +53,16 @@ function makeSourceStatus(
   };
 }
 
+function asReviewedListing(
+  listing: Listing | ReviewedListing
+): ReviewedListing {
+  return {
+    ...listing,
+    manualReview:
+      "manualReview" in listing ? listing.manualReview : null
+  };
+}
+
 function makeApi({
   sources = [],
   getSources = async () => sources,
@@ -56,6 +72,8 @@ function makeApi({
   startRefresh = async () => ({ runId: 1, state: "running" as const }),
   getRefreshStatus = async () => makeRefreshStatus(),
   getScanHistory = async () => ({ runs: [] }),
+  excludeListing,
+  restoreListing,
   getCurrentJiaoyimaoBrowserRefresh = async () => null,
   startJiaoyimaoBrowserRefresh = async () => ({
     jobId: "browser-job-1",
@@ -72,9 +90,21 @@ function makeApi({
 }: {
   sources?: SourceStatusView[];
   getSources?: ScoutApi["getSources"];
-  getListings?: ScoutApi["getListings"];
-  getListing?: ScoutApi["getListing"];
+  getListings?: (
+    view: ListingView,
+    mode?: PoolMode
+  ) => Promise<Array<Listing | ReviewedListing>>;
+  getListing?: (
+    key: string
+  ) => Promise<Listing | ReviewedListing>;
   getListingHistory?: ScoutApi["getListingHistory"];
+  excludeListing?: (
+    key: string,
+    input: ManualExclusionInput
+  ) => Promise<Listing | ReviewedListing>;
+  restoreListing?: (
+    key: string
+  ) => Promise<Listing | ReviewedListing>;
   startRefresh?: ScoutApi["startRefresh"];
   getRefreshStatus?: ScoutApi["getRefreshStatus"];
   getScanHistory?: ScoutApi["getScanHistory"];
@@ -87,14 +117,22 @@ function makeApi({
   keepWaitingForJiaoyimaoBrowserRefresh?:
     ScoutApi["keepWaitingForJiaoyimaoBrowserRefresh"];
 } = {}): ScoutApi {
+  const resolveListings: ScoutApi["getListings"] = async (
+    view,
+    mode
+  ) => (await getListings(view, mode)).map(asReviewedListing);
   const resolveListing =
-    getListing ??
-    (async (key: string) => {
-      const listings = await getListings("pool");
-      const listing = listings.find((candidate) => candidate.key === key);
-      if (!listing) throw new Error("not found");
-      return listing;
-    });
+    getListing
+      ? async (key: string) =>
+          asReviewedListing(await getListing(key))
+      : async (key: string) => {
+          const listings = await resolveListings("pool");
+          const listing = listings.find(
+            (candidate) => candidate.key === key
+          );
+          if (!listing) throw new Error("not found");
+          return listing;
+        };
   const resolveHistory =
     getListingHistory ??
     (async (key: string) => {
@@ -110,9 +148,32 @@ function makeApi({
 
   return {
     getSources: vi.fn(getSources),
-    getListings: vi.fn(getListings),
+    getListings: vi.fn(resolveListings),
     getListing: vi.fn(resolveListing),
     getListingHistory: vi.fn(resolveHistory),
+    excludeListing: vi.fn(
+      excludeListing
+        ? async (key, input) =>
+            asReviewedListing(await excludeListing(key, input))
+        : async (key, input) => ({
+            ...await resolveListing(key),
+            manualReview: {
+              excluded: true as const,
+              reason: input.reason,
+              note: input.note,
+              reviewedAt: "2026-07-31T08:00:00.000Z"
+            }
+          })
+    ),
+    restoreListing: vi.fn(
+      restoreListing
+        ? async (key) =>
+            asReviewedListing(await restoreListing(key))
+        : async (key) => ({
+            ...await resolveListing(key),
+            manualReview: null
+          })
+    ),
     startRefresh: vi.fn(startRefresh),
     getRefreshStatus: vi.fn(getRefreshStatus),
     getScanHistory: vi.fn(getScanHistory),
@@ -269,6 +330,11 @@ describe("App shell", () => {
       await httpScoutApi.getRefreshStatus();
       await httpScoutApi.getScanHistory(5);
       await httpScoutApi.getListingHistory("panzhi:SA 123", 7);
+      await httpScoutApi.excludeListing("panzhi:SA 123", {
+        reason: "price_overvalued",
+        note: "同价位更安全"
+      });
+      await httpScoutApi.restoreListing("panzhi:SA 123");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -284,9 +350,22 @@ describe("App shell", () => {
       "/api/refresh",
       "/api/refresh-status",
       "/api/scan-history?limit=5",
-      "/api/listings/panzhi%3ASA%20123/history?limit=7"
+      "/api/listings/panzhi%3ASA%20123/history?limit=7",
+      "/api/listings/panzhi%3ASA%20123/manual-exclusion",
+      "/api/listings/panzhi%3ASA%20123/manual-exclusion"
     ]);
     expect(fetchMock.mock.calls[5]?.[1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[9]?.[1]).toEqual({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        reason: "price_overvalued",
+        note: "同价位更安全"
+      })
+    });
+    expect(fetchMock.mock.calls[10]?.[1]).toEqual({
+      method: "DELETE"
+    });
   });
 
   it("forwards abort signals to browser-current and refresh-status requests", async () => {
@@ -1257,8 +1336,8 @@ describe("App shell", () => {
           stale: false
         }
       ]),
-      getListings: vi.fn(async () => [listing]),
-      getListing: vi.fn(async () => listing),
+      getListings: vi.fn(async () => [asReviewedListing(listing)]),
+      getListing: vi.fn(async () => asReviewedListing(listing)),
       getListingHistory: vi.fn(async () => ({
         key: listing.key,
         source: listing.source,

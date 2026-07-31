@@ -1,7 +1,10 @@
 import type {
-  Listing,
   SourceId
 } from "../domain/listing";
+import type {
+  ManualExclusionInput,
+  ReviewedListing
+} from "../domain/manualReview";
 import type {
   ListingFieldChange,
   ListingHistorySnapshot
@@ -183,9 +186,17 @@ export interface ListingHistoryView {
 
 export interface ScoutApi {
   getSources(mode?: PoolMode): Promise<SourceStatusView[]>;
-  getListings(view: ListingView, mode?: PoolMode): Promise<Listing[]>;
-  getListing(key: string): Promise<Listing>;
+  getListings(
+    view: ListingView,
+    mode?: PoolMode
+  ): Promise<ReviewedListing[]>;
+  getListing(key: string): Promise<ReviewedListing>;
   getListingHistory(key: string, limit?: number): Promise<ListingHistoryView>;
+  excludeListing(
+    key: string,
+    input: ManualExclusionInput
+  ): Promise<ReviewedListing>;
+  restoreListing(key: string): Promise<ReviewedListing>;
   startRefresh(): Promise<{ runId: number; state: "running" }>;
   getRefreshStatus(signal?: AbortSignal): Promise<RefreshStatusView>;
   getScanHistory(limit?: number): Promise<ScanHistoryResponse>;
@@ -228,7 +239,11 @@ const SAFE_API_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   cooldown_active: "浏览器采集仍在冷却中",
   action_too_early: "尚未到下一次浏览器操作时间",
   action_permit_required: "本次操作缺少一次性许可",
-  action_permit_invalid: "一次性操作许可无效或已过期"
+  action_permit_invalid: "一次性操作许可无效或已过期",
+  invalid_manual_review: "人工淘汰信息无效",
+  listing_not_found: "候选不存在或已下架",
+  listing_not_eligible: "该账号不满足候选硬条件，不能人工淘汰",
+  manual_review_failed: "人工淘汰操作失败，请稍后重试"
 };
 
 export class ScoutApiError extends Error {
@@ -470,18 +485,36 @@ export const httpScoutApi: ScoutApi = {
   getSources: (mode = "balanced") =>
     requestJson<SourceStatusView[]>(`/api/sources?mode=${mode}`),
   getListings: (view, mode = "balanced") =>
-    requestJson<Listing[]>(
+    requestJson<ReviewedListing[]>(
       `/api/listings?${LISTING_QUERIES[view]}${
         view === "pool" && mode === "global" ? "&mode=global" : ""
       }`
     ),
   getListing: (key) =>
-    requestJson<Listing>(
+    requestJson<ReviewedListing>(
       `/api/listings/${encodeURIComponent(key)}`
     ),
   getListingHistory: (key, limit = 20) =>
     requestJson<ListingHistoryView>(
       `/api/listings/${encodeURIComponent(key)}/history?limit=${limit}`
+    ),
+  excludeListing: (key, input) =>
+    requestJson<ReviewedListing>(
+      `/api/listings/${
+        encodeURIComponent(key)
+      }/manual-exclusion`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input)
+      }
+    ),
+  restoreListing: (key) =>
+    requestJson<ReviewedListing>(
+      `/api/listings/${
+        encodeURIComponent(key)
+      }/manual-exclusion`,
+      { method: "DELETE" }
     ),
   startRefresh: () =>
     requestJson<{ runId: number; state: "running" }>("/api/refresh", {
