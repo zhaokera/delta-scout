@@ -5,8 +5,12 @@ import {
   useRef,
   useState
 } from "react";
-import type { Listing, SourceId } from "../domain/listing";
+import type { SourceId } from "../domain/listing";
 import { matchesListingFilters } from "../domain/listingFilters";
+import type {
+  ManualExclusionInput,
+  ReviewedListing
+} from "../domain/manualReview";
 import {
   httpScoutApi,
   type ListingHistoryView,
@@ -25,6 +29,8 @@ import {
 import { DetailDrawer } from "./components/DetailDrawer";
 import { ListingDetail } from "./components/ListingDetail";
 import { ListingTable } from "./components/ListingTable";
+import { ManualReviewDialog } from
+  "./components/ManualReviewDialog";
 import { PoolModeToggle } from "./components/PoolModeToggle";
 import { JiaoyimaoBrowserRefreshPanel } from
   "./components/JiaoyimaoBrowserRefreshPanel";
@@ -92,14 +98,15 @@ function useMediaQuery(query: string): boolean {
 
 export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [sources, setSources] = useState<SourceStatusView[]>([]);
-  const [listings, setListings] = useState<Listing[]>([]);
+  const [listings, setListings] = useState<ReviewedListing[]>([]);
   const [view, setView] = useState<ListingView>("pool");
   const [poolMode, setPoolMode] = useState<PoolMode>("balanced");
   const [sort, setSort] = useState<SortKey>("score");
   const [filters, setFilters] =
     useState<AdvancedFilters>(DEFAULT_FILTERS);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [selected, setSelected] = useState<Listing | null>(null);
+  const [selected, setSelected] =
+    useState<ReviewedListing | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -108,6 +115,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [selectionNotice, setSelectionNotice] =
+    useState<string | null>(null);
+  const [reviewTarget, setReviewTarget] =
+    useState<ReviewedListing | null>(null);
+  const [reviewPending, setReviewPending] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewNotice, setReviewNotice] =
     useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshStatus, setRefreshStatus] =
@@ -496,7 +509,20 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     document.addEventListener("visibilitychange", handleVisibility);
     if (typeof BroadcastChannel !== "undefined") {
       const channel = new BroadcastChannel("delta-account-scout-refresh");
-      channel.onmessage = () => {
+      channel.onmessage = (event) => {
+        const message = event.data as unknown;
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "listing-review-changed"
+        ) {
+          void load(activeView.current, activePoolMode.current, {
+            preserveOnError: true,
+            refreshSelection: true
+          });
+          return;
+        }
         void synchronizeStatus();
       };
       broadcastRef.current = channel;
@@ -558,10 +584,119 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     setFilters(DEFAULT_FILTERS);
   }
 
-  async function selectListing(listing: Listing) {
+  function clearSelectionAfterReview(): void {
+    detailSequence.current += 1;
+    selectedKeyRef.current = null;
+    setSelected(null);
+    setListingHistory(null);
+    setHistoryLoading(false);
+    setHistoryError(null);
+    setSelectionNotice(null);
+    setDetailLoading(false);
+    setDrawerOpen(false);
+  }
+
+  function openManualExclusion(listing: ReviewedListing): void {
+    if (reviewPending) return;
+    setReviewTarget(listing);
+    setReviewError(null);
+    setReviewNotice(null);
+    if (narrowLayout) setDrawerOpen(false);
+  }
+
+  function closeManualExclusion(): void {
+    if (reviewPending) return;
+    setReviewTarget(null);
+    setReviewError(null);
+    if (narrowLayout && selectedKeyRef.current !== null) {
+      setDrawerOpen(true);
+    }
+  }
+
+  async function excludeReviewedListing(
+    input: ManualExclusionInput
+  ): Promise<void> {
+    const target = reviewTarget;
+    if (target === null || reviewPending) return;
+    setReviewPending(true);
+    setReviewError(null);
+    try {
+      await api.excludeListing(target.key, input);
+      if (!mounted.current) return;
+      await load(activeView.current, activePoolMode.current, {
+        preserveOnError: true
+      });
+      if (!mounted.current) return;
+      setListings((current) =>
+        current.filter(({ key }) => key !== target.key)
+      );
+      clearSelectionAfterReview();
+      setReviewTarget(null);
+      setReviewNotice(
+        `已淘汰 ${
+          target.sourceListingId ?? target.title
+        }，不再参与候选排名`
+      );
+      broadcastRef.current?.postMessage({
+        type: "listing-review-changed",
+        key: target.key
+      });
+    } catch (cause) {
+      if (!mounted.current) return;
+      setReviewError(
+        cause instanceof Error
+          ? cause.message
+          : "人工淘汰操作失败，请稍后重试"
+      );
+    } finally {
+      if (mounted.current) setReviewPending(false);
+    }
+  }
+
+  async function restoreReviewedListing(
+    listing: ReviewedListing
+  ): Promise<void> {
+    if (reviewPending) return;
+    setReviewPending(true);
+    setReviewError(null);
+    setReviewNotice(null);
+    try {
+      await api.restoreListing(listing.key);
+      if (!mounted.current) return;
+      await load(activeView.current, activePoolMode.current, {
+        preserveOnError: true
+      });
+      if (!mounted.current) return;
+      setListings((current) =>
+        current.filter(({ key }) => key !== listing.key)
+      );
+      clearSelectionAfterReview();
+      setReviewNotice(
+        `已恢复 ${
+          listing.sourceListingId ?? listing.title
+        }，将按原评分重新参与排名`
+      );
+      broadcastRef.current?.postMessage({
+        type: "listing-review-changed",
+        key: listing.key
+      });
+    } catch (cause) {
+      if (!mounted.current) return;
+      setReviewError(
+        cause instanceof Error
+          ? cause.message
+          : "恢复失败，请稍后重试"
+      );
+    } finally {
+      if (mounted.current) setReviewPending(false);
+    }
+  }
+
+  async function selectListing(listing: ReviewedListing) {
     const requestSequence = ++detailSequence.current;
     selectedKeyRef.current = listing.key;
     setSelected(listing);
+    setReviewError(null);
     setSelectionNotice(null);
     setListingHistory(null);
     setHistoryError(null);
@@ -816,6 +951,15 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           <span>可在账号历史中查看最近一次可信记录。</span>
         </section>
       ) : null}
+      {reviewNotice ? (
+        <section
+          className="manual-review-notice"
+          role="status"
+          aria-live="polite"
+        >
+          {reviewNotice}
+        </section>
+      ) : null}
 
       <div className="workspace">
         <div
@@ -902,6 +1046,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             history={listingHistory}
             historyLoading={historyLoading}
             historyError={historyError}
+            reviewPending={reviewPending}
+            reviewError={reviewError}
+            onExclude={openManualExclusion}
+            onRestore={(listing) =>
+              void restoreReviewedListing(listing)
+            }
           />
         ) : null}
       </div>
@@ -913,7 +1063,23 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           history={listingHistory}
           historyLoading={historyLoading}
           historyError={historyError}
+          reviewPending={reviewPending}
+          reviewError={reviewError}
+          onExclude={openManualExclusion}
+          onRestore={(listing) =>
+            void restoreReviewedListing(listing)
+          }
           onClose={closeDrawer}
+        />
+      ) : null}
+
+      {reviewTarget ? (
+        <ManualReviewDialog
+          listing={reviewTarget}
+          pending={reviewPending}
+          error={reviewError}
+          onCancel={closeManualExclusion}
+          onSubmit={excludeReviewedListing}
         />
       ) : null}
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { Listing } from "../../domain/listing";
+import type { ReviewedListing } from "../../domain/manualReview";
 import type { ListingHistoryView } from "../api";
 import { ListingDetail } from "./ListingDetail";
 
@@ -9,13 +9,21 @@ export function DetailDrawer({
   history,
   historyLoading,
   historyError,
+  reviewPending,
+  reviewError,
+  onExclude,
+  onRestore,
   onClose
 }: {
-  listing: Listing;
+  listing: ReviewedListing;
   loading: boolean;
   history: ListingHistoryView | null;
   historyLoading: boolean;
   historyError: string | null;
+  reviewPending: boolean;
+  reviewError: string | null;
+  onExclude(listing: ReviewedListing): void;
+  onRestore(listing: ReviewedListing): void;
   onClose(): void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -65,6 +73,10 @@ export function DetailDrawer({
           history={history}
           historyLoading={historyLoading}
           historyError={historyError}
+          reviewPending={reviewPending}
+          reviewError={reviewError}
+          onExclude={onExclude}
+          onRestore={onRestore}
           onClose={onClose}
         />
       </div>

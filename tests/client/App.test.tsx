@@ -1622,6 +1622,330 @@ describe("App shell", () => {
     }
   });
 
+  it("excludes a reviewed account, reloads the active pool, and broadcasts the decision", async () => {
+    const posts: unknown[] = [];
+    class BroadcastChannelStub {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(readonly name: string) {}
+      postMessage(message: unknown) {
+        posts.push(message);
+      }
+      close() {}
+    }
+    vi.stubGlobal("BroadcastChannel", BroadcastChannelStub);
+    const listing = asReviewedListing(
+      makeListing({
+        key: "panzhi:manual-1",
+        sourceListingId: "MANUAL-1"
+      })
+    );
+    let pool: ReviewedListing[] = [listing];
+    let rejected: ReviewedListing[] = [];
+    const api = makeApi({
+      getListings: async (requestedView) =>
+        requestedView === "rejected" ? rejected : pool,
+      getListing: async () => listing,
+      excludeListing: async (key, input) => {
+        const excluded: ReviewedListing = {
+          ...listing,
+          manualReview: {
+            excluded: true,
+            reason: input.reason,
+            note: input.note,
+            reviewedAt: "2026-07-31T08:00:00.000Z"
+          }
+        };
+        pool = [];
+        rejected = [excluded];
+        return excluded;
+      }
+    });
+    const user = userEvent.setup();
+
+    try {
+      render(<App api={api} />);
+      await user.click(
+        await screen.findByRole("button", { name: /MANUAL-1/ })
+      );
+      await user.click(
+        screen.getByRole("button", { name: "人工淘汰" })
+      );
+      const dialog = screen.getByRole("dialog", {
+        name: "人工淘汰账号"
+      });
+      await user.click(
+        within(dialog).getByRole("radio", { name: "价格虚高" })
+      );
+      await user.type(
+        within(dialog).getByRole("textbox", {
+          name: "补充说明（选填）"
+        }),
+        "  同价位更安全  "
+      );
+      await user.click(
+        within(dialog).getByRole("button", { name: "确认淘汰" })
+      );
+
+      await waitFor(() =>
+        expect(api.excludeListing).toHaveBeenCalledWith(
+          listing.key,
+          {
+            reason: "price_overvalued",
+            note: "同价位更安全"
+          }
+        )
+      );
+      expect(
+        await screen.findByText(
+          "已淘汰 MANUAL-1，不再参与候选排名"
+        )
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("dialog", { name: "人工淘汰账号" })
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("选择左侧候选")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /MANUAL-1/ })
+      ).not.toBeInTheDocument();
+      expect(api.getSources).toHaveBeenCalledTimes(2);
+      expect(api.getListings).toHaveBeenCalledTimes(2);
+      expect(posts).toContainEqual({
+        type: "listing-review-changed",
+        key: listing.key
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the account and completed exclusion form visible when the mutation fails", async () => {
+    const listing = asReviewedListing(
+      makeListing({
+        key: "panzhi:manual-error",
+        sourceListingId: "MANUAL-ERROR"
+      })
+    );
+    const api = makeApi({
+      getListings: async () => [listing],
+      getListing: async () => listing,
+      excludeListing: async () => {
+        throw new Error("人工淘汰操作失败，请稍后重试");
+      }
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /MANUAL-ERROR/ })
+    );
+    await user.click(
+      screen.getByRole("button", { name: "人工淘汰" })
+    );
+    const dialog = screen.getByRole("dialog", {
+      name: "人工淘汰账号"
+    });
+    await user.click(
+      within(dialog).getByRole("radio", { name: "卖家问题" })
+    );
+    await user.type(
+      within(dialog).getByRole("textbox", {
+        name: "补充说明（选填）"
+      }),
+      "描述前后不一致"
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "确认淘汰" })
+    );
+
+    expect(
+      await within(dialog).findByRole("alert")
+    ).toHaveTextContent("人工淘汰操作失败，请稍后重试");
+    expect(
+      within(dialog).getByRole("radio", { name: "卖家问题" })
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("textbox", {
+        name: "补充说明（选填）"
+      })
+    ).toHaveValue("描述前后不一致");
+    expect(
+      screen.getByRole("button", { name: /MANUAL-ERROR/ })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("complementary", { name: "候选详情" })
+    ).toHaveTextContent("MANUAL-ERROR");
+  });
+
+  it("restores a manually excluded account from the rejected view", async () => {
+    const listing: ReviewedListing = {
+      ...makeListing({
+        key: "panzhi:manual-2",
+        sourceListingId: "MANUAL-2"
+      }),
+      manualReview: {
+        excluded: true,
+        reason: "assets_low",
+        note: "资产不够",
+        reviewedAt: "2026-07-31T08:00:00.000Z"
+      }
+    };
+    let rejected: ReviewedListing[] = [listing];
+    const api = makeApi({
+      getListings: async (requestedView) =>
+        requestedView === "rejected" ? rejected : [],
+      getListing: async () => listing,
+      restoreListing: async () => {
+        rejected = [];
+        return {
+          ...listing,
+          manualReview: null
+        };
+      }
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+
+    await user.click(
+      await screen.findByRole("tab", { name: "已淘汰" })
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /MANUAL-2/ })
+    );
+    await user.click(
+      screen.getByRole("button", { name: "恢复参与排名" })
+    );
+
+    await waitFor(() =>
+      expect(api.restoreListing).toHaveBeenCalledWith(listing.key)
+    );
+    expect(
+      await screen.findByText(
+        "已恢复 MANUAL-2，将按原评分重新参与排名"
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: "已淘汰视图暂无记录"
+      })
+    ).toBeInTheDocument();
+    expect(screen.getByText("选择左侧候选")).toBeInTheDocument();
+  });
+
+  it("keeps a reviewed account open when restoring it fails", async () => {
+    const listing: ReviewedListing = {
+      ...makeListing({
+        key: "panzhi:restore-error",
+        sourceListingId: "RESTORE-ERROR"
+      }),
+      manualReview: {
+        excluded: true,
+        reason: "safety_risk",
+        note: null,
+        reviewedAt: "2026-07-31T08:00:00.000Z"
+      }
+    };
+    const api = makeApi({
+      getListings: async (requestedView) =>
+        requestedView === "rejected" ? [listing] : [],
+      getListing: async () => listing,
+      restoreListing: async () => {
+        throw new Error("恢复失败，请稍后重试");
+      }
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+
+    await user.click(
+      await screen.findByRole("tab", { name: "已淘汰" })
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /RESTORE-ERROR/ })
+    );
+    await user.click(
+      screen.getByRole("button", { name: "恢复参与排名" })
+    );
+
+    const detail = screen.getByRole("complementary", {
+      name: "候选详情"
+    });
+    expect(
+      await within(detail).findByRole("alert")
+    ).toHaveTextContent("恢复失败，请稍后重试");
+    expect(
+      within(detail).getByRole("button", {
+        name: "恢复参与排名"
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /RESTORE-ERROR/ })
+    ).toBeInTheDocument();
+  });
+
+  it("reloads review decisions from another tab without clearing the current pool first", async () => {
+    let channel:
+      | {
+          onmessage: ((event: MessageEvent) => void) | null;
+        }
+      | undefined;
+    class BroadcastChannelStub {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(readonly name: string) {
+        channel = this;
+      }
+      postMessage() {}
+      close() {}
+    }
+    vi.stubGlobal("BroadcastChannel", BroadcastChannelStub);
+    const listing = asReviewedListing(
+      makeListing({
+        key: "panzhi:external-review",
+        sourceListingId: "EXTERNAL-REVIEW"
+      })
+    );
+    const externalReload =
+      deferred<Array<Listing | ReviewedListing>>();
+    let listingCalls = 0;
+    const api = makeApi({
+      getListings: async () => {
+        listingCalls += 1;
+        return listingCalls === 1
+          ? [listing]
+          : externalReload.promise;
+      }
+    });
+
+    try {
+      render(<App api={api} />);
+      const row = await screen.findByRole("button", {
+        name: /EXTERNAL-REVIEW/
+      });
+
+      act(() => {
+        channel?.onmessage?.(
+          new MessageEvent("message", {
+            data: {
+              type: "listing-review-changed",
+              key: listing.key
+            }
+          })
+        );
+      });
+      await waitFor(() =>
+        expect(api.getListings).toHaveBeenCalledTimes(2)
+      );
+      expect(row).toBeInTheDocument();
+
+      externalReload.resolve([]);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: /EXTERNAL-REVIEW/ })
+        ).not.toBeInTheDocument()
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("refreshes the selected account history after an external snapshot", async () => {
     const listing = makeListing({
       key: "panzhi:history-sync",

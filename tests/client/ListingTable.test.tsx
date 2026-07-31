@@ -2,13 +2,28 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { ListingTable } from "../../src/client/components/ListingTable";
+import type { Listing } from "../../src/domain/listing";
+import type {
+  ManualListingReview,
+  ReviewedListing
+} from "../../src/domain/manualReview";
 import { makeListing } from "../domain/listingFactory";
+
+function makeReviewedListing(
+  overrides: Partial<Listing> = {},
+  manualReview: ManualListingReview | null = null
+): ReviewedListing {
+  return {
+    ...makeListing(overrides),
+    manualReview
+  };
+}
 
 describe("ListingTable", () => {
   it("shows the exact M7 peak grade", () => {
     render(
       <ListingTable
-        listings={[makeListing({ m7PrismQuality: "S" })]}
+        listings={[makeReviewedListing({ m7PrismQuality: "S" })]}
         selectedKey={null}
         sort="score"
         onSortChange={() => undefined}
@@ -23,7 +38,7 @@ describe("ListingTable", () => {
     const { rerender } = render(
       <ListingTable
         listings={[
-          makeListing({
+          makeReviewedListing({
             m7RareFinishes: ["pearl", "iridescent", "candy"]
           })
         ]}
@@ -40,7 +55,7 @@ describe("ListingTable", () => {
 
     rerender(
       <ListingTable
-        listings={[makeListing({ m7RareFinishes: [] })]}
+        listings={[makeReviewedListing({ m7RareFinishes: [] })]}
         selectedKey={null}
         sort="score"
         onSortChange={() => undefined}
@@ -56,8 +71,8 @@ describe("ListingTable", () => {
   it("sorts candidates by price without changing the records", async () => {
     const onSelect = vi.fn();
     const listings = [
-      makeListing({ key: "panzhi:expensive", priceCny: 5500 }),
-      makeListing({
+      makeReviewedListing({ key: "panzhi:expensive", priceCny: 5500 }),
+      makeReviewedListing({
         key: "panzhi:cheap",
         sourceListingId: "cheap",
         priceCny: 2800
@@ -83,7 +98,7 @@ describe("ListingTable", () => {
     render(
       <ListingTable
         listings={[
-          makeListing({
+          makeReviewedListing({
             scanStability: "stable",
             consecutiveUnchangedScans: 3
           })
@@ -113,7 +128,7 @@ describe("ListingTable", () => {
   ] as const)("labels %s scan stability", (scanStability, label) => {
     render(
       <ListingTable
-        listings={[makeListing({ scanStability })]}
+        listings={[makeReviewedListing({ scanStability })]}
         selectedKey={null}
         sort="score"
         onSortChange={() => undefined}
@@ -122,5 +137,32 @@ describe("ListingTable", () => {
     );
 
     expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("tags the manual exclusion reason in the rejected view", () => {
+    render(
+      <ListingTable
+        listings={[
+          makeReviewedListing(
+            {},
+            {
+              excluded: true,
+              reason: "price_overvalued",
+              note: null,
+              reviewedAt: "2026-07-31T08:00:00.000Z"
+            }
+          )
+        ]}
+        selectedKey={null}
+        sort="score"
+        view="rejected"
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    expect(
+      screen.getByText("人工淘汰 · 价格虚高")
+    ).toBeInTheDocument();
   });
 });

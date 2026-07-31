@@ -1,4 +1,8 @@
 import type { Listing } from "../../domain/listing";
+import {
+  MANUAL_REVIEW_REASON_LABELS,
+  type ReviewedListing
+} from "../../domain/manualReview";
 import type { ListingHistoryView } from "../api";
 import { buildEvidenceExcerpt } from "../../domain/evidenceExcerpt";
 
@@ -65,13 +69,21 @@ export function ListingDetail({
   history = null,
   historyLoading = false,
   historyError = null,
+  reviewPending = false,
+  reviewError = null,
+  onExclude,
+  onRestore,
   onClose
 }: {
-  listing: Listing | null;
+  listing: ReviewedListing | null;
   loading: boolean;
   history?: ListingHistoryView | null;
   historyLoading?: boolean;
   historyError?: string | null;
+  reviewPending?: boolean;
+  reviewError?: string | null;
+  onExclude?: (listing: ReviewedListing) => void;
+  onRestore?: (listing: ReviewedListing) => void;
   onClose?: () => void;
 }) {
   if (!listing) {
@@ -400,6 +412,61 @@ export function ListingDetail({
             <p key={warning}>{warning}</p>
           ))}
         </section>
+      ) : null}
+
+      {listing.manualReview ? (
+        <section
+          className="manual-review-summary"
+          aria-label="人工淘汰记录"
+        >
+          <strong>
+            人工淘汰 ·{" "}
+            {MANUAL_REVIEW_REASON_LABELS[listing.manualReview.reason]}
+          </strong>
+          {listing.manualReview.note ? (
+            <p>{listing.manualReview.note}</p>
+          ) : (
+            <p>未填写补充说明</p>
+          )}
+          <time dateTime={listing.manualReview.reviewedAt}>
+            淘汰于{" "}
+            {new Date(
+              listing.manualReview.reviewedAt
+            ).toLocaleString("zh-CN")}
+          </time>
+          {onRestore ? (
+            <button
+              className="manual-review-action manual-review-action--restore"
+              type="button"
+              disabled={reviewPending}
+              onClick={() => onRestore(listing)}
+            >
+              {reviewPending ? "正在恢复…" : "恢复参与排名"}
+            </button>
+          ) : null}
+        </section>
+      ) : listing.eligibility === "eligible" && onExclude ? (
+        <section
+          className="manual-review-action-block"
+          aria-label="人工判断"
+        >
+          <strong>人工判断</strong>
+          <p>确认不合适后可填写原因，并让该账号永久退出候选排名。</p>
+          <button
+            className="manual-review-action manual-review-action--exclude"
+            type="button"
+            disabled={reviewPending}
+            onClick={() => onExclude(listing)}
+          >
+            {reviewPending ? "正在处理…" : "人工淘汰"}
+          </button>
+        </section>
+      ) : null}
+
+      {reviewError ? (
+        <p className="manual-review-inline-error" role="alert">
+          {reviewError}
+        </p>
       ) : null}
 
       <details className="raw-evidence">

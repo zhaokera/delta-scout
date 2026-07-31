@@ -1,13 +1,31 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
+import { DetailDrawer } from "../../src/client/components/DetailDrawer";
 import { ListingDetail } from "../../src/client/components/ListingDetail";
 import type { ListingHistoryView } from "../../src/client/api";
+import type { Listing } from "../../src/domain/listing";
+import type {
+  ManualListingReview,
+  ReviewedListing
+} from "../../src/domain/manualReview";
 import { makeListing, makeScore } from "../domain/listingFactory";
+
+function makeReviewedListing(
+  overrides: Partial<Listing> = {},
+  manualReview: ManualListingReview | null = null
+): ReviewedListing {
+  return {
+    ...makeListing(overrides),
+    manualReview
+  };
+}
 
 describe("ListingDetail", () => {
   it("prominently flags a peak M7 whose grade is missing", () => {
     render(
       <ListingDetail
-        listing={makeListing({
+        listing={makeReviewedListing({
           m7PrismStatus: "peak",
           m7PrismQuality: null
         })}
@@ -23,7 +41,7 @@ describe("ListingDetail", () => {
       `${"冗长的商品说明".repeat(40)}M7 棱镜攻势 极品 品质:S级${"其它资产".repeat(40)}`;
     const { container } = render(
       <ListingDetail
-        listing={makeListing({
+        listing={makeReviewedListing({
           m7Evidence: [{ text: evidenceText, truncated: false }],
           score: {
             total: 91,
@@ -85,7 +103,7 @@ describe("ListingDetail", () => {
 
     render(
       <ListingDetail
-        listing={makeListing({
+        listing={makeReviewedListing({
           m7RareFinishes: ["pearl", "candy"],
           m7RareFinishEvidence: [
             {
@@ -129,7 +147,7 @@ describe("ListingDetail", () => {
   it("keeps an untagged M7 finish explicitly pending verification", () => {
     render(
       <ListingDetail
-        listing={makeListing({
+        listing={makeReviewedListing({
           m7RareFinishes: [],
           m7RareFinishEvidence: []
         })}
@@ -144,7 +162,7 @@ describe("ListingDetail", () => {
   it("shows the listing scan stability and unchanged run count", () => {
     render(
       <ListingDetail
-        listing={makeListing({
+        listing={makeReviewedListing({
           scanStability: "stable",
           consecutiveUnchangedScans: 4
         })}
@@ -232,7 +250,7 @@ describe("ListingDetail", () => {
 
     render(
       <ListingDetail
-        listing={makeListing({ priceCny: 2199 })}
+        listing={makeReviewedListing({ priceCny: 2199 })}
         loading={false}
         history={history}
         historyLoading={false}
@@ -252,7 +270,7 @@ describe("ListingDetail", () => {
   it("shows a local history error without hiding the listing", () => {
     render(
       <ListingDetail
-        listing={makeListing()}
+        listing={makeReviewedListing()}
         loading={false}
         history={null}
         historyLoading={false}
@@ -262,5 +280,102 @@ describe("ListingDetail", () => {
 
     expect(screen.getByText("SA123")).toBeInTheDocument();
     expect(screen.getByText("历史读取失败")).toBeInTheDocument();
+  });
+
+  it("offers one manual exclusion action for an unreviewed eligible account", async () => {
+    const user = userEvent.setup();
+    const listing = makeReviewedListing();
+    const onExclude = vi.fn();
+    const onRestore = vi.fn();
+
+    render(
+      <ListingDetail
+        listing={listing}
+        loading={false}
+        onExclude={onExclude}
+        onRestore={onRestore}
+        reviewPending={false}
+        reviewError={null}
+      />
+    );
+
+    const action = screen.getByRole("button", {
+      name: "人工淘汰"
+    });
+    expect(action).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "恢复参与排名" })
+    ).not.toBeInTheDocument();
+
+    await user.click(action);
+    expect(onExclude).toHaveBeenCalledOnce();
+    expect(onExclude).toHaveBeenCalledWith(listing);
+    expect(onRestore).not.toHaveBeenCalled();
+  });
+
+  it("shows the review reason, note and time with one restore action", async () => {
+    const user = userEvent.setup();
+    const reviewedAt = "2026-07-31T08:00:00.000Z";
+    const listing = makeReviewedListing(
+      {},
+      {
+        excluded: true,
+        reason: "price_overvalued",
+        note: "同价位有更安全的号",
+        reviewedAt
+      }
+    );
+    const onRestore = vi.fn();
+    const { container } = render(
+      <ListingDetail
+        listing={listing}
+        loading={false}
+        onExclude={vi.fn()}
+        onRestore={onRestore}
+        reviewPending={false}
+        reviewError={null}
+      />
+    );
+
+    expect(screen.getByText("人工淘汰 · 价格虚高")).toBeInTheDocument();
+    expect(screen.getByText("同价位有更安全的号")).toBeInTheDocument();
+    expect(
+      container.querySelector(`time[datetime="${reviewedAt}"]`)
+    ).not.toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "人工淘汰" })
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "恢复参与排名" })
+    );
+    expect(onRestore).toHaveBeenCalledOnce();
+    expect(onRestore).toHaveBeenCalledWith(listing);
+  });
+
+  it("passes the same manual review action through the mobile drawer", async () => {
+    const user = userEvent.setup();
+    const listing = makeReviewedListing();
+    const onExclude = vi.fn();
+
+    render(
+      <DetailDrawer
+        listing={listing}
+        loading={false}
+        history={null}
+        historyLoading={false}
+        historyError={null}
+        reviewPending={false}
+        reviewError={null}
+        onExclude={onExclude}
+        onRestore={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "人工淘汰" })
+    );
+    expect(onExclude).toHaveBeenCalledWith(listing);
   });
 });

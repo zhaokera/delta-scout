@@ -1,4 +1,8 @@
-import type { Listing, SourceId } from "../../domain/listing";
+import type { SourceId } from "../../domain/listing";
+import {
+  MANUAL_REVIEW_REASON_LABELS,
+  type ReviewedListing
+} from "../../domain/manualReview";
 import type { ListingView, PoolMode } from "../api";
 import type { SortKey } from "./FilterBar";
 
@@ -39,7 +43,10 @@ function money(value: number | null): string {
     : `¥${new Intl.NumberFormat("zh-CN").format(value)}`;
 }
 
-function sortListings(listings: Listing[], sort: SortKey): Listing[] {
+function sortListings(
+  listings: ReviewedListing[],
+  sort: SortKey
+): ReviewedListing[] {
   return [...listings].sort((left, right) => {
     if (sort === "skinValue") {
       return (
@@ -60,7 +67,7 @@ function sortListings(listings: Listing[], sort: SortKey): Listing[] {
   });
 }
 
-function julangLabel(listing: Listing): string {
+function julangLabel(listing: ReviewedListing): string {
   if (listing.julangStatus === "owned") {
     return `巨浪${listing.julangQuality ? ` · ${listing.julangQuality}` : ""}`;
   }
@@ -68,7 +75,7 @@ function julangLabel(listing: Listing): string {
   return "巨浪待核验";
 }
 
-function m7Label(listing: Listing): string {
+function m7Label(listing: ReviewedListing): string {
   if (listing.m7PrismStatus === "peak") {
     return `M7 · 极品${listing.m7PrismQuality ?? ""}`;
   }
@@ -78,7 +85,7 @@ function m7Label(listing: Listing): string {
   return "M7 · 待核验";
 }
 
-function stabilityLabel(listing: Listing): string {
+function stabilityLabel(listing: ReviewedListing): string {
   if (listing.scanStability === "stable") {
     return `连续稳定 · ${listing.consecutiveUnchangedScans} 轮`;
   }
@@ -88,7 +95,7 @@ function stabilityLabel(listing: Listing): string {
 }
 
 export interface ListingTableProps {
-  listings: Listing[];
+  listings: ReviewedListing[];
   selectedKey: string | null;
   sort: SortKey;
   view?: ListingView;
@@ -96,7 +103,7 @@ export interface ListingTableProps {
   totalCount?: number;
   sourceContributions?: Record<SourceId, number>;
   onSortChange(sort: SortKey): void;
-  onSelect(listing: Listing): void;
+  onSelect(listing: ReviewedListing): void;
 }
 
 export function ListingTable({
@@ -184,6 +191,16 @@ export function ListingTable({
                   {listing.sourceListingId ?? listing.title.slice(0, 18)}
                 </strong>
                 <em>{SOURCE_LABELS[listing.source]}</em>
+                {listing.manualReview ? (
+                  <span className="manual-review-badge">
+                    人工淘汰 ·{" "}
+                    {
+                      MANUAL_REVIEW_REASON_LABELS[
+                        listing.manualReview.reason
+                      ]
+                    }
+                  </span>
+                ) : null}
               </span>
               <b>{money(listing.priceCny)}</b>
             </span>
