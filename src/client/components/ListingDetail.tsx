@@ -37,7 +37,9 @@ function m7StatusLabel(listing: Listing): string {
   if (listing.m7PrismStatus === "peak") {
     return `极品${listing.m7PrismQuality ?? ""}`;
   }
-  if (listing.m7PrismStatus === "premium") return "优品（不符合硬条件）";
+  if (listing.m7PrismStatus === "premium") {
+    return `优品${listing.m7PrismQuality ?? ""}`;
+  }
   if (listing.m7PrismStatus === "absent") return "未发现";
   if (listing.m7PrismStatus === "conflicting") return "证据冲突";
   return "待人工核验";
@@ -163,10 +165,13 @@ export function ListingDetail({
       <section className="evidence-block evidence-block--m7">
         <span className="evidence-label">硬条件 / M7</span>
         <strong>M7 棱镜攻势 · {m7StatusLabel(listing)}</strong>
-        {listing.m7PrismStatus === "peak" &&
+        {(listing.m7PrismStatus === "peak" ||
+          listing.m7PrismStatus === "premium") &&
         listing.m7PrismQuality === null ? (
           <p className="evidence-warning" role="alert">
-            极品品质待核验
+            {listing.m7PrismStatus === "premium"
+              ? "优品品质待核验"
+              : "极品品质待核验"}
           </p>
         ) : null}
         <blockquote>
@@ -321,13 +326,13 @@ export function ListingDetail({
           </div>
           <div className="score-parts">
             <p>
-              M7 综合价值 {scorePart(listing.score.parts.m7)} / 35
+              M7 综合价值 {scorePart(listing.score.parts.m7)} / 20
             </p>
             <p>
-              角色红皮 {scorePart(listing.score.parts.redSkins)} / 20
+              角色红皮 {scorePart(listing.score.parts.redSkins)} / 25
             </p>
-            <p>巨浪 {scorePart(listing.score.parts.julang)} / 15</p>
-            <p>价格 {scorePart(listing.score.parts.price)} / 20</p>
+            <p>巨浪 {scorePart(listing.score.parts.julang)} / 20</p>
+            <p>价格 {scorePart(listing.score.parts.price)} / 25</p>
             <p>资产 {scorePart(listing.score.parts.assets)} / 10</p>
             <p>
               二次实名 {scorePart(listing.score.parts.secondRealName)} / 40

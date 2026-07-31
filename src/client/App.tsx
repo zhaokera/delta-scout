@@ -63,7 +63,7 @@ const EMPTY_STATES: Record<
   eligible: {
     title: "全部合格视图暂无记录",
     description:
-      "当前快照中没有满足 QQ 官服、¥6,000 以内与 M7 棱镜攻势极品条件的账号。"
+      "当前快照中没有满足 QQ 官服、¥6,000 以内与 M7 棱镜攻势极品或优品 S 条件的账号。"
   },
   needs_verification: {
     title: "待人工核验视图暂无记录",
@@ -861,7 +861,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         </div>
         <div className="mission-rule">
           <small>WEAPON SKIN</small>
-          <strong>M7 棱镜攻势 · 极品</strong>
+          <strong>M7 棱镜攻势 · 极品 / 优品S</strong>
         </div>
         <div className="mission-rule">
           <small>BUDGET CAP</small>

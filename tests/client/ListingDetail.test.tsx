@@ -36,6 +36,37 @@ describe("ListingDetail", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("极品品质待核验");
   });
 
+  it("shows premium S and flags premium without a proven grade", () => {
+    const { rerender } = render(
+      <ListingDetail
+        listing={makeReviewedListing({
+          m7PrismStatus: "premium",
+          m7PrismQuality: "S"
+        })}
+        loading={false}
+      />
+    );
+
+    expect(
+      screen.getByText("M7 棱镜攻势 · 优品S")
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    rerender(
+      <ListingDetail
+        listing={makeReviewedListing({
+          m7PrismStatus: "premium",
+          m7PrismQuality: null
+        })}
+        loading={false}
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "优品品质待核验"
+    );
+  });
+
   it("shows a bounded M7 excerpt and separates value from purchase risk", () => {
     const evidenceText =
       `${"冗长的商品说明".repeat(40)}M7 棱镜攻势 极品 品质:S级${"其它资产".repeat(40)}`;
@@ -54,10 +85,10 @@ describe("ListingDetail", () => {
               totalSafetySignals: 3
             },
             parts: {
-              m7: 35,
-              redSkins: 16,
-              julang: 15,
-              price: 18,
+              m7: 20,
+              redSkins: 20,
+              julang: 20,
+              price: 23,
               assets: 9,
               secondRealName: 40,
               recovery: 35,
@@ -87,18 +118,18 @@ describe("ListingDetail", () => {
     expect(screen.getByText("数据完整度 80 / 100")).toBeInTheDocument();
     expect(screen.getByText("中风险")).toBeInTheDocument();
     expect(screen.getByText("安全证据 2 / 3")).toBeInTheDocument();
-    expect(screen.getByText("M7 综合价值 35 / 35")).toBeInTheDocument();
-    expect(screen.getByText("角色红皮 16 / 20")).toBeInTheDocument();
-    expect(screen.getByText("巨浪 15 / 15")).toBeInTheDocument();
-    expect(screen.getByText("价格 18 / 20")).toBeInTheDocument();
+    expect(screen.getByText("M7 综合价值 20 / 20")).toBeInTheDocument();
+    expect(screen.getByText("角色红皮 20 / 25")).toBeInTheDocument();
+    expect(screen.getByText("巨浪 20 / 20")).toBeInTheDocument();
+    expect(screen.getByText("价格 23 / 25")).toBeInTheDocument();
     expect(screen.getByText("资产 9 / 10")).toBeInTheDocument();
   });
 
   it("shows trusted M7 finish tags, source evidence, and combined value", () => {
-    const score = makeScore(88, { m7: 31 });
+    const score = makeScore(88, { m7: 17 });
     score.valueReasons = [
-      "M7 极品A，品质价值 23.0/27",
-      "M7 稀有模板：珠光 M7 · 糖果 M7，价值 8.0/8"
+      "M7 极品A，品质价值 13.0/16",
+      "M7 稀有模板：珠光 M7 · 糖果 M7，价值 4.0/4"
     ];
 
     render(
@@ -124,12 +155,12 @@ describe("ListingDetail", () => {
     expect(screen.getByText("高价值模板")).toBeInTheDocument();
     expect(screen.getByText("珠光 M7")).toBeInTheDocument();
     expect(screen.getByText("糖果 M7")).toBeInTheDocument();
-    expect(screen.getByText("M7 综合价值 31 / 35")).toBeInTheDocument();
+    expect(screen.getByText("M7 综合价值 17 / 20")).toBeInTheDocument();
     expect(
-      screen.getByText("M7 极品A，品质价值 23.0/27")
+      screen.getByText("M7 极品A，品质价值 13.0/16")
     ).toBeInTheDocument();
     expect(
-      screen.getByText("M7 稀有模板：珠光 M7 · 糖果 M7，价值 8.0/8")
+      screen.getByText("M7 稀有模板：珠光 M7 · 糖果 M7，价值 4.0/4")
     ).toBeInTheDocument();
     expect(
       screen.getByLabelText(

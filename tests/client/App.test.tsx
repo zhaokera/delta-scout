@@ -306,7 +306,9 @@ describe("App shell", () => {
       screen.getByRole("heading", { name: "三角洲账号候选台" })
     ).toBeInTheDocument();
     expect(screen.getByText("QQ 官服")).toBeInTheDocument();
-    expect(screen.getByText("M7 棱镜攻势 · 极品")).toBeInTheDocument();
+    expect(
+      screen.getByText("M7 棱镜攻势 · 极品 / 优品S")
+    ).toBeInTheDocument();
     expect(screen.getByText("¥6,000 以内")).toBeInTheDocument();
   });
 
@@ -844,10 +846,10 @@ describe("App shell", () => {
       totalAssetsM: 999,
       score: {
         ...makeScore(95, {
-          m7: 30,
+          m7: 20,
           redSkins: 15,
-          julang: 15,
-          price: 18,
+          julang: 20,
+          price: 23,
           assets: 9,
           secondRealName: 40,
           recovery: 35,
@@ -1283,10 +1285,10 @@ describe("App shell", () => {
       recoveryCoverage: false,
       score: {
         ...makeScore(87, {
-          m7: 29,
-          redSkins: 12,
-          julang: 15,
-          price: 16,
+          m7: 17,
+          redSkins: 15,
+          julang: 20,
+          price: 20,
           assets: 8,
           secondRealName: 40,
           recovery: 0,
@@ -1387,6 +1389,15 @@ describe("App shell", () => {
     const api = makeApi();
     const user = userEvent.setup();
     render(<App api={api} />);
+
+    await user.click(
+      await screen.findByRole("tab", { name: "全部合格" })
+    );
+    expect(
+      await screen.findByText(
+        "当前快照中没有满足 QQ 官服、¥6,000 以内与 M7 棱镜攻势极品或优品 S 条件的账号。"
+      )
+    ).toBeInTheDocument();
 
     await user.click(
       await screen.findByRole("tab", { name: "已淘汰" })

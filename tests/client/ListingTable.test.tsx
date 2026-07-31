@@ -34,6 +34,26 @@ describe("ListingTable", () => {
     expect(screen.getByText("M7 · 极品S")).toBeInTheDocument();
   });
 
+  it("shows premium S without presenting it as peak", () => {
+    render(
+      <ListingTable
+        listings={[
+          makeReviewedListing({
+            m7PrismStatus: "premium",
+            m7PrismQuality: "S"
+          })
+        ]}
+        selectedKey={null}
+        sort="score"
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("M7 · 优品S")).toBeInTheDocument();
+    expect(screen.queryByText("M7 · 极品S")).not.toBeInTheDocument();
+  });
+
   it("highlights every trusted M7 rare finish without fabricating empty tags", () => {
     const { rerender } = render(
       <ListingTable

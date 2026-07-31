@@ -1469,7 +1469,7 @@ describe("CollectionCoordinator", () => {
           sourceListingId: "old",
           score: {
             ...makeScore(90, {
-              m7: 30,
+              m7: 20,
               redSkins: 15,
               julang: 15,
               price: 15,
@@ -1538,7 +1538,7 @@ describe("CollectionCoordinator", () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const oldScore = {
       ...makeScore(99, {
-        m7: 35,
+        m7: 20,
         redSkins: 20,
         julang: 15,
         price: 20,
@@ -1614,7 +1614,7 @@ describe("CollectionCoordinator", () => {
       repository.getListings().find(({ source }) => source === "panzhi")
         ?.score?.parts
     ).toMatchObject({
-      price: 10,
+      price: 12.5,
       assets: 5.5
     });
   });
@@ -1902,7 +1902,7 @@ describe("CollectionCoordinator", () => {
 
     const listings = repository.getListings();
     expect(listings.find(({ source }) => source === "panzhi")?.score?.parts)
-      .toMatchObject({ price: 20, assets: 1 });
+      .toMatchObject({ price: 25, assets: 1 });
     expect(listings.find(({ source }) => source === "pxb7")?.score?.parts)
       .toMatchObject({ price: 0, assets: 10 });
   });
