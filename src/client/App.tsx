@@ -73,7 +73,7 @@ const EMPTY_STATES: Record<
   rejected: {
     title: "已淘汰视图暂无记录",
     description:
-      "当前快照中没有明确违反硬条件而被淘汰的记录。"
+      "当前快照中没有明确违反硬条件或被你人工淘汰的记录。"
   }
 };
 

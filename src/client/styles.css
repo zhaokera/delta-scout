@@ -40,14 +40,16 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
 button,
 a,
 select,
-input {
+input,
+textarea {
   outline-color: var(--acid);
   outline-offset: 3px;
 }
@@ -421,6 +423,169 @@ button {
 .browser-refresh-dialog__danger {
   border-color: var(--danger) !important;
   color: #ffd1c9;
+}
+
+.manual-review-dialog__backdrop {
+  position: fixed;
+  z-index: 1100;
+  inset: 0;
+  padding: 20px;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 6, 5, 0.84);
+  backdrop-filter: blur(4px);
+}
+
+.manual-review-dialog {
+  width: min(560px, 100%);
+  max-height: min(760px, calc(100dvh - 40px));
+  padding: 22px;
+  overflow: auto;
+  border: 1px solid var(--line-bright);
+  border-top: 2px solid var(--danger);
+  background: var(--panel-raised);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
+}
+
+.manual-review-dialog__eyebrow {
+  margin: 0;
+  color: var(--danger);
+  font: 750 10px/1 var(--mono);
+  letter-spacing: 0.15em;
+}
+
+.manual-review-dialog h2 {
+  margin: 9px 0 0;
+  font-size: 24px;
+}
+
+.manual-review-dialog__listing {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font: 750 12px/1.45 var(--mono);
+}
+
+.manual-review-dialog__hint {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font: 550 11px/1.55 var(--mono);
+}
+
+.manual-review-dialog form {
+  margin-top: 20px;
+}
+
+.manual-review-dialog__label,
+.manual-review-dialog__note > span:first-child {
+  display: block;
+  margin-bottom: 9px;
+  color: #d8ddd8;
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+}
+
+.manual-review-dialog__reasons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.manual-review-dialog__reason {
+  min-height: 44px;
+  padding: 10px 11px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #cbd0ca;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.018);
+  cursor: pointer;
+  font: 650 11px/1.3 var(--mono);
+}
+
+.manual-review-dialog__reason:has(input:checked) {
+  color: #ffd1c9;
+  border-color: rgba(255, 110, 87, 0.7);
+  background: rgba(255, 110, 87, 0.08);
+}
+
+.manual-review-dialog__reason:focus-within {
+  outline: 1px solid var(--acid);
+  outline-offset: 2px;
+}
+
+.manual-review-dialog__reason input {
+  accent-color: var(--danger);
+}
+
+.manual-review-dialog__reason:has(input:disabled) {
+  cursor: progress;
+  opacity: 0.58;
+}
+
+.manual-review-dialog__note {
+  position: relative;
+  margin-top: 16px;
+  display: block;
+}
+
+.manual-review-dialog__note textarea {
+  width: 100%;
+  min-height: 108px;
+  padding: 12px;
+  resize: vertical;
+  color: var(--ink);
+  border: 1px solid var(--line-bright);
+  background: #0e110f;
+  font: 550 11px/1.55 var(--mono);
+}
+
+.manual-review-dialog__note textarea[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.manual-review-dialog__counter {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  text-align: right;
+  font: 600 9px var(--mono);
+}
+
+.manual-review-dialog__error {
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  color: #ffd1c9;
+  border-left: 2px solid var(--danger);
+  background: rgba(255, 110, 87, 0.07);
+  font: 650 10px/1.45 var(--mono);
+}
+
+.manual-review-dialog__actions {
+  margin-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.manual-review-dialog__actions button {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line-bright);
+  background: transparent;
+  cursor: pointer;
+}
+
+.manual-review-dialog__actions button:disabled {
+  cursor: progress;
+  opacity: 0.5;
+}
+
+.manual-review-dialog__danger {
+  border-color: var(--danger) !important;
+  color: #ffd1c9;
+  background: rgba(255, 110, 87, 0.06) !important;
+  font-weight: 800;
 }
 
 .refresh-progress__metrics {
@@ -834,6 +999,15 @@ button {
   color: var(--amber);
 }
 
+.manual-review-notice {
+  margin-top: 14px;
+  padding: 11px 14px;
+  color: #dfffa0;
+  background: rgba(216, 255, 62, 0.07);
+  border-left: 3px solid var(--acid);
+  font: 700 11px/1.45 var(--mono);
+}
+
 .filter-panel__primary {
   min-height: 68px;
   display: flex;
@@ -1110,6 +1284,15 @@ input[type="search"] {
   color: var(--muted);
   font-size: 11px;
   font-style: normal;
+}
+
+.manual-review-badge {
+  width: fit-content;
+  padding: 4px 6px;
+  color: #ffd1c9;
+  border: 1px solid rgba(255, 110, 87, 0.48);
+  background: rgba(255, 110, 87, 0.075);
+  font: 750 9px/1.2 var(--mono);
 }
 
 .listing-row__identity b {
@@ -1664,6 +1847,88 @@ input[type="search"] {
   font-size: 11px;
 }
 
+.manual-review-summary,
+.manual-review-action-block {
+  margin: 16px;
+  padding: 14px;
+  border: 1px solid rgba(255, 110, 87, 0.38);
+  border-left: 3px solid var(--danger);
+  background: rgba(255, 110, 87, 0.055);
+}
+
+.manual-review-action-block {
+  border-color: var(--line-bright);
+  border-left-color: var(--amber);
+  background: rgba(255, 189, 74, 0.045);
+}
+
+.manual-review-summary > strong,
+.manual-review-action-block > strong {
+  display: block;
+  color: #ffd1c9;
+  font: 800 11px/1.4 var(--mono);
+}
+
+.manual-review-action-block > strong {
+  color: var(--amber);
+}
+
+.manual-review-summary p,
+.manual-review-action-block p {
+  margin: 8px 0 0;
+  color: #bcc2bc;
+  font: 550 10px/1.55 var(--mono);
+}
+
+.manual-review-summary time {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font: 550 9px/1.4 var(--mono);
+}
+
+.manual-review-action {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 13px;
+  padding: 0 13px;
+  border: 1px solid var(--line-bright);
+  background: transparent;
+  cursor: pointer;
+  font: 800 11px var(--mono);
+}
+
+.manual-review-action:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.manual-review-action--exclude {
+  color: #ffd1c9;
+  border-color: var(--danger);
+}
+
+.manual-review-action--restore {
+  color: var(--acid);
+  border-color: rgba(216, 255, 62, 0.65);
+}
+
+.manual-review-action:hover:not(:disabled),
+.manual-review-action:focus-visible {
+  color: #10140c;
+  background: var(--acid);
+  border-color: var(--acid);
+}
+
+.manual-review-inline-error {
+  margin: 0 16px 16px;
+  padding: 9px 11px;
+  color: #ffd1c9;
+  border-left: 2px solid var(--danger);
+  background: rgba(255, 110, 87, 0.075);
+  font: 650 10px/1.45 var(--mono);
+}
+
 .raw-evidence {
   color: var(--muted);
 }
@@ -1959,6 +2224,19 @@ input[type="search"] {
   }
 
   .browser-refresh-dialog__actions button {
+    width: 100%;
+  }
+
+  .manual-review-dialog__reasons {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-review-dialog__actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .manual-review-dialog__actions button {
     width: 100%;
   }
 
