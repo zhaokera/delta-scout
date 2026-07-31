@@ -44,10 +44,10 @@ export const ScoreSchema = z.object({
     totalSafetySignals: z.literal(3)
   }),
   parts: z.object({
-    m7: z.number().min(0).max(35),
-    redSkins: z.number().min(0).max(20),
-    julang: z.number().min(0).max(15),
-    price: z.number().min(0).max(20),
+    m7: z.number().min(0).max(20),
+    redSkins: z.number().min(0).max(25),
+    julang: z.number().min(0).max(20),
+    price: z.number().min(0).max(25),
     assets: z.number().min(0).max(10),
     secondRealName: z.number().min(0).max(40),
     recovery: z.number().min(0).max(35),

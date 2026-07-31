@@ -103,10 +103,10 @@ describe("ListingSchema", () => {
             totalSafetySignals: 3
           },
           parts: {
-            m7: 29,
-            redSkins: 8,
-            julang: 15,
-            price: 10,
+            m7: 20,
+            redSkins: 25,
+            julang: 20,
+            price: 25,
             assets: 5,
             secondRealName: 40,
             recovery: 0,
@@ -118,5 +118,43 @@ describe("ListingSchema", () => {
         }
       }).score
     ).not.toBeNull();
+  });
+
+  it.each([
+    ["m7", 21],
+    ["redSkins", 26],
+    ["julang", 21],
+    ["price", 26],
+    ["assets", 11]
+  ] as const)("rejects %s above its value allocation", (part, value) => {
+    const score = {
+      total: 70,
+      value: 80,
+      safety: 60,
+      dataQuality: 50,
+      riskLevel: "medium",
+      coverage: {
+        knownSafetySignals: 2,
+        totalSafetySignals: 3
+      },
+      parts: {
+        m7: 20,
+        redSkins: 25,
+        julang: 20,
+        price: 25,
+        assets: 10,
+        secondRealName: 40,
+        recovery: 0,
+        verification: 15,
+        [part]: value
+      },
+      valueReasons: [],
+      safetyReasons: [],
+      reasons: []
+    };
+
+    expect(() =>
+      ListingSchema.parse({ ...validListing, score })
+    ).toThrow();
   });
 });

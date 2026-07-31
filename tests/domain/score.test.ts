@@ -12,8 +12,8 @@ describe("scoreEligibleListings", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 77,
-      value: 57.5,
+      total: 76,
+      value: 56,
       safety: 100,
       dataQuality: 100,
       riskLevel: "low",
@@ -22,10 +22,10 @@ describe("scoreEligibleListings", () => {
         totalSafetySignals: 3
       },
       parts: {
-        m7: 23,
-        redSkins: 4,
-        julang: 15,
-        price: 10,
+        m7: 13,
+        redSkins: 5,
+        julang: 20,
+        price: 12.5,
         assets: 5.5,
         secondRealName: 40,
         recovery: 35,
@@ -58,17 +58,17 @@ describe("scoreEligibleListings", () => {
     const cheapResult = results.find(({ key }) => key === cheap.key)!;
     const richResult = results.find(({ key }) => key === rich.key)!;
 
-    expect(cheapResult.score?.parts.price).toBe(20);
+    expect(cheapResult.score?.parts.price).toBe(25);
     expect(richResult.score?.parts.price).toBe(0);
     expect(cheapResult.score?.parts.assets).toBe(1);
     expect(richResult.score?.parts.assets).toBe(10);
   });
 
   it.each([
-    ["S", 27],
-    ["A", 23],
-    ["B", 18],
-    ["C", 14],
+    ["S", 16],
+    ["A", 13],
+    ["B", 10],
+    ["C", 8],
     [null, 0]
   ] as const)("scores M7 quality %s explicitly", (quality, expected) => {
     const [result] = scoreEligibleListings([
@@ -89,7 +89,25 @@ describe("scoreEligibleListings", () => {
     }
   });
 
-  it("adds one non-stacking eight-point bonus for trusted M7 finishes", () => {
+  it("scores premium S below every peak grade", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        m7PrismStatus: "premium",
+        m7PrismQuality: "S",
+        redSkins: [],
+        redSkinCount: 0,
+        julangStatus: "absent",
+        julangQuality: null
+      })
+    ], now);
+
+    expect(result.score?.parts.m7).toBe(6);
+    expect(result.score?.valueReasons.join(" ")).toContain(
+      "M7 优品S，品质价值 6.0/16"
+    );
+  });
+
+  it("adds one non-stacking four-point bonus for trusted M7 finishes", () => {
     const [untagged] = scoreEligibleListings([
       makeListing({
         key: "panzhi:untagged",
@@ -112,18 +130,18 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(untagged.score?.parts.m7).toBe(23);
-    expect(tagged.score?.parts.m7).toBe(31);
-    expect(multiTagged.score?.parts.m7).toBe(35);
+    expect(untagged.score?.parts.m7).toBe(13);
+    expect(tagged.score?.parts.m7).toBe(17);
+    expect(multiTagged.score?.parts.m7).toBe(20);
     expect(tagged.score?.parts).not.toHaveProperty("m7RareFinish");
     expect(tagged.score?.valueReasons.join(" ")).toContain(
-      "品质价值 23.0/27"
+      "品质价值 13.0/16"
     );
     expect(tagged.score?.valueReasons.join(" ")).toContain(
-      "M7 稀有模板：珠光 M7，价值 8.0/8"
+      "M7 稀有模板：珠光 M7，价值 4.0/4"
     );
     expect(untagged.score?.valueReasons.join(" ")).toContain(
-      "M7 稀有模板待核验，价值 0.0/8"
+      "M7 稀有模板待核验，价值 0.0/4"
     );
   });
 
@@ -160,8 +178,8 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.parts.redSkins).toBe(20);
-    expect(result.score?.parts.julang).toBe(15);
+    expect(result.score?.parts.redSkins).toBe(25);
+    expect(result.score?.parts.julang).toBe(20);
     expect(result.score?.valueReasons.join(" ")).toContain(
       "5 个已识别角色红皮"
     );
@@ -242,11 +260,11 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.value).toBe(37);
+    expect(result.score?.value).toBe(28.5);
     expect(result.score?.safety).toBe(40);
     expect(result.score?.dataQuality).toBe(80);
     expect(result.score?.total).toBe(
-      Math.round(37 * 0.55 + 40 * 0.35 + 80 * 0.1)
+      Math.round(28.5 * 0.55 + 40 * 0.35 + 80 * 0.1)
     );
   });
 
