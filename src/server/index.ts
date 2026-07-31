@@ -24,9 +24,10 @@ const databasePath = resolve(
 );
 mkdirSync(dirname(databasePath), { recursive: true });
 const database = createDatabase(databasePath);
-const repository = new ListingRepository(database);
-const browserRepository = new BrowserRefreshRepository(database);
 const startupTime = new Date();
+const repository = new ListingRepository(database);
+repository.recomputeDerivedListings(startupTime);
+const browserRepository = new BrowserRefreshRepository(database);
 browserRepository.recoverInterruptedJobs(startupTime);
 browserRepository.expireJobs(startupTime);
 const tracker = new RefreshTracker(repository.getRefreshSnapshot());

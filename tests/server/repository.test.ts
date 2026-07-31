@@ -1726,6 +1726,184 @@ describe("ListingRepository", () => {
     });
   });
 
+  it("idempotently reparses, reclassifies, and rescores stored listings without fabricating history", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const premiumS = makeListing({
+      key: "panzhi:premium-s",
+      sourceListingId: "premium-s",
+      url: "https://www.pzds.com/item/premium-s",
+      evidence: [
+        {
+          text: "M7战斗步枪-棱镜攻势S2(优品S)",
+          truncated: false
+        }
+      ],
+      m7Evidence: [
+        {
+          text: "M7战斗步枪-棱镜攻势S2(优品S)",
+          truncated: false
+        }
+      ],
+      m7PrismStatus: "premium",
+      m7PrismQuality: null,
+      eligibility: "rejected",
+      score: null
+    });
+    const premiumA = makeListing({
+      key: "panzhi:premium-a",
+      sourceListingId: "premium-a",
+      url: "https://www.pzds.com/item/premium-a",
+      evidence: [
+        {
+          text: "M7战斗步枪-棱镜攻势S2(优品A)",
+          truncated: false
+        }
+      ],
+      m7Evidence: [
+        {
+          text: "M7战斗步枪-棱镜攻势S2(优品A)",
+          truncated: false
+        }
+      ],
+      m7PrismStatus: "premium",
+      m7PrismQuality: null,
+      eligibility: "rejected",
+      score: null
+    });
+    const reviewedPeak = makeListing({
+      key: "panzhi:reviewed-peak",
+      sourceListingId: "reviewed-peak",
+      url: "https://www.pzds.com/item/reviewed-peak",
+      evidence: [
+        { text: "M7棱镜攻势(极品A)", truncated: false },
+        { text: "威龙 红皮", truncated: false },
+        { text: "巨浪 极品", truncated: false }
+      ],
+      m7Evidence: [
+        { text: "M7棱镜攻势(极品A)", truncated: false }
+      ]
+    });
+    const duplicatePeak = makeListing({
+      key: "pxb7:duplicate-peak",
+      source: "pxb7",
+      sourceListingId: "duplicate-peak",
+      url: "https://www.pxb7.com/item/duplicate-peak",
+      evidence: [
+        { text: "M7棱镜攻势(极品A)", truncated: false },
+        { text: "威龙 红皮", truncated: false },
+        { text: "巨浪 极品", truncated: false }
+      ],
+      m7Evidence: [
+        { text: "M7棱镜攻势(极品A)", truncated: false }
+      ]
+    });
+    const runId = repository.startScan(scanTime);
+    repository.commitScanRefresh(
+      runId,
+      [premiumS, premiumA, reviewedPeak, duplicatePeak],
+      [
+        successUpdate("jiaoyimao", 0),
+        successUpdate("panzhi", 3),
+        successUpdate("pxb7", 1)
+      ],
+      scanTime
+    );
+    repository.excludeListing(
+      reviewedPeak.key,
+      {
+        reason: "m7_low_value",
+        note: "保留人工判断"
+      },
+      new Date("2026-07-31T08:00:00.000Z")
+    );
+    repository.updateDerivedListings(
+      repository.getListings().map((listing) => ({
+        ...listing,
+        ...(listing.key === premiumS.key ||
+        listing.key === premiumA.key
+          ? {
+              m7PrismQuality: null,
+              eligibility: "rejected" as const,
+              score: null
+            }
+          : {
+              score: makeScore(99, { m7: 20 }),
+              possibleDuplicateKeys: []
+            })
+      }))
+    );
+
+    const metadata = () => ({
+      sourceStatus: database.prepare(
+        "SELECT * FROM source_status ORDER BY source"
+      ).all(),
+      scanRuns: database.prepare(
+        "SELECT * FROM scan_runs ORDER BY id"
+      ).all(),
+      sourceResults: database.prepare(
+        "SELECT * FROM scan_source_results ORDER BY run_id, source"
+      ).all(),
+      observations: database.prepare(
+        "SELECT * FROM listing_observations ORDER BY run_id, listing_key"
+      ).all(),
+      reviews: database.prepare(
+        "SELECT * FROM manual_listing_reviews ORDER BY id"
+      ).all()
+    });
+    const metadataBefore = metadata();
+    const recomputedAt = new Date("2026-07-31T10:00:00.000Z");
+
+    repository.recomputeDerivedListings(recomputedAt);
+
+    expect(repository.getListing(premiumS.key)).toMatchObject({
+      m7PrismStatus: "premium",
+      m7PrismQuality: "S",
+      eligibility: "eligible",
+      score: {
+        parts: { m7: 6 }
+      }
+    });
+    expect(repository.getListing(premiumA.key)).toMatchObject({
+      m7PrismStatus: "premium",
+      m7PrismQuality: "A",
+      eligibility: "rejected",
+      score: null
+    });
+    expect(repository.getListing(reviewedPeak.key)).toMatchObject({
+      possibleDuplicateKeys: [duplicatePeak.key],
+      score: {
+        parts: { m7: 13 }
+      }
+    });
+    expect(repository.getListing(duplicatePeak.key)).toMatchObject({
+      possibleDuplicateKeys: [reviewedPeak.key],
+      score: {
+        parts: { m7: 13 }
+      }
+    });
+    expect(repository.getReviewedListing(reviewedPeak.key)).toMatchObject({
+      manualReview: {
+        reason: "m7_low_value",
+        note: "保留人工判断"
+      }
+    });
+    expect(metadata()).toEqual(metadataBefore);
+
+    const firstPayloads = database.prepare(`
+      SELECT listing_key, eligibility, payload
+      FROM listings
+      ORDER BY listing_key
+    `).all();
+    repository.recomputeDerivedListings(recomputedAt);
+    expect(database.prepare(`
+      SELECT listing_key, eligibility, payload
+      FROM listings
+      ORDER BY listing_key
+    `).all()).toEqual(firstPayloads);
+    expect(metadata()).toEqual(metadataBefore);
+  });
+
   it("appends changed manual exclusions while identical writes stay idempotent", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);

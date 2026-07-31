@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { classifyListing } from "../domain/classify.js";
 import {
   selectBalancedCandidatePool,
   selectGlobalCandidatePool
@@ -23,6 +24,7 @@ import {
   type SourceId
 } from "../domain/listing.js";
 import { ListingSchema } from "../domain/listing.js";
+import { parseM7 } from "../domain/evidence.js";
 import {
   ManualReviewReasonSchema,
   type ManualExclusionInput,
@@ -2089,6 +2091,71 @@ export class ListingRepository {
         // Preserve the original update error.
       }
       throw new Error("无法更新候选派生数据", { cause: error });
+    }
+  }
+
+  recomputeDerivedListings(now = new Date()): void {
+    try {
+      this.database.exec("BEGIN IMMEDIATE");
+      const rows = this.database
+        .prepare("SELECT payload FROM listings ORDER BY listing_key")
+        .all() as unknown as ListingRow[];
+      const reparsed = rows.map(({ payload }) => {
+        const listing = parseStoredListing(payload);
+        const parsedM7 =
+          listing.m7Evidence.length > 0
+            ? parseM7(listing.m7Evidence)
+            : null;
+        const m7PrismStatus =
+          parsedM7?.status ?? listing.m7PrismStatus;
+        const m7PrismQuality =
+          parsedM7 === null
+            ? listing.m7PrismQuality
+            : (parsedM7.quality ?? null);
+        return {
+          ...listing,
+          m7PrismStatus,
+          m7PrismQuality,
+          eligibility: classifyListing({
+            loginPlatform: listing.loginPlatform,
+            service: listing.service,
+            priceCny: listing.priceCny,
+            m7PrismStatus,
+            m7PrismQuality
+          }),
+          score: null,
+          possibleDuplicateKeys: []
+        };
+      });
+      const marked = markPossibleDuplicates(reparsed);
+      const scored = scoreEligibleListings(marked, now);
+      const scores = new Map(
+        scored.map((listing) => [listing.key, listing.score])
+      );
+      const update = this.database.prepare(`
+        UPDATE listings
+        SET eligibility = ?, payload = ?
+        WHERE listing_key = ?
+      `);
+      for (const listing of marked) {
+        const parsed = ListingSchema.parse({
+          ...listing,
+          score: scores.get(listing.key) ?? null
+        });
+        update.run(
+          parsed.eligibility,
+          JSON.stringify(parsed),
+          parsed.key
+        );
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.database.exec("ROLLBACK");
+      } catch {
+        // Preserve the original rederivation error.
+      }
+      throw new Error("无法重算候选派生数据", { cause: error });
     }
   }
 
