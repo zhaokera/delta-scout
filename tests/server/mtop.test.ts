@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { PublicPageFetcher } from "../../src/server/collector/fetcher.js";
 import {
+  APPROVED_JIAOYIMAO_REFERER,
   buildJymMeta,
   buildMtopUrl,
   extractAnonymousMtopSession,
@@ -15,8 +16,7 @@ const ENDPOINT =
 const API =
   "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist";
 const APP_KEY = "12574478";
-const ENTRY_URL =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?searchCondition=%7B%22attr_7393855783477590029%22%3A%7B%22selectType%22%3A2%2C%22multiSearchCondition%22%3Atrue%2C%22conditionList%22%3A%5B%5D%2C%22childCondition%22%3A%7B%22mp_7393855783922186253%22%3A%7B%22%E6%9E%81%E5%93%81%7CS%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CA%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CB%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CC%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%7D%7D%2C%22statConditionList%22%3A%5B%5D%2C%22conditionType%22%3A3%7D%7D&enforcePlat=2&newPage=true";
+const ENTRY_URL = APPROVED_JIAOYIMAO_REFERER;
 const USER_AGENT =
   "DeltaAccountScout/0.1 (+local personal comparison tool)";
 const SEARCH_CONDITION = JSON.stringify({
@@ -29,7 +29,8 @@ const SEARCH_CONDITION = JSON.stringify({
         "极品|S": ["M7战斗步枪-棱镜攻势S2"],
         "极品|A": ["M7战斗步枪-棱镜攻势S2"],
         "极品|B": ["M7战斗步枪-棱镜攻势S2"],
-        "极品|C": ["M7战斗步枪-棱镜攻势S2"]
+        "极品|C": ["M7战斗步枪-棱镜攻势S2"],
+        "优品|S": ["M7战斗步枪-棱镜攻势S2"]
       }
     },
     statConditionList: [],
@@ -351,6 +352,21 @@ describe("anonymous MTop whitelist", () => {
           String(outer.searchCondition)
         ) as Record<string, unknown>;
         search.is_second_real_name = true;
+        outer.searchCondition = JSON.stringify(search);
+      })
+    ],
+    [
+      "missing premium S filter",
+      mutateData((outer) => {
+        const search = JSON.parse(String(outer.searchCondition)) as {
+          attr_7393855783477590029: {
+            childCondition: {
+              mp_7393855783922186253: Record<string, string[]>;
+            };
+          };
+        };
+        delete search.attr_7393855783477590029.childCondition
+          .mp_7393855783922186253["优品|S"];
         outer.searchCondition = JSON.stringify(search);
       })
     ],

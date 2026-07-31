@@ -80,16 +80,22 @@ describe("PXB7 single-select collection", () => {
     const listRequests = fetcher.requests.filter(
       ({ url }) => url.includes("selectSearchPageList")
     );
-    expect(listRequests).toHaveLength(12);
+    expect(listRequests).toHaveLength(15);
     expect(
       listRequests.map(({ options }) => {
         const body = JSON.parse(options?.body ?? "{}");
         return [body.query, body.pageIndex];
       })
     ).toEqual(
-      ["S", "A", "B", "C"].flatMap((quality) =>
+      [
+        "极品 S",
+        "极品 A",
+        "极品 B",
+        "极品 C",
+        "优品 S"
+      ].flatMap((quality) =>
         [1, 2, 3].map((pageIndex) => [
-          `M7战斗步枪-棱镜攻势S2 极品 ${quality}`,
+          `M7战斗步枪-棱镜攻势S2 ${quality}`,
           pageIndex
         ])
       )

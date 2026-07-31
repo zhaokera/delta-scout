@@ -31,7 +31,8 @@ const BROAD_SEARCH_CONDITION = {
         "极品|S": ["M7战斗步枪-棱镜攻势S2"],
         "极品|A": ["M7战斗步枪-棱镜攻势S2"],
         "极品|B": ["M7战斗步枪-棱镜攻势S2"],
-        "极品|C": ["M7战斗步枪-棱镜攻势S2"]
+        "极品|C": ["M7战斗步枪-棱镜攻势S2"],
+        "优品|S": ["M7战斗步枪-棱镜攻势S2"]
       }
     },
     statConditionList: [],
@@ -46,9 +47,11 @@ const GAME_CONDITION = {
 
 function normalizedM7Evidence(text: string): string | null {
   const match = text.match(
-    /M7\s*[-·：:]?\s*极品(?:\||\s)*([SABC])/i
+    /M7\s*[-·：:]?\s*(极品|优品)(?:\||\s)*([SABC])/i
   );
-  return match ? `M7棱镜攻势(极品${match[1].toUpperCase()})` : null;
+  return match
+    ? `M7棱镜攻势(${match[1]}${match[2].toUpperCase()})`
+    : null;
 }
 
 function parseNumber(value: string | undefined): number | null {

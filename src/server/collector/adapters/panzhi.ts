@@ -22,6 +22,7 @@ const SINGLE_SELECT_SEARCH_TERMS = [
   "M7战斗步枪-棱镜攻势S2 极品 A",
   "M7战斗步枪-棱镜攻势S2 极品 B",
   "M7战斗步枪-棱镜攻势S2 极品 C",
+  "M7战斗步枪-棱镜攻势S2 优品 S",
   "M7战斗步枪-棱镜攻势S2"
 ] as const;
 

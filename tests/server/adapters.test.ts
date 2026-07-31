@@ -117,22 +117,32 @@ describe("panzhi adapter", () => {
 
   it("cycles mutually exclusive Panzhi M7 searches one at a time", async () => {
     const html = await fixture("panzhi-list-page-2.html");
+    const searchUrl = (term: string) =>
+      `https://www.pzds.com/goodsList/391/6/headerSearch/${encodeURIComponent(term)}`;
     expect(
       panzhiAdapter.nextPage(html, {
-        url:
-          "https://www.pzds.com/goodsList/391/6/headerSearch/" +
-          "M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%20%E6%9E%81%E5%93%81%20S"
+        url: searchUrl("M7战斗步枪-棱镜攻势S2 极品 S")
       })
     ).toEqual({
-      url:
-        "https://www.pzds.com/goodsList/391/6/headerSearch/" +
-        "M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%20%E6%9E%81%E5%93%81%20A"
+      url: searchUrl("M7战斗步枪-棱镜攻势S2 极品 A")
     });
     expect(
       panzhiAdapter.nextPage(html, {
-        url:
-          "https://www.pzds.com/goodsList/391/6/headerSearch/" +
-          "M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2"
+        url: searchUrl("M7战斗步枪-棱镜攻势S2 极品 C")
+      })
+    ).toEqual({
+      url: searchUrl("M7战斗步枪-棱镜攻势S2 优品 S")
+    });
+    expect(
+      panzhiAdapter.nextPage(html, {
+        url: searchUrl("M7战斗步枪-棱镜攻势S2 优品 S")
+      })
+    ).toEqual({
+      url: searchUrl("M7战斗步枪-棱镜攻势S2")
+    });
+    expect(
+      panzhiAdapter.nextPage(html, {
+        url: searchUrl("M7战斗步枪-棱镜攻势S2")
       })
     ).toBeNull();
   });
@@ -346,7 +356,7 @@ describe("jiaoyimao adapter", () => {
     });
   });
 
-  it("uses the broad S/A/B/C catalog without a second-real-name filter", () => {
+  it("uses the broad peak S/A/B/C plus premium S catalog without a second-real-name filter", () => {
     const entry = new URL(jiaoyimaoAdapter.entryUrl);
     const search = JSON.parse(
       entry.searchParams.get("searchCondition") ?? ""
@@ -362,13 +372,38 @@ describe("jiaoyimao adapter", () => {
             "极品|S": ["M7战斗步枪-棱镜攻势S2"],
             "极品|A": ["M7战斗步枪-棱镜攻势S2"],
             "极品|B": ["M7战斗步枪-棱镜攻势S2"],
-            "极品|C": ["M7战斗步枪-棱镜攻势S2"]
+            "极品|C": ["M7战斗步枪-棱镜攻势S2"],
+            "优品|S": ["M7战斗步枪-棱镜攻势S2"]
           }
         },
         statConditionList: [],
         conditionType: 3
       }
     });
+  });
+
+  it("normalizes premium S from a visible Jiaoyimao card without calling it peak", () => {
+    const result = jiaoyimaoAdapter.parseList(`
+      <main class="pcGoodsList">
+        <a
+          class="pcGoodsListItem"
+          data-goodsid="1785000000000001"
+          data-price="2999"
+          href="/jg2007840/1785000000000001.html"
+        >
+          <span data-goods-name="优品 S 账号">M7 · 优品 S 安卓QQ</span>
+        </a>
+      </main>
+    `);
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected parsed list");
+    expect(result.items[0].rawText).toContain(
+      "M7棱镜攻势(优品S)"
+    );
+    expect(result.items[0].rawText).not.toContain(
+      "M7棱镜攻势(极品S)"
+    );
   });
 
   it("recognizes the verified broad catalog and parses its SSR cards", async () => {
@@ -896,7 +931,43 @@ describe("pxb7 adapter", () => {
         await fixture("pxb7-list-page-3.json"),
         finalQualityRequest
       )
+    ).toMatchObject({
+      options: {
+        body: expect.any(String)
+      }
+    });
+    const premiumRequest = pxb7Adapter.nextPage(
+      await fixture("pxb7-list-page-3.json"),
+      finalQualityRequest
+    );
+    expect(JSON.parse(premiumRequest?.options?.body ?? "")).toMatchObject({
+      query: "M7战斗步枪-棱镜攻势S2 优品 S",
+      pageIndex: 1
+    });
+    expect(
+      pxb7Adapter.nextPage(
+        await fixture("pxb7-list-page-3.json"),
+        premiumRequest!
+      )
     ).toBeNull();
+  });
+
+  it("preserves premium S in embedded PXB7 evidence", async () => {
+    const response = JSON.parse(
+      await fixture("pxb7-list-page-1.json")
+    ) as {
+      data: { list: Array<Record<string, unknown>> };
+    };
+    response.data.list = [response.data.list[0]];
+    response.data.list[0].showTitle =
+      "QQ登录【枪械皮肤】M7战斗步枪-棱镜攻势S2(优品S)【实名】可二次实名";
+
+    const result = pxb7Adapter.parseList(JSON.stringify(response));
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected PXB list");
+    expect(
+      result.items[0].embeddedDetail?.evidence.map(({ text }) => text)
+    ).toContain("【枪械皮肤】M7战斗步枪-棱镜攻势S2(优品S)");
   });
 
   it("keeps微信, dual-login, and unknown-login products out of QQ mapping", async () => {
