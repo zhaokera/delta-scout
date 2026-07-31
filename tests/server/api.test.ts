@@ -255,7 +255,8 @@ function browserApiSetup() {
     tracker,
     admission,
     browserRepository,
-    browserService
+    browserService,
+    now: () => new Date(now)
   });
   return {
     app,

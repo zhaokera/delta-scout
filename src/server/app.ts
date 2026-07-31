@@ -64,6 +64,7 @@ interface AppDependencies {
   admission: RefreshAdmissionController;
   browserRepository: BrowserRefreshRepository;
   browserService: JiaoyimaoBrowserTaskService;
+  now?: () => Date;
 }
 
 const ListingViewSchema = z.enum(["pool", "all"]);
@@ -405,7 +406,8 @@ export function createApp(dependencies?: AppDependencies): Express {
     tracker,
     admission,
     browserRepository,
-    browserService
+    browserService,
+    now = () => new Date()
   } = dependencies;
 
   const bridgeToken = (
@@ -445,7 +447,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     "/api/sources/jiaoyimao/browser-refresh/current",
     (_request, response) => {
       try {
-        response.json(browserRepository.getCurrentJob());
+        response.json(browserRepository.getCurrentJob(now()));
       } catch (error) {
         sendBrowserError(response, error);
       }
