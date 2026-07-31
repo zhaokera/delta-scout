@@ -23,7 +23,8 @@ const validProof: BrowserFilterProof = {
     "M7棱镜攻势极品S",
     "M7棱镜攻势极品A",
     "M7棱镜攻势极品B",
-    "M7棱镜攻势极品C"
+    "M7棱镜攻势极品C",
+    "M7棱镜攻势优品S"
   ],
   observedAt
 };
@@ -58,7 +59,7 @@ describe("browser refresh completeness", () => {
         ...validProof,
         currentUrl: "https://www.jiaoyimao.com/jg2007840/"
       },
-      { ...validProof, m7FilterLabels: validProof.m7FilterLabels.slice(0, 3) }
+      { ...validProof, m7FilterLabels: validProof.m7FilterLabels.slice(0, 4) }
     ]) {
       expect(validateFilterProof(proof)).toEqual({
         kind: "invalid",
@@ -73,20 +74,20 @@ describe("browser refresh completeness", () => {
       gameLabel: "未知",
       platformLabel: "未知",
       categoryLabel: "未知",
-      m7FilterLabels: ["极品S", "极品A", "极品B", "极品C"]
+      m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", "优品S"]
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
     expect(validateFilterProof({
       ...validProof,
-      m7FilterLabels: ["极品S", "极品A", "极品B", "极品C"]
+      m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", "优品S"]
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
   });
 
   it("requires each M7 selection to contain exactly one standalone grade", () => {
     const combined =
-      "M7 棱镜攻势 极品 S / 极品 A / 极品 B / 极品 C";
+      "M7 棱镜攻势 极品 S / 极品 A / 极品 B / 极品 C / 优品 S";
     expect(validateFilterProof({
       ...validProof,
-      m7FilterLabels: [combined, combined, combined, combined]
+      m7FilterLabels: [combined, combined, combined, combined, combined]
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
     expect(validateFilterProof({
       ...validProof,
@@ -94,9 +95,20 @@ describe("browser refresh completeness", () => {
         "M7 战斗步枪 · 棱镜攻势 · 极品 S",
         "M7 战斗步枪 · 棱镜攻势 · 极品 A",
         "M7 战斗步枪 · 棱镜攻势 · 极品 B",
-        "M7 战斗步枪 · 棱镜攻势 · 极品 C"
+        "M7 战斗步枪 · 棱镜攻势 · 极品 C",
+        "M7 战斗步枪 · 棱镜攻势 · 优品 S"
       ]
     })).toEqual({ kind: "ok" });
+    expect(validateFilterProof({
+      ...validProof,
+      m7FilterLabels: [
+        "M7 棱镜攻势 极品S",
+        "M7 棱镜攻势 极品A",
+        "M7 棱镜攻势 极品B",
+        "M7 棱镜攻势 极品C",
+        "M7 棱镜攻势 优品A"
+      ]
+    })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
   });
 
   it("accepts two consecutive normal zero-growth observations", () => {

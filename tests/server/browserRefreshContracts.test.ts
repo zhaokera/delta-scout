@@ -57,7 +57,7 @@ function filterProof(overrides: Record<string, unknown> = {}) {
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    m7FilterLabels: ["极品S", "极品A", "极品B", "极品C"],
+    m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", "优品S"],
     observedAt: now,
     ...overrides
   };
@@ -437,7 +437,7 @@ describe("safe visible text", () => {
       }
       expect(() =>
         BrowserFilterProofSchema.parse(filterProof({
-          m7FilterLabels: ["极品S", "极品A", "极品B", text]
+          m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", text]
         }))
       ).toThrow();
       expect(() =>
@@ -468,7 +468,7 @@ describe("safe visible text", () => {
       gameLabel: prompt,
       platformLabel: prompt,
       categoryLabel: prompt,
-      m7FilterLabels: [prompt, prompt, prompt, prompt]
+      m7FilterLabels: [prompt, prompt, prompt, prompt, prompt]
     })).success).toBe(true);
     expect(BrowserPauseSchema.safeParse({
       reason: "captcha_required",
@@ -509,6 +509,7 @@ describe("safe visible text", () => {
       platformLabel: comparison,
       categoryLabel: comparison,
       m7FilterLabels: [
+        comparison,
         comparison,
         comparison,
         comparison,

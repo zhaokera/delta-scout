@@ -160,7 +160,7 @@ export const BrowserFilterProofSchema = z.strictObject({
   gameLabel: SafeFilterLabelSchema,
   platformLabel: SafeFilterLabelSchema,
   categoryLabel: SafeFilterLabelSchema,
-  m7FilterLabels: z.array(SafeFilterLabelSchema).min(4).max(8),
+  m7FilterLabels: z.array(SafeFilterLabelSchema).min(5).max(8),
   observedAt: IsoDateTimeSchema
 });
 

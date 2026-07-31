@@ -35,7 +35,8 @@ function proof(overrides: Partial<BrowserFilterProof> = {}): BrowserFilterProof 
       "M7棱镜攻势极品S",
       "M7棱镜攻势极品A",
       "M7棱镜攻势极品B",
-      "M7棱镜攻势极品C"
+      "M7棱镜攻势极品C",
+      "M7棱镜攻势优品S"
     ],
     observedAt: baseTime.toISOString(),
     ...overrides

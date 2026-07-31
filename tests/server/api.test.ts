@@ -160,7 +160,8 @@ function browserProof(
       "M7棱镜攻势极品S",
       "M7棱镜攻势极品A",
       "M7棱镜攻势极品B",
-      "M7棱镜攻势极品C"
+      "M7棱镜攻势极品C",
+      "M7棱镜攻势优品S"
     ],
     observedAt: browserBaseTime.toISOString(),
     ...overrides
@@ -1136,7 +1137,7 @@ describe("listing API", () => {
           sourceListingId: "high",
           score: {
             ...makeScore(88, {
-              m7: 29,
+              m7: 20,
               redSkins: 12,
               julang: 15,
               price: 18,

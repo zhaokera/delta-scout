@@ -293,7 +293,7 @@ function validateFilterProof(value) {
   assertSafeText(proof.categoryLabel, 1, 100);
   if (
     !Array.isArray(proof.m7FilterLabels) ||
-    proof.m7FilterLabels.length < 4 ||
+    proof.m7FilterLabels.length < 5 ||
     proof.m7FilterLabels.length > 8
   ) {
     throw bridgeError();

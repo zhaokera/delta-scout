@@ -53,9 +53,9 @@ claim code 只来自创建任务时的一次性响应；bridge token 只保存�
 
 3. 调用 `claimJiaoyimaoBrowserJob({ jobId, claimCode })` 接管任务并保留返回的闭包客户端。claim 只执行一次；失败时只报告稳定错误码和脱敏消息，不复制响应体，不自行循环重试。
 
-4. 复用已经打开的精确筛选标签页；若没有才打开 `https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/`。目视确认三角洲行动、QQ、账号类别和 M7 棱镜攻势极品 S/A/B/C 筛选，禁止改用宽泛搜索页，也不得从 cookies、localStorage 或网络请求推断筛选状态。
+4. 复用已经打开的精确筛选标签页；若没有才打开 `https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/`。目视确认三角洲行动、QQ、账号类别，以及 M7 棱镜攻势极品 S/A/B/C 和优品 S 共五个筛选，禁止改用宽泛搜索页，也不得从 cookies、localStorage 或网络请求推断筛选状态。若页面要求登录或 CAPTCHA，由用户本人在该标签页处理，Codex 不读取输入内容也不规避验证。
 
-5. 从页面可见标签构造 filter proof 并调用 `submitFilterProof`。proof 必须包含当前精确 URL、可见游戏/平台/类别标签、四到八个 M7 筛选标签和观察时间；筛选不匹配时停止并报告，不能绕过服务端校验。
+5. 从页面可见标签构造 filter proof 并调用 `submitFilterProof`。proof 必须包含当前精确 URL、可见游戏/平台/类别标签、五到八个 M7 筛选标签和观察时间，并且五个必需签名必须恰好覆盖极品 S/A/B/C 与优品 S；筛选不匹配时停止并报告，不能绕过服务端校验。
 
 6. 列表阶段每轮先调用 `getWork`，再用 `waitUntilAllowed` 按服务端返回的 `nextActionAt` 或 `cooldownUntil` 等待，只执行一次加载动作。本轮有新增商品时先提交非空 `submitListBatch`，随后每次已经执行的加载动作都必须用 `submitLoadEvent` 报告 outcome，包括零新增、登录、CAPTCHA、限流或错误；在 outcome 被服务端接收前不得改用 `pause` 或直接重试。自然末页没有新增商品时不得发送空的 `submitListBatch`。普通列表动作间隔由服务端随机设为 `1,200–2,500 ms`；不要固定 sleep 或建立硬编码循环。
 
