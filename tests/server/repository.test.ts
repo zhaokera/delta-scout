@@ -1725,4 +1725,243 @@ describe("ListingRepository", () => {
       ).toISOString()
     });
   });
+
+  it("appends changed manual exclusions while identical writes stay idempotent", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const listing = makeListing();
+    const firstReviewAt = new Date("2026-07-31T08:00:00.000Z");
+    const changedReviewAt = new Date("2026-07-31T08:05:00.000Z");
+    repository.replaceSourceSnapshot(
+      listing.source,
+      [listing],
+      "success",
+      scanTime
+    );
+
+    expect(
+      repository.excludeListing(
+        listing.key,
+        {
+          reason: "price_overvalued",
+          note: "同价位更安全"
+        },
+        firstReviewAt
+      )
+    ).toMatchObject({
+      key: listing.key,
+      manualReview: {
+        excluded: true,
+        reason: "price_overvalued",
+        note: "同价位更安全",
+        reviewedAt: firstReviewAt.toISOString()
+      }
+    });
+    expect(repository.getReviewedListing(listing.key)).toMatchObject({
+      manualReview: {
+        reason: "price_overvalued",
+        reviewedAt: firstReviewAt.toISOString()
+      }
+    });
+    expect(repository.getReviewedListings("eligible")).toHaveLength(1);
+
+    repository.excludeListing(
+      listing.key,
+      {
+        reason: "price_overvalued",
+        note: "同价位更安全"
+      },
+      changedReviewAt
+    );
+    expect(
+      database.prepare(
+        "SELECT COUNT(*) AS count FROM manual_listing_reviews"
+      ).get()
+    ).toEqual({ count: 1 });
+
+    expect(
+      repository.excludeListing(
+        listing.key,
+        {
+          reason: "safety_risk",
+          note: "验号信息不完整"
+        },
+        changedReviewAt
+      )
+    ).toMatchObject({
+      manualReview: {
+        reason: "safety_risk",
+        note: "验号信息不完整",
+        reviewedAt: changedReviewAt.toISOString()
+      }
+    });
+    expect(
+      database.prepare(
+        "SELECT COUNT(*) AS count FROM manual_listing_reviews"
+      ).get()
+    ).toEqual({ count: 2 });
+  });
+
+  it("restores a manual exclusion idempotently while preserving its audit history", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const listing = makeListing();
+    repository.replaceSourceSnapshot(
+      listing.source,
+      [listing],
+      "success",
+      scanTime
+    );
+    repository.excludeListing(
+      listing.key,
+      { reason: "assets_low", note: null },
+      new Date("2026-07-31T08:00:00.000Z")
+    );
+
+    expect(
+      repository.restoreListing(
+        listing.key,
+        new Date("2026-07-31T09:00:00.000Z")
+      )
+    ).toMatchObject({
+      key: listing.key,
+      manualReview: null
+    });
+    repository.restoreListing(
+      listing.key,
+      new Date("2026-07-31T10:00:00.000Z")
+    );
+
+    expect(repository.getReviewedListing(listing.key)).toMatchObject({
+      manualReview: null
+    });
+    expect(
+      database.prepare(
+        "SELECT action, COUNT(*) AS count FROM manual_listing_reviews GROUP BY action ORDER BY action"
+      ).all()
+    ).toEqual([
+      { action: "exclude", count: 1 },
+      { action: "restore", count: 1 }
+    ]);
+  });
+
+  it("keeps the latest manual decision when a source disappears and reappears", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const listing = makeListing();
+    repository.replaceSourceSnapshot(
+      listing.source,
+      [listing],
+      "success",
+      scanTime
+    );
+    repository.excludeListing(
+      listing.key,
+      { reason: "m7_low_value", note: "M7 品质不值这个价" },
+      new Date("2026-07-31T08:00:00.000Z")
+    );
+
+    repository.replaceSourceSnapshot(
+      listing.source,
+      [],
+      "success",
+      new Date("2026-07-31T09:00:00.000Z")
+    );
+    expect(repository.getReviewedListing(listing.key)).toBeNull();
+
+    const reappeared = {
+      ...listing,
+      title: "重新上架的账号",
+      capturedAt: "2026-07-31T10:00:00.000Z"
+    };
+    repository.replaceSourceSnapshot(
+      listing.source,
+      [reappeared],
+      "success",
+      new Date("2026-07-31T10:00:00.000Z")
+    );
+
+    expect(repository.getReviewedListing(listing.key)).toMatchObject({
+      title: "重新上架的账号",
+      manualReview: {
+        reason: "m7_low_value",
+        note: "M7 品质不值这个价"
+      }
+    });
+  });
+
+  it("persists manual exclusions across a database restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sjz-manual-review-"));
+    const databasePath = join(directory, "reviews.sqlite");
+    const listing = makeListing();
+
+    try {
+      const database = createDatabase(databasePath);
+      const repository = new ListingRepository(database);
+      repository.replaceSourceSnapshot(
+        listing.source,
+        [listing],
+        "success",
+        scanTime
+      );
+      repository.excludeListing(
+        listing.key,
+        { reason: "seller_concern", note: "卖家描述前后不一致" },
+        new Date("2026-07-31T08:00:00.000Z")
+      );
+      database.close();
+
+      const reopenedDatabase = createDatabase(databasePath);
+      try {
+        expect(
+          new ListingRepository(reopenedDatabase).getReviewedListing(
+            listing.key
+          )
+        ).toMatchObject({
+          manualReview: {
+            reason: "seller_concern",
+            note: "卖家描述前后不一致"
+          }
+        });
+      } finally {
+        reopenedDatabase.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects manual exclusion for a missing or ineligible listing", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const rejected = makeListing({
+      key: "panzhi:hard-rejected",
+      sourceListingId: "hard-rejected",
+      eligibility: "rejected"
+    });
+    repository.replaceSourceSnapshot(
+      rejected.source,
+      [rejected],
+      "success",
+      scanTime
+    );
+
+    expect(() =>
+      repository.excludeListing(
+        "panzhi:missing",
+        { reason: "price_overvalued", note: null }
+      )
+    ).toThrow("listing_not_found");
+    expect(() =>
+      repository.excludeListing(
+        rejected.key,
+        { reason: "price_overvalued", note: null }
+      )
+    ).toThrow("listing_not_eligible");
+    expect(
+      database.prepare(
+        "SELECT COUNT(*) AS count FROM manual_listing_reviews"
+      ).get()
+    ).toEqual({ count: 0 });
+  });
 });

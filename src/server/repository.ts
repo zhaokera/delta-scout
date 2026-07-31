@@ -23,6 +23,12 @@ import {
   type SourceId
 } from "../domain/listing.js";
 import { ListingSchema } from "../domain/listing.js";
+import {
+  ManualReviewReasonSchema,
+  type ManualExclusionInput,
+  type ManualListingReview,
+  type ReviewedListing
+} from "../domain/manualReview.js";
 import { scoreEligibleListings } from "../domain/score.js";
 import { parseStoredListing } from "./storedListing.js";
 
@@ -62,6 +68,14 @@ export type SourceAnomalyStatus =
 
 interface ListingRow {
   payload: string;
+}
+
+interface ManualReviewRow {
+  listing_key: string;
+  action: "exclude" | "restore";
+  reason_code: string | null;
+  note: string | null;
+  created_at: string;
 }
 
 interface SourceStatusRow {
@@ -163,6 +177,17 @@ export type SourceRefreshStatusUpdate =
       attemptedAt: Date;
       error: string;
     };
+
+export type ManualListingReviewErrorCode =
+  | "listing_not_found"
+  | "listing_not_eligible";
+
+export class ManualListingReviewError extends Error {
+  constructor(readonly code: ManualListingReviewErrorCode) {
+    super(code);
+    this.name = "ManualListingReviewError";
+  }
+}
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
 
@@ -1882,6 +1907,162 @@ export class ListingRepository {
       .prepare("SELECT payload FROM listings WHERE listing_key = ?")
       .get(key) as unknown as ListingRow | undefined;
     return row ? parseStoredListing(row.payload) : null;
+  }
+
+  getReviewedListings(eligibility?: Eligibility): ReviewedListing[] {
+    const reviews = new Map(
+      this.getLatestManualReviewRows().map((review) => [
+        review.listing_key,
+        review
+      ])
+    );
+    return this.getListings(eligibility).map((listing) =>
+      this.decorateListing(listing, reviews.get(listing.key))
+    );
+  }
+
+  getReviewedListing(key: string): ReviewedListing | null {
+    const listing = this.getListing(key);
+    if (listing === null) {
+      return null;
+    }
+    return this.decorateListing(
+      listing,
+      this.getLatestManualReviewRow(key)
+    );
+  }
+
+  excludeListing(
+    key: string,
+    input: ManualExclusionInput,
+    now = new Date()
+  ): ReviewedListing {
+    return this.runTransaction(() => {
+      const listing = this.getListing(key);
+      if (listing === null) {
+        throw new ManualListingReviewError("listing_not_found");
+      }
+      if (listing.eligibility !== "eligible") {
+        throw new ManualListingReviewError("listing_not_eligible");
+      }
+
+      const current = this.getLatestManualReviewRow(key);
+      if (
+        current?.action === "exclude" &&
+        current.reason_code === input.reason &&
+        current.note === input.note
+      ) {
+        return this.decorateListing(listing, current);
+      }
+
+      const createdAt = now.toISOString();
+      this.database
+        .prepare(`
+          INSERT INTO manual_listing_reviews (
+            listing_key, source, action, reason_code, note, created_at
+          )
+          VALUES (?, ?, 'exclude', ?, ?, ?)
+        `)
+        .run(
+          listing.key,
+          listing.source,
+          input.reason,
+          input.note,
+          createdAt
+        );
+
+      return {
+        ...listing,
+        manualReview: {
+          excluded: true,
+          reason: input.reason,
+          note: input.note,
+          reviewedAt: createdAt
+        }
+      };
+    });
+  }
+
+  restoreListing(key: string, now = new Date()): ReviewedListing {
+    return this.runTransaction(() => {
+      const listing = this.getListing(key);
+      if (listing === null) {
+        throw new ManualListingReviewError("listing_not_found");
+      }
+
+      const current = this.getLatestManualReviewRow(key);
+      if (current?.action !== "exclude") {
+        return {
+          ...listing,
+          manualReview: null
+        };
+      }
+
+      this.database
+        .prepare(`
+          INSERT INTO manual_listing_reviews (
+            listing_key, source, action, reason_code, note, created_at
+          )
+          VALUES (?, ?, 'restore', NULL, NULL, ?)
+        `)
+        .run(listing.key, listing.source, now.toISOString());
+
+      return {
+        ...listing,
+        manualReview: null
+      };
+    });
+  }
+
+  private getLatestManualReviewRows(): ManualReviewRow[] {
+    return this.database
+      .prepare(`
+        SELECT review.listing_key,
+               review.action,
+               review.reason_code,
+               review.note,
+               review.created_at
+        FROM manual_listing_reviews AS review
+        JOIN (
+          SELECT listing_key, MAX(id) AS id
+          FROM manual_listing_reviews
+          GROUP BY listing_key
+        ) AS latest ON latest.id = review.id
+      `)
+      .all() as unknown as ManualReviewRow[];
+  }
+
+  private getLatestManualReviewRow(
+    key: string
+  ): ManualReviewRow | undefined {
+    return this.database
+      .prepare(`
+        SELECT listing_key, action, reason_code, note, created_at
+        FROM manual_listing_reviews
+        WHERE listing_key = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `)
+      .get(key) as unknown as ManualReviewRow | undefined;
+  }
+
+  private decorateListing(
+    listing: Listing,
+    review: ManualReviewRow | undefined
+  ): ReviewedListing {
+    let manualReview: ManualListingReview | null = null;
+    if (review?.action === "exclude") {
+      manualReview = {
+        excluded: true,
+        reason: ManualReviewReasonSchema.parse(review.reason_code),
+        note: review.note,
+        reviewedAt: review.created_at
+      };
+    }
+    return {
+      ...listing,
+      manualReview
+    };
   }
 
   updateDerivedListings(listings: Listing[]): void {

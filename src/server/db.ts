@@ -20,6 +20,35 @@ export function createDatabase(path: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS listings_eligibility_idx
       ON listings (eligibility);
 
+    CREATE TABLE IF NOT EXISTS manual_listing_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      listing_key TEXT NOT NULL,
+      source TEXT NOT NULL
+        CHECK(source IN ('jiaoyimao', 'panzhi', 'pxb7')),
+      action TEXT NOT NULL
+        CHECK(action IN ('exclude', 'restore')),
+      reason_code TEXT
+        CHECK(reason_code IS NULL OR reason_code IN (
+          'price_overvalued',
+          'm7_low_value',
+          'red_skins_mismatch',
+          'safety_risk',
+          'assets_low',
+          'seller_concern',
+          'other'
+        )),
+      note TEXT,
+      created_at TEXT NOT NULL,
+      CHECK(
+        (action = 'exclude' AND reason_code IS NOT NULL)
+        OR
+        (action = 'restore' AND reason_code IS NULL AND note IS NULL)
+      )
+    );
+
+    CREATE INDEX IF NOT EXISTS manual_listing_reviews_latest_idx
+      ON manual_listing_reviews (listing_key, id DESC);
+
     CREATE TABLE IF NOT EXISTS source_status (
       source TEXT PRIMARY KEY,
       state TEXT NOT NULL,
