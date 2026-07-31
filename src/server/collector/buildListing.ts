@@ -162,7 +162,8 @@ export function buildListing(
     loginPlatform,
     service,
     priceCny: summary.priceCny,
-    m7PrismStatus: m7.status
+    m7PrismStatus: m7.status,
+    m7PrismQuality: m7.quality ?? null
   });
   const eligibility =
     shouldFetchListingDetail(summary) &&

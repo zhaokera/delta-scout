@@ -876,7 +876,22 @@ describe("CollectionCoordinator", () => {
 
     expect(listing).toMatchObject({
       m7PrismStatus: "premium",
-      m7PrismQuality: null
+      m7PrismQuality: "B",
+      eligibility: "rejected"
+    });
+  });
+
+  it("admits a bounded MTop premium S listing", async () => {
+    const { listing } = await collectJiaoyimaoMtopItem(
+      "M7战斗步枪-棱镜攻势S2(优品S)"
+    );
+
+    expect(listing).toMatchObject({
+      loginPlatform: "qq",
+      service: "official",
+      m7PrismStatus: "premium",
+      m7PrismQuality: "S",
+      eligibility: "eligible"
     });
   });
 

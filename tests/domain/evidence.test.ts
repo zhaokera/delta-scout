@@ -49,6 +49,54 @@ describe("M7 棱镜攻势 evidence", () => {
   });
 
   it.each([
+    ["M7战斗步枪-棱镜攻势S2(优品S)", "S"],
+    ["M7棱镜攻势（优品 A）", "A"],
+    ["M7棱镜攻势:优品B", "B"],
+    ["M7棱镜攻势 优品C", "C"]
+  ] as const)("extracts the exact premium grade from %s", (text, quality) => {
+    const result = parseM7(toEvidenceRecords([text]));
+
+    expect(result).toMatchObject({ status: "premium", quality });
+  });
+
+  it("keeps one premium quality when repeated records agree", () => {
+    const result = parseM7(
+      toEvidenceRecords([
+        "M7棱镜攻势(优品S)",
+        "M7战斗步枪-棱镜攻势S2 优品 S"
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: "premium",
+      quality: "S"
+    });
+  });
+
+  it("keeps premium status but clears quality when premium records disagree", () => {
+    const result = parseM7(
+      toEvidenceRecords([
+        "M7棱镜攻势(优品S)",
+        "M7战斗步枪-棱镜攻势S2(优品A)"
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: "premium",
+      quality: undefined
+    });
+  });
+
+  it("does not invent a premium grade when none is adjacent", () => {
+    expect(
+      parseM7(toEvidenceRecords(["M7棱镜攻势 优品"]))
+    ).toMatchObject({
+      status: "premium",
+      quality: undefined
+    });
+  });
+
+  it.each([
     [
       "典藏传说枪械极品|Bx1M7战...势S2优品|Ax2其它枪械",
       "B"

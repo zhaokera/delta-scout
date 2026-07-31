@@ -130,7 +130,10 @@ export function parseM7(
 
       return {
         status,
-        quality: status === "peak" ? quality : undefined
+        quality:
+          status === "peak" || status === "premium"
+            ? quality
+            : undefined
       };
     })
     .filter(
@@ -159,17 +162,17 @@ export function parseM7(
     unique.has("conflicting") || unique.size > 1
       ? "conflicting"
       : (explicitMatches[0]?.status ?? "unknown");
-  const peakQualities = explicitMatches
-    .filter(({ status: candidate }) => candidate === "peak")
+  const statusQualities = explicitMatches
+    .filter(({ status: candidate }) => candidate === status)
     .map(({ quality: candidate }) => candidate);
   const quality =
-    status === "peak" &&
-    peakQualities.length > 0 &&
-    peakQualities.every(
+    (status === "peak" || status === "premium") &&
+    statusQualities.length > 0 &&
+    statusQualities.every(
       (candidate) =>
-        candidate !== undefined && candidate === peakQualities[0]
+        candidate !== undefined && candidate === statusQualities[0]
     )
-      ? peakQualities[0]
+      ? statusQualities[0]
       : undefined;
 
   return { status, evidence: relevant, quality };
