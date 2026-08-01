@@ -21,7 +21,7 @@ const first = reviewed({
   score: {
     ...makeScore(78),
     riskLevel: "medium",
-    coverage: { knownSafetySignals: 2, totalSafetySignals: 3 }
+    coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
   },
   m7RareFinishes: ["pearl"]
 });
@@ -33,7 +33,7 @@ const second = reviewed({
   score: {
     ...makeScore(71),
     riskLevel: "low",
-    coverage: { knownSafetySignals: 3, totalSafetySignals: 3 }
+    coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
   }
 });
 

@@ -13,7 +13,7 @@ export function makeScore(
     riskLevel: "unknown",
     coverage: {
       knownSafetySignals: 0,
-      totalSafetySignals: 3
+      totalSafetySignals: 2
     },
     parts: {
       m7: 0,

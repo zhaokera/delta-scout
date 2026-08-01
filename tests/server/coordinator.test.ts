@@ -1540,7 +1540,7 @@ describe("CollectionCoordinator", () => {
               price: 15,
               assets: 8,
               secondRealName: 40,
-              recovery: 35,
+              recovery: 0,
               verification: 25
             }),
             reasons: ["old"]
@@ -1609,7 +1609,7 @@ describe("CollectionCoordinator", () => {
         price: 20,
         assets: 10,
         secondRealName: 40,
-        recovery: 35,
+        recovery: 0,
         verification: 25
       }),
       reasons: ["stale"]

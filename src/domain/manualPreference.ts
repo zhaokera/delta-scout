@@ -1,4 +1,5 @@
 import type { Score } from "./listing.js";
+import { normalizedRecommendationScore } from "./scoreAllocation.js";
 import {
   MANUAL_REVIEW_REASON_LABELS,
   type ManualReviewReason,
@@ -24,9 +25,11 @@ type PreferenceScore = Pick<
 
 function baseTotal(score: PreferenceScore): number {
   return Math.round(
-    score.value * 0.55 +
-    score.safety * 0.35 +
-    score.dataQuality * 0.1
+    normalizedRecommendationScore(
+      score.value,
+      score.safety,
+      score.dataQuality
+    )
   );
 }
 

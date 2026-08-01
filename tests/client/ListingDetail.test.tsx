@@ -78,12 +78,12 @@ describe("ListingDetail", () => {
             total: 91,
             preferenceAdjustment: 0,
             value: 86,
-            safety: 75,
+            safety: 40,
             dataQuality: 80,
             riskLevel: "medium",
             coverage: {
               knownSafetySignals: 2,
-              totalSafetySignals: 3
+              totalSafetySignals: 2
             },
             parts: {
               m7: 15,
@@ -92,7 +92,7 @@ describe("ListingDetail", () => {
               price: 23,
               assets: 9,
               secondRealName: 40,
-              recovery: 35,
+              recovery: 0,
               verification: 0
             },
             valueReasons: ["M7 极品S"],
@@ -115,10 +115,13 @@ describe("ListingDetail", () => {
     ).toEqual(expect.arrayContaining(["M7", "棱镜攻势", "极品", "品质:S级"]));
 
     expect(screen.getByText("账号价值 86 / 100")).toBeInTheDocument();
-    expect(screen.getByText("购买安全 75 / 100")).toBeInTheDocument();
+    expect(screen.getByText("购买安全 40 / 65")).toBeInTheDocument();
     expect(screen.getByText("数据完整度 80 / 100")).toBeInTheDocument();
     expect(screen.getByText("中风险")).toBeInTheDocument();
-    expect(screen.getByText("安全证据 2 / 3")).toBeInTheDocument();
+    expect(screen.getByText("安全证据 2 / 2")).toBeInTheDocument();
+    expect(
+      screen.getByText("永久包赔 仅作参考 · 不参与评分")
+    ).toBeInTheDocument();
     expect(screen.getByText("M7 综合价值 15 / 15")).toBeInTheDocument();
     expect(screen.getByText("角色红皮 20 / 30")).toBeInTheDocument();
     expect(screen.getByText("巨浪 20 / 20")).toBeInTheDocument();

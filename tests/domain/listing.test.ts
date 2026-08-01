@@ -116,7 +116,7 @@ describe("ListingSchema", () => {
           riskLevel: "medium",
           coverage: {
             knownSafetySignals: 2,
-            totalSafetySignals: 3
+            totalSafetySignals: 2
           },
           parts: {
             m7: 15,
@@ -151,7 +151,7 @@ describe("ListingSchema", () => {
       riskLevel: "medium",
       coverage: {
         knownSafetySignals: 2,
-        totalSafetySignals: 3
+        totalSafetySignals: 2
       },
       parts: {
         m7: 15,

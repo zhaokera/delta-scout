@@ -2,6 +2,9 @@ import {
   compareRecommendations,
   scoreEligibleListings
 } from "../../src/domain/score";
+import {
+  normalizedRecommendationScore
+} from "../../src/domain/scoreAllocation";
 import { makeListing, makeScore } from "./listingFactory";
 
 const now = new Date("2026-07-28T12:00:00+08:00");
@@ -12,15 +15,15 @@ describe("scoreEligibleListings", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 75,
+      total: 71,
       preferenceAdjustment: 0,
       value: 54,
-      safety: 100,
+      safety: 65,
       dataQuality: 100,
       riskLevel: "low",
       coverage: {
-        knownSafetySignals: 3,
-        totalSafetySignals: 3
+        knownSafetySignals: 2,
+        totalSafetySignals: 2
       },
       parts: {
         m7: 10,
@@ -29,7 +32,7 @@ describe("scoreEligibleListings", () => {
         price: 12.5,
         assets: 5.5,
         secondRealName: 40,
-        recovery: 35,
+        recovery: 0,
         verification: 25
       },
       valueReasons: expect.any(Array),
@@ -200,8 +203,8 @@ describe("scoreEligibleListings", () => {
       safety: 0,
       riskLevel: "high",
       coverage: {
-        knownSafetySignals: 2,
-        totalSafetySignals: 3
+        knownSafetySignals: 1,
+        totalSafetySignals: 2
       },
       parts: {
         secondRealName: 0,
@@ -210,7 +213,9 @@ describe("scoreEligibleListings", () => {
       }
     });
     expect(result.score?.safetyReasons.join(" ")).toContain("不可二次实名");
-    expect(result.score?.safetyReasons.join(" ")).toContain("无包赔");
+    expect(result.score?.safetyReasons.join(" ")).toContain(
+      "永久包赔仅作参考，不参与评分：页面显示不支持"
+    );
   });
 
   it("marks all-unknown safety evidence as unknown instead of safe", () => {
@@ -227,12 +232,12 @@ describe("scoreEligibleListings", () => {
       riskLevel: "unknown",
       coverage: {
         knownSafetySignals: 0,
-        totalSafetySignals: 3
+        totalSafetySignals: 2
       }
     });
   });
 
-  it("uses medium risk for incomplete or stale safety evidence", () => {
+  it("ignores missing recovery coverage and flags stale verification", () => {
     const [missing] = scoreEligibleListings([
       makeListing({ recoveryCoverage: null })
     ], now);
@@ -242,8 +247,46 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(missing.score?.riskLevel).toBe("medium");
+    expect(missing.score?.riskLevel).toBe("low");
     expect(stale.score?.riskLevel).toBe("medium");
+  });
+
+  it("never lets permanent recovery coverage change score or risk", () => {
+    const results = scoreEligibleListings([
+      makeListing({ key: "panzhi:covered", recoveryCoverage: true }),
+      makeListing({ key: "pxb7:uncovered", recoveryCoverage: false }),
+      makeListing({ key: "jiaoyimao:unknown", recoveryCoverage: null })
+    ], now);
+
+    expect(results.map(({ score }) => ({
+      total: score?.total,
+      safety: score?.safety,
+      risk: score?.riskLevel,
+      recovery: score?.parts.recovery,
+      coverage: score?.coverage
+    }))).toEqual([
+      {
+        total: 71,
+        safety: 65,
+        risk: "low",
+        recovery: 0,
+        coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
+      },
+      {
+        total: 71,
+        safety: 65,
+        risk: "low",
+        recovery: 0,
+        coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
+      },
+      {
+        total: 71,
+        safety: 65,
+        risk: "low",
+        recovery: 0,
+        coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
+      }
+    ]);
   });
 
   it("makes the combined recommendation formula explicit", () => {
@@ -265,7 +308,7 @@ describe("scoreEligibleListings", () => {
     expect(result.score?.safety).toBe(40);
     expect(result.score?.dataQuality).toBe(80);
     expect(result.score?.total).toBe(
-      Math.round(24.5 * 0.55 + 40 * 0.35 + 80 * 0.1)
+      Math.round(normalizedRecommendationScore(24.5, 40, 80))
     );
   });
 

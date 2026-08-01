@@ -8,7 +8,10 @@ import {
   type ReviewedListingSummary
 } from "../../domain/listingSummary";
 import { manualPreferenceAdjustment } from "../../domain/manualPreference";
-import { VALUE_SCORE_MAX } from "../../domain/scoreAllocation";
+import {
+  SAFETY_SCORE_MAX,
+  VALUE_SCORE_MAX
+} from "../../domain/scoreAllocation";
 import type { ListingHistoryView } from "../api";
 import { buildEvidenceExcerpt } from "../../domain/evidenceExcerpt";
 
@@ -430,7 +433,9 @@ export function ListingDetail({
           <span>评分依据</span>
           <div className="score-summary">
             <p>账号价值 {scorePart(listing.score.value)} / 100</p>
-            <p>购买安全 {scorePart(listing.score.safety)} / 100</p>
+            <p>
+              购买安全 {scorePart(listing.score.safety)} / {SAFETY_SCORE_MAX.total}
+            </p>
             <p>
               数据完整度 {scorePart(listing.score.dataQuality)} / 100
             </p>
@@ -457,9 +462,7 @@ export function ListingDetail({
             <p>
               二次实名 {scorePart(listing.score.parts.secondRealName)} / 40
             </p>
-            <p>
-              找回保障 {scorePart(listing.score.parts.recovery)} / 35
-            </p>
+            <p>永久包赔 仅作参考 · 不参与评分</p>
             <p>
               验号时效 {scorePart(listing.score.parts.verification)} / 25
             </p>

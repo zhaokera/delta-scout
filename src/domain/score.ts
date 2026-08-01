@@ -4,6 +4,8 @@ import {
   M7_PEAK_QUALITY_POINTS,
   M7_PREMIUM_S_POINTS,
   M7_RARE_FINISH_POINTS,
+  normalizedRecommendationScore,
+  SAFETY_SCORE_MAX,
   VALUE_SCORE_MAX
 } from "./scoreAllocation.js";
 
@@ -68,13 +70,15 @@ function safetyParts(listing: Listing, now: Date) {
   const verificationAge = verificationAgeDays(listing, now);
   return {
     secondRealName:
-      listing.secondRealNameAvailable === true ? 40 : 0,
-    recovery: listing.recoveryCoverage === true ? 35 : 0,
+      listing.secondRealNameAvailable === true
+        ? SAFETY_SCORE_MAX.secondRealName
+        : 0,
+    recovery: 0,
     verification:
       verificationAge === null
         ? 0
         : verificationAge <= 7
-          ? 25
+          ? SAFETY_SCORE_MAX.verification
           : verificationAge <= 30
             ? 15
             : 5,
@@ -85,7 +89,6 @@ function safetyParts(listing: Listing, now: Date) {
 function safetyCoverage(listing: Listing): number {
   return [
     listing.secondRealNameAvailable,
-    listing.recoveryCoverage,
     listing.verificationAt
   ].filter((value) => value !== null).length;
 }
@@ -98,17 +101,16 @@ function riskLevel(
 ): Score["riskLevel"] {
   if (
     listing.secondRealNameAvailable === false ||
-    listing.recoveryCoverage === false ||
     listing.banNotes.length > 0
   ) {
     return "high";
   }
   if (knownSafetySignals === 0) return "unknown";
   if (
-    knownSafetySignals < 3 ||
+    knownSafetySignals < 2 ||
     verificationAge === null ||
     verificationAge > 30 ||
-    safety < 75
+    safety < SAFETY_SCORE_MAX.total
   ) {
     return "medium";
   }
@@ -177,7 +179,7 @@ function scoreOne(
     safetyPartValues.verificationAge
   );
   const total = Math.round(
-    value * 0.55 + safety * 0.35 + dataQuality * 0.1
+    normalizedRecommendationScore(value, safety, dataQuality)
   );
   const julangReason =
     listing.julangStatus === "owned"
@@ -210,9 +212,9 @@ function scoreOne(
     ),
     booleanSafetyReason(
       listing.recoveryCoverage,
-      "支持找回包赔",
-      "明确无包赔",
-      "找回保障待核验"
+      "永久包赔仅作参考，不参与评分：页面显示支持",
+      "永久包赔仅作参考，不参与评分：页面显示不支持",
+      "永久包赔仅作参考，不参与评分：信息未知"
     ),
     verificationReason,
     ...(listing.banNotes.length > 0
@@ -229,7 +231,7 @@ function scoreOne(
     riskLevel: calculatedRisk,
     coverage: {
       knownSafetySignals,
-      totalSafetySignals: 3
+      totalSafetySignals: 2
     },
     parts: {
       m7,
@@ -245,9 +247,9 @@ function scoreOne(
     safetyReasons,
     reasons: [
       `账号价值 ${value.toFixed(1)}/100`,
-      `购买安全 ${safety.toFixed(1)}/100`,
+      `购买安全 ${safety.toFixed(1)}/${SAFETY_SCORE_MAX.total}`,
       `数据完整度 ${dataQuality.toFixed(1)}/100`,
-      `综合分 = 价值 55% + 安全 35% + 数据 10%`
+      `综合分按价值 55% + 安全 35% + 数据 10% 计算后归一化到 100；永久包赔不计分`
     ]
   };
 }

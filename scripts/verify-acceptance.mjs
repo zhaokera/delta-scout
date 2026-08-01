@@ -45,7 +45,7 @@ function assertCandidate(candidate, poolName) {
     `${poolName}: required operator skin set is incomplete`
   );
   assert.ok(candidate.score, `${poolName}: candidate is missing a score`);
-  for (const field of ["total", "value", "safety", "dataQuality"]) {
+  for (const field of ["total", "value", "dataQuality"]) {
     assert.equal(
       typeof candidate.score[field],
       "number",
@@ -57,16 +57,20 @@ function assertCandidate(candidate, poolName) {
     );
   }
   assert.ok(
+    candidate.score.safety >= 0 && candidate.score.safety <= 65,
+    `${poolName}: score.safety is outside 0..65`
+  );
+  assert.ok(
     ["low", "medium", "high", "unknown"].includes(
       candidate.score.riskLevel
     ),
     `${poolName}: invalid risk level`
   );
-  const baseTotal = Math.round(
+  const rawTotal =
     candidate.score.value * 0.55 +
-      candidate.score.safety * 0.35 +
-      candidate.score.dataQuality * 0.1
-  );
+    candidate.score.safety * 0.35 +
+    candidate.score.dataQuality * 0.1;
+  const baseTotal = Math.round((rawTotal / 87.75) * 100);
   assert.ok(
     Number.isInteger(candidate.score.preferenceAdjustment) &&
       candidate.score.preferenceAdjustment >= -8 &&
@@ -83,7 +87,10 @@ function assertCandidate(candidate, poolName) {
     redSkins: 30,
     julang: 20,
     price: 25,
-    assets: 10
+    assets: 10,
+    secondRealName: 40,
+    recovery: 0,
+    verification: 25
   })) {
     assert.equal(
       typeof candidate.score.parts[part],
@@ -96,6 +103,16 @@ function assertCandidate(candidate, poolName) {
       `${poolName}: score.parts.${part} exceeds ${maximum}`
     );
   }
+  assert.equal(
+    candidate.score.coverage.totalSafetySignals,
+    2,
+    `${poolName}: permanent recovery coverage still affects safety coverage`
+  );
+  assert.ok(
+    candidate.score.coverage.knownSafetySignals >= 0 &&
+      candidate.score.coverage.knownSafetySignals <= 2,
+    `${poolName}: invalid scored safety coverage`
+  );
 }
 
 function assertUniqueKeys(listings, poolName) {

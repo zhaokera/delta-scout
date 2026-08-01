@@ -52,8 +52,8 @@ export const ScoreSchema = z.object({
   dataQuality: z.number().min(0).max(100),
   riskLevel: z.enum(["low", "medium", "high", "unknown"]),
   coverage: z.object({
-    knownSafetySignals: z.number().int().min(0).max(3),
-    totalSafetySignals: z.literal(3)
+    knownSafetySignals: z.number().int().min(0).max(2),
+    totalSafetySignals: z.literal(2)
   }),
   parts: z.object({
     m7: z.number().min(0).max(VALUE_SCORE_MAX.m7),

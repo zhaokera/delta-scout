@@ -866,7 +866,7 @@ describe("App shell", () => {
           price: 23,
           assets: 9,
           secondRealName: 40,
-          recovery: 35,
+          recovery: 0,
           verification: 25
         }),
         reasons: ["新快照"]

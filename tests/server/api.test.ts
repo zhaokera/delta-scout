@@ -1145,7 +1145,7 @@ describe("listing API", () => {
               price: 18,
               assets: 8,
               secondRealName: 40,
-              recovery: 35,
+              recovery: 0,
               verification: 15
             }),
             reasons: ["较高"]

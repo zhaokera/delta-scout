@@ -38,6 +38,26 @@ describe("calculateConfidence", () => {
     expect(calculateConfidence(listing)).toBe(0);
   });
 
+  it("does not let permanent recovery coverage raise confidence", () => {
+    const listing = makeListing({
+      confidence: 0,
+      m7Evidence: [],
+      loginPlatform: "unknown",
+      service: "unknown",
+      priceCny: null,
+      secondRealNameAvailable: null,
+      recoveryCoverage: true,
+      verificationAt: null,
+      totalAssetsM: null,
+      hafCoins: null,
+      redSkins: [],
+      redSkinUnnamed: false,
+      julangStatus: "unknown"
+    });
+
+    expect(calculateConfidence(listing)).toBe(0);
+  });
+
   it("can reach high confidence without M7 evidence", () => {
     const listing = makeListing({
       confidence: 0,

@@ -20,7 +20,6 @@ export function calculateConfidence(listing: Listing): number {
   }
   if (
     listing.secondRealNameAvailable !== null ||
-    listing.recoveryCoverage !== null ||
     listing.verificationAt !== null
   ) {
     confidence += 20;
