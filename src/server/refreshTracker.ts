@@ -144,6 +144,31 @@ export class RefreshTracker {
     return { ...this.current };
   }
 
+  synchronize(initial: RefreshTrackerInitialState): void {
+    if (this.current.state === "running") return;
+    const latestRun = initial.latestRun;
+    if (
+      latestRun === null ||
+      (this.current.runId !== null && latestRun.id <= this.current.runId)
+    ) {
+      return;
+    }
+    this.current = {
+      runId: latestRun.id,
+      state: latestRun.state,
+      startedAt: latestRun.startedAt,
+      finishedAt: latestRun.finishedAt,
+      source: null,
+      phase: null,
+      page: 0,
+      summaries: 0,
+      details: 0,
+      message: null,
+      error: latestRun.error,
+      lastSnapshotAt: initial.lastSnapshotAt
+    };
+  }
+
   isRunning(): boolean {
     return this.current.state === "running";
   }

@@ -820,6 +820,7 @@ export function createApp(dependencies?: AppDependencies): Express {
   });
 
   app.get("/api/refresh-status", (_request, response) => {
+    tracker.synchronize(repository.getRefreshSnapshot());
     response.json(tracker.snapshot());
   });
 

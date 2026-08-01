@@ -2645,6 +2645,14 @@ describe("browser refresh API", () => {
       );
       expect(JSON.stringify(current.body)).not.toContain(job.claimCode);
       expect(JSON.stringify(current.body)).not.toContain(job.token);
+      const refreshStatus = await request(f.app)
+        .get("/api/refresh-status");
+      expect(refreshStatus.status).toBe(200);
+      expect(refreshStatus.body).toMatchObject({
+        runId: completed.body.scanRunId,
+        state: expectedState === "success" ? "success" : "partial",
+        finishedAt: expect.any(String)
+      });
       expect(f.admission.snapshot()).toEqual({ activeKind: "none" });
     }
   );
