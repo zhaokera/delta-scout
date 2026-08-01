@@ -793,11 +793,16 @@ export class BrowserRefreshRepository {
       (item) => item.priceCny === null || item.priceCny <= 6_000
     );
     if (requiredItems.length === 0) return new Map();
+    const listingKeys = requiredItems.map(
+      ({ sourceListingId }) => `jiaoyimao:${sourceListingId}`
+    );
+    const placeholders = listingKeys.map(() => "?").join(", ");
     const currentRows = this.database.prepare(`
       SELECT payload
       FROM listings
       WHERE source = 'jiaoyimao'
-    `).all() as Array<{ payload: string }>;
+        AND listing_key IN (${placeholders})
+    `).all(...listingKeys) as Array<{ payload: string }>;
     const currentById = new Map(
       currentRows
         .map(({ payload }) => parseStoredListing(payload))

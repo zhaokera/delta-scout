@@ -1980,6 +1980,55 @@ describe("ListingRepository", () => {
     ).toEqual({ count: 2 });
   });
 
+  it("uses active manual feedback for a capped ranking adjustment and removes it on restore", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const feedback = makeListing({
+      key: "panzhi:feedback",
+      sourceListingId: "feedback",
+      url: "https://www.pzds.com/item/feedback",
+      title: "用户认为价格虚高的账号"
+    });
+    const candidate = makeListing({
+      key: "panzhi:candidate",
+      sourceListingId: "candidate",
+      url: "https://www.pzds.com/item/candidate",
+      title: "属性相近的另一个账号"
+    });
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [feedback, candidate],
+      "success",
+      scanTime
+    );
+    repository.recomputeDerivedListings(scanTime);
+    const baseTotal = repository.getListing(candidate.key)?.score?.total;
+    expect(baseTotal).toBeTypeOf("number");
+
+    repository.excludeListing(
+      feedback.key,
+      { reason: "price_overvalued", note: null },
+      new Date("2026-08-01T08:00:00.000Z")
+    );
+    expect(repository.getReviewedListing(candidate.key)).toMatchObject({
+      score: {
+        total: baseTotal! - 1,
+        reasons: expect.arrayContaining([
+          expect.stringContaining("价格虚高"),
+          expect.stringContaining("最多 -8")
+        ])
+      }
+    });
+
+    repository.restoreListing(
+      feedback.key,
+      new Date("2026-08-01T09:00:00.000Z")
+    );
+    const restored = repository.getReviewedListing(candidate.key);
+    expect(restored?.score?.total).toBe(baseTotal);
+    expect(restored?.score?.reasons.join(" ")).not.toContain("人工偏好");
+  });
+
   it("restores a manual exclusion idempotently while preserving its audit history", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);

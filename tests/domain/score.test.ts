@@ -13,6 +13,7 @@ describe("scoreEligibleListings", () => {
 
     expect(result.score).toEqual({
       total: 76,
+      preferenceAdjustment: 0,
       value: 56,
       safety: 100,
       dataQuality: 100,

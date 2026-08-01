@@ -1187,6 +1187,40 @@ describe("listing API", () => {
     });
   });
 
+  it("keeps list responses lightweight and reserves evidence for detail", async () => {
+    const { app, repository } = setup();
+    const listing = makeListing({
+      originalDescription: "完整详情原文".repeat(1_000)
+    });
+    repository.replaceSourceSnapshot("panzhi", [listing], "success");
+
+    const list = await request(app).get(
+      "/api/listings?view=all&status=eligible"
+    );
+    const detail = await request(app).get(
+      `/api/listings/${encodeURIComponent(listing.key)}`
+    );
+
+    expect(list.status).toBe(200);
+    expect(list.body[0]).toMatchObject({
+      key: listing.key,
+      detailLevel: "summary",
+      evidenceCount: listing.evidence.length
+    });
+    expect(list.body[0]).not.toHaveProperty("originalDescription");
+    expect(list.body[0]).not.toHaveProperty("evidence");
+    if (list.body[0].score !== null) {
+      expect(list.body[0].score).not.toHaveProperty("reasons");
+    }
+    expect(detail.status).toBe(200);
+    expect(detail.body.originalDescription).toBe(
+      listing.originalDescription
+    );
+    expect(JSON.stringify(list.body).length).toBeLessThan(
+      JSON.stringify(detail.body).length / 4
+    );
+  });
+
   it("returns trusted listing history and keeps removed listings queryable", async () => {
     const { app, repository } = setup();
     const listing = makeListing();

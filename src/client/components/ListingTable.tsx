@@ -1,8 +1,7 @@
 import type { SourceId } from "../../domain/listing";
-import {
-  MANUAL_REVIEW_REASON_LABELS,
-  type ReviewedListing
-} from "../../domain/manualReview";
+import { MANUAL_REVIEW_REASON_LABELS } from "../../domain/manualReview";
+import type { ReviewedListingSummary } from "../../domain/listingSummary";
+import { manualPreferenceAdjustment } from "../../domain/manualPreference";
 import type { ListingView, PoolMode } from "../api";
 import type { SortKey } from "./FilterBar";
 
@@ -44,9 +43,9 @@ function money(value: number | null): string {
 }
 
 function sortListings(
-  listings: ReviewedListing[],
+  listings: ReviewedListingSummary[],
   sort: SortKey
-): ReviewedListing[] {
+): ReviewedListingSummary[] {
   return [...listings].sort((left, right) => {
     if (sort === "skinValue") {
       return (
@@ -67,7 +66,7 @@ function sortListings(
   });
 }
 
-function julangLabel(listing: ReviewedListing): string {
+function julangLabel(listing: ReviewedListingSummary): string {
   if (listing.julangStatus === "owned") {
     return `巨浪${listing.julangQuality ? ` · ${listing.julangQuality}` : ""}`;
   }
@@ -75,7 +74,7 @@ function julangLabel(listing: ReviewedListing): string {
   return "巨浪待核验";
 }
 
-function m7Label(listing: ReviewedListing): string {
+function m7Label(listing: ReviewedListingSummary): string {
   if (listing.m7PrismStatus === "peak") {
     return `M7 · 极品${listing.m7PrismQuality ?? ""}`;
   }
@@ -87,7 +86,7 @@ function m7Label(listing: ReviewedListing): string {
   return "M7 · 待核验";
 }
 
-function stabilityLabel(listing: ReviewedListing): string {
+function stabilityLabel(listing: ReviewedListingSummary): string {
   if (listing.scanStability === "stable") {
     return `连续稳定 · ${listing.consecutiveUnchangedScans} 轮`;
   }
@@ -97,7 +96,7 @@ function stabilityLabel(listing: ReviewedListing): string {
 }
 
 export interface ListingTableProps {
-  listings: ReviewedListing[];
+  listings: ReviewedListingSummary[];
   selectedKey: string | null;
   sort: SortKey;
   view?: ListingView;
@@ -107,8 +106,8 @@ export interface ListingTableProps {
   comparisonKeys?: ReadonlySet<string>;
   comparisonLimitReached?: boolean;
   onSortChange(sort: SortKey): void;
-  onSelect(listing: ReviewedListing): void;
-  onToggleComparison?(listing: ReviewedListing): void;
+  onSelect(listing: ReviewedListingSummary): void;
+  onToggleComparison?(listing: ReviewedListingSummary): void;
 }
 
 export function ListingTable({
@@ -292,6 +291,12 @@ export function ListingTable({
                       价值 {Math.round(listing.score.value)} ·{" "}
                       {RISK_LABELS[listing.score.riskLevel]}
                     </span>
+                  ) : null}
+                  {listing.score &&
+                  manualPreferenceAdjustment(listing.score) < 0 ? (
+                    <em className="preference-adjustment">
+                      偏好 {manualPreferenceAdjustment(listing.score)}
+                    </em>
                   ) : null}
                   <i aria-hidden="true">查看证据 ↗</i>
                 </span>

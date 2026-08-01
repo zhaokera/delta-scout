@@ -12,6 +12,10 @@ import type {
   ReviewedListing
 } from "../domain/manualReview";
 import {
+  isReviewedListingSummary,
+  type ReviewedListingSummary
+} from "../domain/listingSummary";
+import {
   httpScoutApi,
   type ListingHistoryView,
   type ListingView,
@@ -102,7 +106,8 @@ function useMediaQuery(query: string): boolean {
 
 export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [sources, setSources] = useState<SourceStatusView[]>([]);
-  const [listings, setListings] = useState<ReviewedListing[]>([]);
+  const [listings, setListings] =
+    useState<ReviewedListingSummary[]>([]);
   const [view, setView] = useState<ListingView>("pool");
   const [poolMode, setPoolMode] = useState<PoolMode>("balanced");
   const [sort, setSort] = useState<SortKey>("score");
@@ -110,7 +115,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     useState<AdvancedFilters>(DEFAULT_FILTERS);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selected, setSelected] =
-    useState<ReviewedListing | null>(null);
+    useState<ReviewedListing | ReviewedListingSummary | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -127,7 +132,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [reviewNotice, setReviewNotice] =
     useState<string | null>(null);
   const [comparison, setComparison] =
-    useState<ReviewedListing[]>([]);
+    useState<ReviewedListingSummary[]>([]);
   const [compareOpen, setCompareOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshStatus, setRefreshStatus] =
@@ -229,22 +234,35 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               ? "该账号已不在最新在售快照"
               : null
           );
+          const shouldHydrateDetail =
+            nextSelected !== null &&
+            isReviewedListingSummary(nextSelected);
+          setDetailLoading(shouldHydrateDetail);
           setHistoryLoading(true);
           setHistoryError(null);
-          const historyResult = await api
-            .getListingHistory(nextSelected?.key ?? selectedKey!, 20)
-            .then(
-              (value) => ({ status: "fulfilled" as const, value }),
-              (reason: unknown) => ({
-                status: "rejected" as const,
-                reason
-              })
-            );
+          const selectionKey = nextSelected?.key ?? selectedKey!;
+          const [detailResult, historyResult] =
+            await Promise.allSettled([
+              shouldHydrateDetail
+                ? api.getListing(selectionKey)
+                : Promise.resolve(null),
+              api.getListingHistory(selectionKey, 20)
+            ]);
           if (
             !mounted.current ||
             requestSequence !== loadSequence.current ||
             detailRequestSequence !== detailSequence.current
           ) return;
+          if (
+            detailResult.status === "fulfilled" &&
+            detailResult.value !== null
+          ) {
+            setSelected(detailResult.value);
+          } else if (detailResult.status === "rejected") {
+            setSelectionNotice(
+              "最新列表已载入，但完整证据读取失败"
+            );
+          }
           if (historyResult.status === "fulfilled") {
             setListingHistory(historyResult.value);
           } else {
@@ -254,6 +272,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               : "账号历史读取失败"
             );
           }
+          setDetailLoading(false);
           setHistoryLoading(false);
         }
       } catch (cause) {
@@ -301,7 +320,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       setHistoryError(null);
     }
 
-    const [sourcesResult, listingsResult, scanResult, historyResult] =
+    const [
+      sourcesResult,
+      listingsResult,
+      scanResult,
+      historyResult
+    ] =
       await Promise.allSettled([
         api.getSources(requestedMode),
         api.getListings(requestedView, requestedMode),
@@ -323,6 +347,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     if (sourcesResult.status === "fulfilled") {
       setSources(sourcesResult.value);
     }
+    let summaryToHydrate: ReviewedListingSummary | null = null;
     if (listingsResult.status === "fulfilled") {
       const nextListings = listingsResult.value;
       setListings(nextListings);
@@ -340,6 +365,9 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         if (nextSelected) {
           setSelected(nextSelected);
           setSelectionNotice(null);
+          if (isReviewedListingSummary(nextSelected)) {
+            summaryToHydrate = nextSelected;
+          }
         } else {
           setSelectionNotice("该账号已不在最新在售快照");
         }
@@ -348,6 +376,33 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     if (scanResult.status === "fulfilled") {
       setScanHistory(scanResult.value);
       setTransportWarning(null);
+    }
+    if (summaryToHydrate !== null) {
+      setDetailLoading(true);
+      try {
+        const detail = await api.getListing(summaryToHydrate.key);
+        if (
+          !mounted.current ||
+          requestSequence !== loadSequence.current ||
+          detailRequestSequence !== detailSequence.current
+        ) {
+          throw new Error("详情读取已被更新的页面操作取代");
+        }
+        setSelected(detail);
+        setSelectionNotice(null);
+      } catch (cause) {
+        if (
+          mounted.current &&
+          requestSequence === loadSequence.current &&
+          detailRequestSequence === detailSequence.current
+        ) {
+          setSelectionNotice(
+            cause instanceof Error
+              ? cause.message
+              : "最新列表已载入，但完整证据读取失败"
+          );
+        }
+      }
     }
     if (historyResult.status === "fulfilled" && historyResult.value) {
       setListingHistory(historyResult.value);
@@ -359,7 +414,10 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           : "账号历史读取失败"
       );
     }
-    if (selectedKey !== null) setHistoryLoading(false);
+    if (selectedKey !== null) {
+      setDetailLoading(false);
+      setHistoryLoading(false);
+    }
 
     const requiredFailures = [
       sourcesResult,
@@ -645,7 +703,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     setFilters(DEFAULT_FILTERS);
   }
 
-  function toggleComparison(listing: ReviewedListing): void {
+  function toggleComparison(listing: ReviewedListingSummary): void {
     setReviewNotice(null);
     setComparison((current) => {
       if (current.some(({ key }) => key === listing.key)) {
@@ -762,7 +820,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       setReviewNotice(
         `已恢复 ${
           listing.sourceListingId ?? listing.title
-        }，将按原评分重新参与排名`
+        }，将按当前规则重新参与排名`
       );
       broadcastRef.current?.postMessage({
         type: "listing-review-changed",
@@ -780,7 +838,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     }
   }
 
-  async function selectListing(listing: ReviewedListing) {
+  async function selectListing(listing: ReviewedListingSummary) {
     const requestSequence = ++detailSequence.current;
     selectedKeyRef.current = listing.key;
     setSelected(listing);
@@ -805,6 +863,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       setSelected((current) =>
         current?.key === listing.key ? listing : current
       );
+      setSelectionNotice("完整证据读取失败，当前仍显示轻量摘要");
     }
     if (historyResult.status === "fulfilled") {
       setListingHistory(historyResult.value);

@@ -3,6 +3,11 @@ import {
   MANUAL_REVIEW_REASON_LABELS,
   type ReviewedListing
 } from "../../domain/manualReview";
+import {
+  isReviewedListingSummary,
+  type ReviewedListingSummary
+} from "../../domain/listingSummary";
+import { manualPreferenceAdjustment } from "../../domain/manualPreference";
 import type { ListingHistoryView } from "../api";
 import { buildEvidenceExcerpt } from "../../domain/evidenceExcerpt";
 
@@ -83,7 +88,7 @@ export function ListingDetail({
   onRestore,
   onClose
 }: {
-  listing: ReviewedListing | null;
+  listing: ReviewedListing | ReviewedListingSummary | null;
   loading: boolean;
   history?: ListingHistoryView | null;
   historyLoading?: boolean;
@@ -104,6 +109,63 @@ export function ListingDetail({
     );
   }
 
+  if (isReviewedListingSummary(listing)) {
+    return (
+      <aside
+        className="detail-panel detail-panel--summary"
+        aria-label="候选详情"
+        aria-busy={loading}
+      >
+        <header className="detail-header">
+          <div>
+            <span className="section-index">03 / EVIDENCE</span>
+            <h2 id="candidate-detail-title">
+              {listing.sourceListingId ?? "候选详情"}
+            </h2>
+            <p>{SOURCE_LABELS[listing.source]} · 轻量列表摘要</p>
+          </div>
+          {onClose ? (
+            <button
+              className="detail-close"
+              type="button"
+              aria-label="关闭候选详情"
+              data-detail-close
+              onClick={onClose}
+            >
+              ×
+            </button>
+          ) : null}
+          <div className="detail-score">
+            <strong>{listing.score?.total ?? "—"}</strong>
+            <span>推荐分</span>
+          </div>
+        </header>
+
+        <section className="detail-decision-bar" aria-label="快速决策">
+          <div>
+            <span>当前报价</span>
+            <strong>{money(listing.priceCny)}</strong>
+          </div>
+          <div>
+            <a href={listing.url} target="_blank" rel="noreferrer">
+              平台核验 ↗
+            </a>
+          </div>
+        </section>
+
+        <section className="detail-summary-loading" role="status">
+          <i aria-hidden="true" />
+          <strong>
+            {loading ? "正在按需读取完整证据" : "完整证据暂未载入"}
+          </strong>
+          <p>
+            列表已省略原始描述和证据正文；打开账号时才读取，避免一次传输数 MB 数据。
+          </p>
+        </section>
+      </aside>
+    );
+  }
+
   const m7Excerpt = buildEvidenceExcerpt(
     listing.m7Evidence[0]?.text ?? "待人工核验"
   );
@@ -119,6 +181,9 @@ export function ListingDetail({
         observation.availability === "active" &&
         observation.priceCny !== null
     ) ?? [];
+  const preferenceAdjustment = listing.score === null
+    ? 0
+    : manualPreferenceAdjustment(listing.score);
   const latestMovement =
     prices.length >= 2 ? prices[0].priceCny - prices[1].priceCny : null;
   const movementLabel =
@@ -165,6 +230,11 @@ export function ListingDetail({
         <div className="detail-score">
           <strong>{listing.score?.total ?? "—"}</strong>
           <span>推荐分</span>
+          {preferenceAdjustment < 0 ? (
+            <em className="preference-adjustment">
+              人工偏好 {preferenceAdjustment}
+            </em>
+          ) : null}
         </div>
       </header>
 

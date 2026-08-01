@@ -7,7 +7,7 @@ import type {
   ManualListingReview,
   ReviewedListing
 } from "../../src/domain/manualReview";
-import { makeListing } from "../domain/listingFactory";
+import { makeListing, makeScore } from "../domain/listingFactory";
 
 function makeReviewedListing(
   overrides: Partial<Listing> = {},
@@ -236,5 +236,29 @@ describe("ListingTable", () => {
     expect(
       screen.getByText("人工淘汰 · 价格虚高")
     ).toBeInTheDocument();
+  });
+
+  it("shows a transparent manual-preference ranking adjustment", () => {
+    render(
+      <ListingTable
+        listings={[
+          makeReviewedListing({
+            score: {
+              ...makeScore(74),
+              preferenceAdjustment: -1,
+              value: 60,
+              safety: 90,
+              dataQuality: 100
+            }
+          })
+        ]}
+        selectedKey={null}
+        sort="score"
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("偏好 -1")).toBeInTheDocument();
   });
 });

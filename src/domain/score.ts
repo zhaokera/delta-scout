@@ -212,6 +212,7 @@ function scoreOne(
 
   return {
     total,
+    preferenceAdjustment: 0,
     value,
     safety,
     dataQuality,

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ReviewedListing } from "../../domain/manualReview";
+import type { ReviewedListingSummary } from "../../domain/listingSummary";
 import type { ListingHistoryView } from "../api";
 import { ListingDetail } from "./ListingDetail";
 
@@ -15,7 +16,7 @@ export function DetailDrawer({
   onRestore,
   onClose
 }: {
-  listing: ReviewedListing;
+  listing: ReviewedListing | ReviewedListingSummary;
   loading: boolean;
   history: ListingHistoryView | null;
   historyLoading: boolean;

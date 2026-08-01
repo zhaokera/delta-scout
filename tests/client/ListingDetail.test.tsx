@@ -76,6 +76,7 @@ describe("ListingDetail", () => {
           m7Evidence: [{ text: evidenceText, truncated: false }],
           score: {
             total: 91,
+            preferenceAdjustment: 0,
             value: 86,
             safety: 75,
             dataQuality: 80,

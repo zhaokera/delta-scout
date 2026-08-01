@@ -1,5 +1,19 @@
 import type { Listing, SourceId } from "./listing.js";
 
+type FilterableListing = Pick<
+  Listing,
+  | "source"
+  | "priceCny"
+  | "redSkins"
+  | "redSkinCount"
+  | "julangStatus"
+  | "m7PrismQuality"
+  | "secondRealNameAvailable"
+  | "recoveryCoverage"
+  | "verificationAt"
+  | "scanStability"
+>;
+
 export interface ListingFilters {
   source: SourceId | "all";
   secondRealName: boolean;
@@ -12,7 +26,9 @@ export interface ListingFilters {
   stability: "all" | "stable" | "new" | "changed";
 }
 
-export function hasCompleteKeyEvidence(listing: Listing): boolean {
+export function hasCompleteKeyEvidence(
+  listing: FilterableListing
+): boolean {
   return (
     listing.priceCny !== null &&
     listing.m7PrismQuality !== null &&
@@ -27,7 +43,7 @@ function normalizeSearch(value: string): string {
 }
 
 export function matchesListingFilters(
-  listing: Listing,
+  listing: FilterableListing,
   filters: ListingFilters
 ): boolean {
   const redSkinQuery = normalizeSearch(filters.redSkin);

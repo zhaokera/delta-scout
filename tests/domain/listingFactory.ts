@@ -6,6 +6,7 @@ export function makeScore(
 ): Score {
   return {
     total,
+    preferenceAdjustment: 0,
     value: 0,
     safety: 0,
     dataQuality: 0,

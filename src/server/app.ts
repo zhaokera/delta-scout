@@ -18,6 +18,7 @@ import {
   parseManualExclusionInput,
   type ReviewedListing
 } from "../domain/manualReview.js";
+import { summarizeReviewedListing } from "../domain/listingSummary.js";
 import { compareRecommendations } from "../domain/score.js";
 import {
   BROWSER_REFRESH_LIMITS,
@@ -749,9 +750,11 @@ export function createApp(dependencies?: AppDependencies): Express {
       );
     }
     response.json(
-      view === "pool"
-        ? candidatePool(snapshot, mode)
-        : listings.sort(compareRecommendations)
+      (
+        view === "pool"
+          ? candidatePool(snapshot, mode)
+          : listings.sort(compareRecommendations)
+      ).map(summarizeReviewedListing)
     );
   });
 

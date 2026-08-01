@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
-import type { ReviewedListing } from "../../domain/manualReview";
+import type { ReviewedListingSummary } from "../../domain/listingSummary";
+import { manualPreferenceAdjustment } from "../../domain/manualPreference";
 
 const SOURCE_LABELS = {
   jiaoyimao: "交易猫",
@@ -20,7 +21,7 @@ const RARE_FINISH_LABELS = {
   candy: "糖果"
 } as const;
 
-function listingName(listing: ReviewedListing): string {
+function listingName(listing: ReviewedListingSummary): string {
   return listing.sourceListingId ?? listing.title.slice(0, 18);
 }
 
@@ -38,7 +39,7 @@ function yesNoUnknown(
   return value === null ? "待核验" : value ? yes : no;
 }
 
-function m7Label(listing: ReviewedListing): string {
+function m7Label(listing: ReviewedListingSummary): string {
   if (listing.m7PrismStatus === "peak") {
     return `极品${listing.m7PrismQuality ?? "待核验"}`;
   }
@@ -54,7 +55,7 @@ export function CompareTray({
   onClear,
   onOpen
 }: {
-  listings: ReviewedListing[];
+  listings: ReviewedListingSummary[];
   onRemove(key: string): void;
   onClear(): void;
   onOpen(): void;
@@ -103,7 +104,7 @@ export function CandidateCompareDialog({
   onRemove,
   onClose
 }: {
-  listings: ReviewedListing[];
+  listings: ReviewedListingSummary[];
   onRemove(key: string): void;
   onClose(): void;
 }) {
@@ -207,6 +208,13 @@ export function CandidateCompareDialog({
                     <small>推荐分</small>
                     <strong>{score ?? "—"}</strong>
                     {isBestScore ? <em>最高分</em> : null}
+                    {listing.score &&
+                    manualPreferenceAdjustment(listing.score) < 0 ? (
+                      <span className="preference-adjustment">
+                        人工偏好{" "}
+                        {manualPreferenceAdjustment(listing.score)}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
 

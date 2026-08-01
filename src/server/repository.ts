@@ -31,6 +31,7 @@ import {
   type ManualListingReview,
   type ReviewedListing
 } from "../domain/manualReview.js";
+import { applyManualPreferenceFeedback } from "../domain/manualPreference.js";
 import { scoreEligibleListings } from "../domain/score.js";
 import { parseStoredListing } from "./storedListing.js";
 
@@ -1912,15 +1913,21 @@ export class ListingRepository {
   }
 
   getReviewedListings(eligibility?: Eligibility): ReviewedListing[] {
+    const latestReviews = this.getLatestManualReviewRows();
     const reviews = new Map(
-      this.getLatestManualReviewRows().map((review) => [
+      latestReviews.map((review) => [
         review.listing_key,
         review
       ])
     );
-    return this.getListings(eligibility).map((listing) =>
+    const decorated = this.getListings(eligibility).map((listing) =>
       this.decorateListing(listing, reviews.get(listing.key))
     );
+    const feedback =
+      eligibility === undefined || eligibility === "eligible"
+        ? decorated
+        : this.getActiveFeedbackListings(latestReviews);
+    return applyManualPreferenceFeedback(decorated, feedback);
   }
 
   getReviewedListing(key: string): ReviewedListing | null {
@@ -1928,10 +1935,15 @@ export class ListingRepository {
     if (listing === null) {
       return null;
     }
-    return this.decorateListing(
-      listing,
-      this.getLatestManualReviewRow(key)
+    const latestReviews = this.getLatestManualReviewRows();
+    const reviews = new Map(
+      latestReviews.map((review) => [review.listing_key, review])
     );
+    const decorated = this.decorateListing(listing, reviews.get(key));
+    return applyManualPreferenceFeedback(
+      [decorated],
+      this.getActiveFeedbackListings(latestReviews)
+    )[0];
   }
 
   excludeListing(
@@ -2046,6 +2058,18 @@ export class ListingRepository {
         LIMIT 1
       `)
       .get(key) as unknown as ManualReviewRow | undefined;
+  }
+
+  private getActiveFeedbackListings(
+    latestReviews: readonly ManualReviewRow[]
+  ): ReviewedListing[] {
+    return latestReviews.flatMap((review) => {
+      if (review.action !== "exclude") return [];
+      const listing = this.getListing(review.listing_key);
+      return listing === null
+        ? []
+        : [this.decorateListing(listing, review)];
+    });
   }
 
   private decorateListing(

@@ -29,6 +29,11 @@ import type {
   ManualExclusionInput,
   ReviewedListing
 } from "../../src/domain/manualReview";
+import {
+  isReviewedListingSummary,
+  summarizeReviewedListing,
+  type ReviewedListingSummary
+} from "../../src/domain/listingSummary";
 import { makeListing, makeScore } from "../domain/listingFactory";
 
 function makeSourceStatus(
@@ -93,7 +98,9 @@ function makeApi({
   getListings?: (
     view: ListingView,
     mode?: PoolMode
-  ) => Promise<Array<Listing | ReviewedListing>>;
+  ) => Promise<Array<
+    Listing | ReviewedListing | ReviewedListingSummary
+  >>;
   getListing?: (
     key: string
   ) => Promise<Listing | ReviewedListing>;
@@ -120,18 +127,25 @@ function makeApi({
   const resolveListings: ScoutApi["getListings"] = async (
     view,
     mode
-  ) => (await getListings(view, mode)).map(asReviewedListing);
-  const resolveListing =
+  ) => (await getListings(view, mode)).map((listing) =>
+    isReviewedListingSummary(listing)
+      ? listing
+      : asReviewedListing(listing)
+  );
+  const resolveListing: ScoutApi["getListing"] =
     getListing
       ? async (key: string) =>
           asReviewedListing(await getListing(key))
       : async (key: string) => {
-          const listings = await resolveListings("pool");
+          const listings = await getListings("pool");
           const listing = listings.find(
             (candidate) => candidate.key === key
           );
           if (!listing) throw new Error("not found");
-          return listing;
+          if (isReviewedListingSummary(listing)) {
+            throw new Error("full detail not configured");
+          }
+          return asReviewedListing(listing);
         };
   const resolveHistory =
     getListingHistory ??
@@ -914,6 +928,47 @@ describe("App shell", () => {
 
     expect(within(detail).getByText("999M")).toBeInTheDocument();
     expect(within(detail).queryByText("111M")).not.toBeInTheDocument();
+  });
+
+  it("loads full evidence only after a lightweight summary is opened", async () => {
+    const full = asReviewedListing(makeListing({
+      key: "jiaoyimao:summary-detail",
+      source: "jiaoyimao",
+      sourceListingId: "SUMMARY-DETAIL",
+      totalAssetsM: 888
+    }));
+    const summary = summarizeReviewedListing(full);
+    const pendingDetail = deferred<ReviewedListing>();
+    const api = makeApi({
+      getListings: async () => [summary],
+      getListing: async () => pendingDetail.promise
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: /SUMMARY-DETAIL/
+      })
+    );
+
+    expect(
+      screen.getByText("正在按需读取完整证据")
+    ).toBeInTheDocument();
+    expect(api.getListing).toHaveBeenCalledWith(full.key);
+
+    await act(async () => {
+      pendingDetail.resolve(full);
+    });
+    const detailPanel = screen.getByRole("complementary", {
+      name: "候选详情"
+    });
+    expect(
+      await within(detailPanel).findByText("888M")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("正在按需读取完整证据")
+    ).not.toBeInTheDocument();
   });
 
   it("shows the real pool size, source contributions, and account evidence", async () => {
@@ -1872,7 +1927,7 @@ describe("App shell", () => {
     );
     expect(
       await screen.findByText(
-        "已恢复 MANUAL-2，将按原评分重新参与排名"
+        "已恢复 MANUAL-2，将按当前规则重新参与排名"
       )
     ).toBeInTheDocument();
     expect(

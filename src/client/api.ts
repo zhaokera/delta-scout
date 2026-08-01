@@ -5,6 +5,7 @@ import type {
   ManualExclusionInput,
   ReviewedListing
 } from "../domain/manualReview";
+import type { ReviewedListingSummary } from "../domain/listingSummary";
 import type {
   ListingFieldChange,
   ListingHistorySnapshot
@@ -189,7 +190,7 @@ export interface ScoutApi {
   getListings(
     view: ListingView,
     mode?: PoolMode
-  ): Promise<ReviewedListing[]>;
+  ): Promise<ReviewedListingSummary[]>;
   getListing(key: string): Promise<ReviewedListing>;
   getListingHistory(key: string, limit?: number): Promise<ListingHistoryView>;
   excludeListing(
@@ -485,7 +486,7 @@ export const httpScoutApi: ScoutApi = {
   getSources: (mode = "balanced") =>
     requestJson<SourceStatusView[]>(`/api/sources?mode=${mode}`),
   getListings: (view, mode = "balanced") =>
-    requestJson<ReviewedListing[]>(
+    requestJson<ReviewedListingSummary[]>(
       `/api/listings?${LISTING_QUERIES[view]}${
         view === "pool" && mode === "global" ? "&mode=global" : ""
       }`

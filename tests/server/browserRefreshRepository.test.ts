@@ -15,6 +15,7 @@ import type {
   BrowserListBatch,
   BrowserLoadEvent
 } from "../../src/server/browserRefresh/contracts.js";
+import { makeListing } from "../domain/listingFactory.js";
 
 const now = new Date("2026-07-30T10:00:00.000Z");
 const filterUrl =
@@ -540,6 +541,48 @@ describe("BrowserRefreshRepository staging", () => {
         items: [{ ...batch.items[0], title: "变更后的内容" }]
       }, now)
     ).toThrow(/sequence|hash|序号/i);
+  });
+
+  it("reads reusable details only for required listing keys", () => {
+    const { database, repository } = makeRepository();
+    const listingRepository = new ListingRepository(database);
+    const sourceListingId = "1785384225212552";
+    listingRepository.replaceSourceSnapshot(
+      "jiaoyimao",
+      [
+        makeListing({
+          key: `jiaoyimao:${sourceListingId}`,
+          source: "jiaoyimao",
+          sourceListingId,
+          url:
+            `https://www.jiaoyimao.com/jg2007840/${sourceListingId}.html`,
+          title: `商品 ${sourceListingId}`,
+          originalDescription:
+            "商品卡片可见文本 QQ 官服 M7 棱镜攻势 极品A",
+          capturedAt: new Date(now.getTime() - 60_000).toISOString(),
+          verificationAt: now.toISOString()
+        }),
+        makeListing({
+          key: "jiaoyimao:unrelated",
+          source: "jiaoyimao",
+          sourceListingId: "unrelated",
+          url: "https://www.jiaoyimao.com/jg2007840/unrelated.html"
+        })
+      ],
+      "success",
+      now
+    );
+    database.prepare(`
+      UPDATE listings SET payload = '{broken-json'
+      WHERE listing_key = 'jiaoyimao:unrelated'
+    `).run();
+
+    const { id } = claim(repository);
+    repository.saveFilterProof(id, proof(), now);
+    repository.acceptListBatch(id, listBatch(1, sourceListingId), now);
+
+    expect([...repository.getReusableDetailListings(id, now).keys()])
+      .toEqual([sourceListingId]);
   });
 
   it("requires a staged list item before accepting detail evidence", () => {

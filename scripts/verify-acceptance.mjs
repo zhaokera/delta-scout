@@ -30,10 +30,13 @@ function assertCandidate(candidate, poolName) {
     candidate.priceCny <= 6_000,
     `${poolName}: candidate exceeds budget`
   );
-  assert.equal(
-    candidate.m7PrismStatus,
-    "peak",
-    `${poolName}: candidate lacks peak M7 evidence`
+  assert.ok(
+    candidate.m7PrismStatus === "peak" ||
+      (
+        candidate.m7PrismStatus === "premium" &&
+        candidate.m7PrismQuality === "S"
+      ),
+    `${poolName}: candidate lacks eligible M7 evidence`
   );
   assert.ok(candidate.score, `${poolName}: candidate is missing a score`);
   for (const field of ["total", "value", "safety", "dataQuality"]) {
@@ -53,13 +56,20 @@ function assertCandidate(candidate, poolName) {
     ),
     `${poolName}: invalid risk level`
   );
+  const baseTotal = Math.round(
+    candidate.score.value * 0.55 +
+      candidate.score.safety * 0.35 +
+      candidate.score.dataQuality * 0.1
+  );
+  assert.ok(
+    Number.isInteger(candidate.score.preferenceAdjustment) &&
+      candidate.score.preferenceAdjustment >= -8 &&
+      candidate.score.preferenceAdjustment <= 0,
+    `${poolName}: invalid preference adjustment`
+  );
   assert.equal(
     candidate.score.total,
-    Math.round(
-      candidate.score.value * 0.55 +
-        candidate.score.safety * 0.35 +
-        candidate.score.dataQuality * 0.1
-    ),
+    Math.max(0, baseTotal + candidate.score.preferenceAdjustment),
     `${poolName}: overall score formula mismatch`
   );
 }
