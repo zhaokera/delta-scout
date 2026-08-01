@@ -2143,9 +2143,7 @@ export class ListingRepository {
           eligibility: classifyListing({
             loginPlatform: listing.loginPlatform,
             service: listing.service,
-            priceCny: listing.priceCny,
-            m7PrismStatus,
-            m7PrismQuality
+            priceCny: listing.priceCny
           }),
           score: null,
           possibleDuplicateKeys: []

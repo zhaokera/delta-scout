@@ -283,7 +283,7 @@ function validateFilterProof(value) {
     "gameLabel",
     "platformLabel",
     "categoryLabel",
-    "m7FilterLabels",
+    "activeFilterLabels",
     "observedAt"
   ]);
   const filterUrl = parseApprovedUrl(proof.currentUrl);
@@ -292,14 +292,10 @@ function validateFilterProof(value) {
   assertSafeText(proof.platformLabel, 1, 100);
   assertSafeText(proof.categoryLabel, 1, 100);
   if (
-    !Array.isArray(proof.m7FilterLabels) ||
-    proof.m7FilterLabels.length < 5 ||
-    proof.m7FilterLabels.length > 8
+    !Array.isArray(proof.activeFilterLabels) ||
+    proof.activeFilterLabels.length !== 0
   ) {
     throw bridgeError();
-  }
-  for (const label of proof.m7FilterLabels) {
-    assertSafeText(label, 1, 100);
   }
   assertIsoTimestamp(proof.observedAt);
   return proof;

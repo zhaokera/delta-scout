@@ -13,7 +13,6 @@ export interface ListingSummary {
   title: string;
   rawText: string;
   priceCny: number | null;
-  detailFetchHint?: "m7_prism_query";
   embeddedDetail?: ListingDetail;
 }
 

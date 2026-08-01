@@ -55,8 +55,8 @@ class PxbFixtureFetcher implements PageFetcher {
   }
 }
 
-describe("PXB7 single-select collection", () => {
-  it("runs every quality query even when later pages contain only duplicates", async () => {
+describe("PXB7 broad account collection", () => {
+  it("pages one broad query and scores every account under the hard conditions", async () => {
     const fetcher = new PxbFixtureFetcher(
       await fixture("pxb7-home.html"),
       new Map([
@@ -80,29 +80,19 @@ describe("PXB7 single-select collection", () => {
     const listRequests = fetcher.requests.filter(
       ({ url }) => url.includes("selectSearchPageList")
     );
-    expect(listRequests).toHaveLength(15);
+    expect(listRequests).toHaveLength(3);
     expect(
       listRequests.map(({ options }) => {
         const body = JSON.parse(options?.body ?? "{}");
         return [body.query, body.pageIndex];
       })
-    ).toEqual(
-      [
-        "极品 S",
-        "极品 A",
-        "极品 B",
-        "极品 C",
-        "优品 S"
-      ].flatMap((quality) =>
-        [1, 2, 3].map((pageIndex) => [
-          `M7战斗步枪-棱镜攻势S2 ${quality}`,
-          pageIndex
-        ])
-      )
-    );
+    ).toEqual([1, 2, 3].map((pageIndex) => [
+      "三角洲行动",
+      pageIndex
+    ]));
     expect(listings).toHaveLength(48);
     expect(new Set(listings.map(({ key }) => key))).toHaveLength(48);
-    expect(eligible).toHaveLength(24);
+    expect(eligible).toHaveLength(36);
     expect(
       eligible.every(
         (listing) =>
@@ -111,10 +101,6 @@ describe("PXB7 single-select collection", () => {
           listing.service === "official" &&
           listing.priceCny !== null &&
           listing.priceCny <= 6_000 &&
-          listing.m7PrismStatus === "peak" &&
-          ["S", "A", "B", "C"].includes(
-            listing.m7PrismQuality ?? ""
-          ) &&
           listing.url ===
             `https://www.pxb7.com/product/${listing.sourceListingId}/1`
       )

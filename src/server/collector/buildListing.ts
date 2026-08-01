@@ -69,11 +69,7 @@ function parseHafCoins(text: string): number | null {
 export function shouldFetchListingDetail(
   summary: ListingSummary
 ): boolean {
-  return (
-    (summary.priceCny === null || summary.priceCny <= 6_000) &&
-    (summary.detailFetchHint === "m7_prism_query" ||
-      (/M7/i.test(summary.rawText) && /棱镜/.test(summary.rawText)))
-  );
+  return summary.priceCny === null || summary.priceCny <= 6_000;
 }
 
 export function buildListing(
@@ -92,14 +88,7 @@ export function buildListing(
       records.findIndex(({ text }) => text === record.text) === index
   );
   const combinedText = evidence.map(({ text }) => text).join("\n");
-  const parsedM7 = parseM7(evidence);
-  const m7 =
-    summary.detailFetchHint === "m7_prism_query" &&
-    detail === null &&
-    parsedM7.status === "absent" &&
-    parsedM7.evidence.length === 0
-      ? { ...parsedM7, status: "unknown" as const }
-      : parsedM7;
+  const m7 = parseM7(evidence);
   const redSkins = parseRedSkins(evidence);
   const julang = parseJulang(evidence);
   const rareM7 = parseM7RareFinishes(evidence);
@@ -162,9 +151,7 @@ export function buildListing(
   const classified = classifyListing({
     loginPlatform,
     service,
-    priceCny: summary.priceCny,
-    m7PrismStatus: m7.status,
-    m7PrismQuality: m7.quality ?? null
+    priceCny: summary.priceCny
   });
   const eligibility =
     shouldFetchListingDetail(summary) &&

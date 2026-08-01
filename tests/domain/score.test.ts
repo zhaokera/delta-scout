@@ -12,9 +12,9 @@ describe("scoreEligibleListings", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 76,
+      total: 75,
       preferenceAdjustment: 0,
-      value: 56,
+      value: 54,
       safety: 100,
       dataQuality: 100,
       riskLevel: "low",
@@ -23,8 +23,8 @@ describe("scoreEligibleListings", () => {
         totalSafetySignals: 3
       },
       parts: {
-        m7: 13,
-        redSkins: 5,
+        m7: 10,
+        redSkins: 6,
         julang: 20,
         price: 12.5,
         assets: 5.5,
@@ -66,10 +66,10 @@ describe("scoreEligibleListings", () => {
   });
 
   it.each([
-    ["S", 16],
-    ["A", 13],
-    ["B", 10],
-    ["C", 8],
+    ["S", 12],
+    ["A", 10],
+    ["B", 8],
+    ["C", 6],
     [null, 0]
   ] as const)("scores M7 quality %s explicitly", (quality, expected) => {
     const [result] = scoreEligibleListings([
@@ -85,7 +85,7 @@ describe("scoreEligibleListings", () => {
     expect(result.score?.parts.m7).toBe(expected);
     if (quality === null) {
       expect(result.score?.valueReasons.join(" ")).toContain(
-        "极品品质待核验"
+        "M7 极品品质待核验"
       );
     }
   });
@@ -102,13 +102,13 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.parts.m7).toBe(6);
+    expect(result.score?.parts.m7).toBe(5);
     expect(result.score?.valueReasons.join(" ")).toContain(
-      "M7 优品S，品质价值 6.0/16"
+      "M7 优品S，品质价值 5.0/12"
     );
   });
 
-  it("adds one non-stacking four-point bonus for trusted M7 finishes", () => {
+  it("adds one non-stacking three-point bonus for trusted M7 finishes", () => {
     const [untagged] = scoreEligibleListings([
       makeListing({
         key: "panzhi:untagged",
@@ -131,18 +131,18 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(untagged.score?.parts.m7).toBe(13);
-    expect(tagged.score?.parts.m7).toBe(17);
-    expect(multiTagged.score?.parts.m7).toBe(20);
+    expect(untagged.score?.parts.m7).toBe(10);
+    expect(tagged.score?.parts.m7).toBe(13);
+    expect(multiTagged.score?.parts.m7).toBe(15);
     expect(tagged.score?.parts).not.toHaveProperty("m7RareFinish");
     expect(tagged.score?.valueReasons.join(" ")).toContain(
-      "品质价值 13.0/16"
+      "品质价值 10.0/12"
     );
     expect(tagged.score?.valueReasons.join(" ")).toContain(
-      "M7 稀有模板：珠光 M7，价值 4.0/4"
+      "M7 稀有模板：珠光 M7，价值 3.0/3"
     );
     expect(untagged.score?.valueReasons.join(" ")).toContain(
-      "M7 稀有模板待核验，价值 0.0/4"
+      "M7 稀有模板未发现，价值 0.0/3"
     );
   });
 
@@ -179,7 +179,7 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.parts.redSkins).toBe(25);
+    expect(result.score?.parts.redSkins).toBe(30);
     expect(result.score?.parts.julang).toBe(20);
     expect(result.score?.valueReasons.join(" ")).toContain(
       "5 个已识别角色红皮"
@@ -261,12 +261,28 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.value).toBe(28.5);
+    expect(result.score?.value).toBe(24.5);
     expect(result.score?.safety).toBe(40);
     expect(result.score?.dataQuality).toBe(80);
     expect(result.score?.total).toBe(
-      Math.round(28.5 * 0.55 + 40 * 0.35 + 80 * 0.1)
+      Math.round(24.5 * 0.55 + 40 * 0.35 + 80 * 0.1)
     );
+  });
+
+  it("keeps an otherwise eligible account without M7 in unified scoring", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        m7PrismStatus: "absent",
+        m7PrismQuality: null,
+        m7Evidence: [],
+        redSkins: ["威龙", "红狼"],
+        redSkinCount: 2
+      })
+    ], now);
+
+    expect(result.score?.parts.m7).toBe(0);
+    expect(result.score?.parts.redSkins).toBe(12);
+    expect(result.score?.valueReasons.join(" ")).toContain("M7 未发现");
   });
 
   it("sorts ties by confidence, price, capture time, then URL", () => {

@@ -243,7 +243,7 @@ const SAFE_API_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   action_permit_invalid: "一次性操作许可无效或已过期",
   invalid_manual_review: "人工淘汰信息无效",
   listing_not_found: "候选不存在或已下架",
-  listing_not_eligible: "该账号不满足候选硬条件，不能人工淘汰",
+  listing_not_eligible: "该账号不满足 QQ 官服与预算条件，不能人工淘汰",
   manual_review_failed: "人工淘汰操作失败，请稍后重试"
 };
 

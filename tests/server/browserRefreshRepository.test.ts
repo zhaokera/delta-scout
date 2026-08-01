@@ -27,7 +27,7 @@ function proof(at = now): BrowserFilterProof {
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", "优品S"],
+    activeFilterLabels: [],
     observedAt: at.toISOString()
   };
 }

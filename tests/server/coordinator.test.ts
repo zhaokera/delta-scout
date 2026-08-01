@@ -877,7 +877,7 @@ describe("CollectionCoordinator", () => {
     expect(listing).toMatchObject({
       m7PrismStatus: "premium",
       m7PrismQuality: "B",
-      eligibility: "rejected"
+      eligibility: "eligible"
     });
   });
 
@@ -895,7 +895,7 @@ describe("CollectionCoordinator", () => {
     });
   });
 
-  it("trusts a successful hinted detail without M7 as absent", async () => {
+  it("trusts a successful detail without M7 as an eligible quality tag", async () => {
     const { listing } = await collectJiaoyimaoMtopItem(
       "QQ官服 普通账号"
     );
@@ -903,7 +903,7 @@ describe("CollectionCoordinator", () => {
     expect(listing).toMatchObject({
       m7PrismStatus: "absent",
       m7PrismQuality: null,
-      eligibility: "rejected",
+      eligibility: "eligible",
       parseWarnings: []
     });
   });
@@ -920,14 +920,14 @@ describe("CollectionCoordinator", () => {
       "详情解析受阻：structure_changed"
     ]
   ] as const)(
-    "keeps a hinted MTop listing in review after %s",
+    "keeps an MTop listing in review after %s",
     async (_label, failure, warning) => {
       const { fetcher, listing, detailUrl } =
         await collectJiaoyimaoMtopItem("", failure);
 
       expect(fetcher.calls.map(({ url }) => url)).toContain(detailUrl);
       expect(listing).toMatchObject({
-        m7PrismStatus: "unknown",
+        m7PrismStatus: "absent",
         m7PrismQuality: null,
         eligibility: "needs_verification",
         parseWarnings: [warning]
@@ -950,9 +950,7 @@ describe("CollectionCoordinator", () => {
       new Date("2026-07-28T12:00:00.000Z")
     );
     const items = Array.from({ length: 3 }, (_, index) =>
-      summaryForSource("jiaoyimao", index + 1, {
-        detailFetchHint: "m7_prism_query"
-      })
+      summaryForSource("jiaoyimao", index + 1)
     );
     const adapter = fakeAdapter({
       source: "jiaoyimao",
@@ -994,9 +992,7 @@ describe("CollectionCoordinator", () => {
   it("keeps substantial fresh data as partial after a late detail circuit break", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const items = Array.from({ length: 23 }, (_, index) =>
-      summaryForSource("jiaoyimao", index + 1, {
-        detailFetchHint: "m7_prism_query"
-      })
+      summaryForSource("jiaoyimao", index + 1)
     );
     const adapter = fakeAdapter({
       source: "jiaoyimao",
@@ -1036,21 +1032,30 @@ describe("CollectionCoordinator", () => {
     });
   });
 
-  it("keeps a truly unhinted summary without M7 evidence rejected", async () => {
+  it("keeps a fully verified account without M7 eligible", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
+    const item = {
+      ...summary(),
+      rawText: "QQ官服 普通账号"
+    };
     const adapter = fakeAdapter({
       parseList: () => ({
         kind: "ok",
-        items: [{
-          ...summary(),
-          rawText: "QQ官服 普通账号"
-        }]
+        items: [item]
+      }),
+      parseDetail: () => ({
+        kind: "ok",
+        detail: {
+          ...listingDetail(),
+          evidence: [{ text: "QQ官服 普通账号", truncated: false }]
+        }
       })
     });
     const fetcher = new MapFetcher(
       new Map([
         [adapter.entryUrl, ok(adapter.entryUrl, "home")],
-        ["https://source.test/list/1", ok("https://source.test/list/1", "list")]
+        ["https://source.test/list/1", ok("https://source.test/list/1", "list")],
+        [item.url, ok(item.url, "detail")]
       ])
     );
 
@@ -1063,16 +1068,15 @@ describe("CollectionCoordinator", () => {
     expect(repository.getListings()[0]).toMatchObject({
       m7PrismStatus: "absent",
       m7PrismQuality: null,
-      eligibility: "rejected"
+      eligibility: "eligible"
     });
   });
 
-  it("keeps explicit negative M7 evidence rejected after hinted detail failure", async () => {
+  it("keeps an account pending when its required detail fetch fails", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const item = {
       ...summary(),
-      rawText: "QQ官服 M7无棱镜攻势",
-      detailFetchHint: "m7_prism_query" as const
+      rawText: "QQ官服 M7无棱镜攻势"
     };
     const adapter = fakeAdapter({
       parseList: () => ({ kind: "ok", items: [item] })
@@ -1097,7 +1101,7 @@ describe("CollectionCoordinator", () => {
     expect(repository.getListings()[0]).toMatchObject({
       m7PrismStatus: "absent",
       m7PrismQuality: null,
-      eligibility: "rejected"
+      eligibility: "needs_verification"
     });
   });
 
@@ -1105,8 +1109,7 @@ describe("CollectionCoordinator", () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const items = Array.from({ length: 21 }, (_, index) => ({
       ...summary(index + 1),
-      rawText: "QQ官服 查询匹配",
-      detailFetchHint: "m7_prism_query" as const
+      rawText: "QQ官服 查询匹配"
     }));
     const adapter = fakeAdapter({
       parseList: () => ({ kind: "ok", items })
@@ -1220,7 +1223,8 @@ describe("CollectionCoordinator", () => {
         items: [
           {
             ...summary(),
-            rawText: "QQ官服 普通账号"
+            rawText: "QQ官服 普通账号",
+            embeddedDetail: listingDetail()
           }
         ]
       }),
@@ -1469,7 +1473,7 @@ describe("CollectionCoordinator", () => {
           sourceListingId: "old",
           score: {
             ...makeScore(90, {
-              m7: 20,
+              m7: 15,
               redSkins: 15,
               julang: 15,
               price: 15,
@@ -1538,7 +1542,7 @@ describe("CollectionCoordinator", () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const oldScore = {
       ...makeScore(99, {
-        m7: 20,
+        m7: 15,
         redSkins: 20,
         julang: 15,
         price: 20,
@@ -1661,7 +1665,8 @@ describe("CollectionCoordinator", () => {
         `page-${pageIndex + 1}`,
         Array.from({ length: 16 }, (_, itemIndex) => ({
           ...summary(pageIndex * 16 + itemIndex + 1),
-          rawText: "QQ官服 普通账号"
+          rawText: "QQ官服 普通账号",
+          embeddedDetail: listingDetail()
         }))
       ])
     );
@@ -1709,7 +1714,8 @@ describe("CollectionCoordinator", () => {
       url: "https://SOURCE.test/detail/1?b=2&a=1",
       title: "第一页有效标题",
       rawText: "QQ官服 普通账号",
-      priceCny: 1_888
+      priceCny: 1_888,
+      embeddedDetail: listingDetail()
     };
     const duplicate = {
       ...first,
@@ -1761,7 +1767,8 @@ describe("CollectionCoordinator", () => {
       sourceListingId: null,
       url: "https://source.test/detail/shared",
       title: "无 ID 的首条有效记录",
-      rawText: "QQ官服 普通账号"
+      rawText: "QQ官服 普通账号",
+      embeddedDetail: listingDetail()
     };
     const withId = {
       ...withoutId,
@@ -1914,7 +1921,8 @@ describe("CollectionCoordinator", () => {
         kind: "ok",
         items: [{
           ...summary(Number(html.replace("page-", ""))),
-          rawText: "QQ官服 普通账号"
+          rawText: "QQ官服 普通账号",
+          embeddedDetail: listingDetail()
         }]
       }),
       nextPage: (html) => ({
@@ -1949,11 +1957,43 @@ describe("CollectionCoordinator", () => {
     });
   });
 
+  it("keeps a broad 501-item catalog complete with the default detail limit", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const items = Array.from({ length: 501 }, (_, index) => ({
+      ...summary(index + 1),
+      rawText: "QQ官服 普通账号"
+    }));
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items })
+    });
+    const fetcher = new RoutingFetcher((request) =>
+      ok(request.url, request.url.includes("/detail/") ? "detail" : "list")
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(
+      fetcher.calls.filter(({ url }) => url.includes("/detail/"))
+    ).toHaveLength(501);
+    expect(repository.getListings()).toHaveLength(501);
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "success",
+      itemCount: 501,
+      pagesScanned: 1,
+      stopReason: "end_of_pages"
+    });
+  });
+
   it("keeps the first unique summaries at an injected summary safety limit", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const items = Array.from({ length: 5 }, (_, index) => ({
       ...summary(index + 1),
-      rawText: "QQ官服 普通账号"
+      rawText: "QQ官服 普通账号",
+      embeddedDetail: listingDetail()
     }));
     const adapter = fakeAdapter({
       parseList: () => ({ kind: "ok", items })
@@ -1982,12 +2022,11 @@ describe("CollectionCoordinator", () => {
     });
   });
 
-  it("keeps deferred hinted items in review at an injected detail safety limit", async () => {
+  it("keeps deferred items in review at an injected detail safety limit", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const items = Array.from({ length: 5 }, (_, index) => ({
       ...summary(index + 1),
-      rawText: "QQ官服 查询匹配",
-      detailFetchHint: "m7_prism_query" as const
+      rawText: "QQ官服 查询匹配"
     }));
     const adapter = fakeAdapter({
       parseList: () => ({ kind: "ok", items })
@@ -2014,7 +2053,7 @@ describe("CollectionCoordinator", () => {
         .find(({ sourceListingId }) => sourceListingId === "S5")
     ).toMatchObject({
       eligibility: "needs_verification",
-      m7PrismStatus: "unknown",
+      m7PrismStatus: "absent",
       parseWarnings: ["达到详情采集上限，待人工核验"]
     });
     expect(sourceStatus(repository)).toMatchObject({

@@ -31,7 +31,6 @@ export function hasCompleteKeyEvidence(
 ): boolean {
   return (
     listing.priceCny !== null &&
-    listing.m7PrismQuality !== null &&
     listing.secondRealNameAvailable !== null &&
     listing.recoveryCoverage !== null &&
     listing.verificationAt !== null

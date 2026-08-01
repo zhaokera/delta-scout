@@ -17,47 +17,7 @@ import {
 
 const BASE_URL = "https://www.pzds.com/";
 const CATALOG_PATH = "/goodsList/391/6";
-const SINGLE_SELECT_SEARCH_TERMS = [
-  "M7战斗步枪-棱镜攻势S2 极品 S",
-  "M7战斗步枪-棱镜攻势S2 极品 A",
-  "M7战斗步枪-棱镜攻势S2 极品 B",
-  "M7战斗步枪-棱镜攻势S2 极品 C",
-  "M7战斗步枪-棱镜攻势S2 优品 S",
-  "M7战斗步枪-棱镜攻势S2"
-] as const;
-
-function makePanzhiSearchRequest(index: number): { url: string } {
-  return {
-    url: new URL(
-      `${CATALOG_PATH}/headerSearch/${encodeURIComponent(
-        SINGLE_SELECT_SEARCH_TERMS[index]
-      )}`,
-      BASE_URL
-    ).toString()
-  };
-}
-
-function panzhiSearchIndex(requestUrl: string): number {
-  let url: URL;
-  try {
-    url = new URL(requestUrl);
-  } catch {
-    return -1;
-  }
-  if (
-    url.origin !== "https://www.pzds.com" ||
-    url.username ||
-    url.password ||
-    url.port ||
-    url.search ||
-    url.hash
-  ) {
-    return -1;
-  }
-  return SINGLE_SELECT_SEARCH_TERMS.findIndex(
-    (_term, index) => url.toString() === makePanzhiSearchRequest(index).url
-  );
-}
+const CATALOG_URL = new URL(CATALOG_PATH, BASE_URL).toString();
 
 function parsePanzhiDetailLink(
   href: string
@@ -244,7 +204,7 @@ export const panzhiAdapter: SourceAdapter = {
     ) {
       return { kind: "blocked", reason: "catalog_not_found" };
     }
-    return { kind: "ok", request: makePanzhiSearchRequest(0) };
+    return { kind: "ok", request: { url: CATALOG_URL } };
   },
 
   parseList(html) {
@@ -284,7 +244,7 @@ export const panzhiAdapter: SourceAdapter = {
     return { kind: "blocked", reason: "structure_changed" };
   },
 
-  nextPage(html, currentRequest) {
+  nextPage(html, _currentRequest) {
     const $ = load(html);
     if (isBlockedHtml(html) || isPanzhiLoginWall($)) {
       return null;
@@ -296,12 +256,7 @@ export const panzhiAdapter: SourceAdapter = {
       return null;
     }
 
-    const currentIndex = panzhiSearchIndex(currentRequest.url);
-    const nextIndex = currentIndex + 1;
-    return currentIndex >= 0 &&
-      nextIndex < SINGLE_SELECT_SEARCH_TERMS.length
-      ? makePanzhiSearchRequest(nextIndex)
-      : null;
+    return null;
   },
 
   detailRequest(summary) {

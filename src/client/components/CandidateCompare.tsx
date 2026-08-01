@@ -46,6 +46,8 @@ function m7Label(listing: ReviewedListingSummary): string {
   if (listing.m7PrismStatus === "premium") {
     return `优品${listing.m7PrismQuality ?? "待核验"}`;
   }
+  if (listing.m7PrismStatus === "absent") return "未发现";
+  if (listing.m7PrismStatus === "conflicting") return "证据冲突";
   return "待核验";
 }
 

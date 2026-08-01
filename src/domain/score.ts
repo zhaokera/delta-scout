@@ -1,5 +1,11 @@
 import type { Listing, Score } from "./listing.js";
 import { buildMidrankPercentiles } from "./percentile.js";
+import {
+  M7_PEAK_QUALITY_POINTS,
+  M7_PREMIUM_S_POINTS,
+  M7_RARE_FINISH_POINTS,
+  VALUE_SCORE_MAX
+} from "./scoreAllocation.js";
 
 interface NormalizationStats {
   prices: Map<number, number>;
@@ -30,13 +36,6 @@ function percentile(
   return value === null ? 0 : (percentiles.get(value) ?? 0);
 }
 
-const PEAK_QUALITY_POINTS = {
-  S: 16,
-  A: 13,
-  B: 10,
-  C: 8
-} as const;
-const PREMIUM_S_POINTS = 6;
 const M7_RARE_FINISH_LABELS = {
   pearl: "珠光 M7",
   iridescent: "炫彩 M7",
@@ -52,10 +51,13 @@ function verificationAgeDays(listing: Listing, now: Date): number | null {
 }
 
 function m7ValueReason(listing: Listing): string {
+  if (listing.m7PrismStatus === "absent") return "M7 未发现";
+  if (listing.m7PrismStatus === "unknown") return "M7 待核验";
+  if (listing.m7PrismStatus === "conflicting") return "M7 证据冲突";
   if (listing.m7PrismQuality === null) {
     return listing.m7PrismStatus === "premium"
-      ? "优品品质待核验"
-      : "极品品质待核验";
+      ? "M7 优品品质待核验"
+      : "M7 极品品质待核验";
   }
   const label =
     listing.m7PrismStatus === "premium" ? "优品" : "极品";
@@ -130,7 +132,8 @@ function scoreOne(
   const price =
     listing.priceCny === null
       ? 0
-      : (1 - percentile(listing.priceCny, stats.prices)) * 25;
+      : (1 - percentile(listing.priceCny, stats.prices)) *
+        VALUE_SCORE_MAX.price;
   const hasAssets =
     listing.totalAssetsM !== null || listing.hafCoins !== null;
   const assets =
@@ -142,16 +145,23 @@ function scoreOne(
       ? 0
       : listing.m7PrismStatus === "premium"
         ? listing.m7PrismQuality === "S"
-          ? PREMIUM_S_POINTS
+          ? M7_PREMIUM_S_POINTS
           : 0
-        : PEAK_QUALITY_POINTS[listing.m7PrismQuality];
-  const m7RareFinish = listing.m7RareFinishes.length > 0 ? 4 : 0;
+        : M7_PEAK_QUALITY_POINTS[listing.m7PrismQuality];
+  const m7RareFinish = listing.m7RareFinishes.length > 0
+    ? M7_RARE_FINISH_POINTS
+    : 0;
   const combinedM7 = m7Quality + m7RareFinish;
-  const m7 = combinedM7 > 20 ? 20 : combinedM7;
+  const m7 = combinedM7 > VALUE_SCORE_MAX.m7
+    ? VALUE_SCORE_MAX.m7
+    : combinedM7;
   const scoredRedSkinCount =
     listing.redSkins.length > 5 ? 5 : listing.redSkins.length;
-  const redSkins = scoredRedSkinCount * 5;
-  const julang = listing.julangStatus === "owned" ? 20 : 0;
+  const redSkins =
+    scoredRedSkinCount * (VALUE_SCORE_MAX.redSkins / 5);
+  const julang = listing.julangStatus === "owned"
+    ? VALUE_SCORE_MAX.julang
+    : 0;
   const value = m7 + redSkins + julang + price + assets;
   const safetyPartValues = safetyParts(listing, now);
   const safety =
@@ -180,16 +190,16 @@ function scoreOne(
       ? "验号时间待核验"
       : `验号距今 ${Math.floor(safetyPartValues.verificationAge)} 天`;
   const valueReasons = [
-    `${m7ValueReason(listing)}，品质价值 ${m7Quality.toFixed(1)}/16`,
+    `${m7ValueReason(listing)}，品质价值 ${m7Quality.toFixed(1)}/${M7_PEAK_QUALITY_POINTS.S}`,
     listing.m7RareFinishes.length > 0
       ? `M7 稀有模板：${listing.m7RareFinishes
           .map((finish) => M7_RARE_FINISH_LABELS[finish])
-          .join(" · ")}，价值 ${m7RareFinish.toFixed(1)}/4`
-      : "M7 稀有模板待核验，价值 0.0/4",
-    `${listing.redSkins.length} 个已识别角色红皮，价值 ${redSkins.toFixed(1)}/25`,
-    `${julangReason}，价值 ${julang.toFixed(1)}/20`,
-    `价格合理性 ${price.toFixed(1)}/25`,
-    `可核验资产 ${assets.toFixed(1)}/10`
+          .join(" · ")}，价值 ${m7RareFinish.toFixed(1)}/${M7_RARE_FINISH_POINTS}`
+      : `M7 稀有模板未发现，价值 0.0/${M7_RARE_FINISH_POINTS}`,
+    `${listing.redSkins.length} 个已识别角色红皮，价值 ${redSkins.toFixed(1)}/${VALUE_SCORE_MAX.redSkins}`,
+    `${julangReason}，价值 ${julang.toFixed(1)}/${VALUE_SCORE_MAX.julang}`,
+    `价格合理性 ${price.toFixed(1)}/${VALUE_SCORE_MAX.price}`,
+    `可核验资产 ${assets.toFixed(1)}/${VALUE_SCORE_MAX.assets}`
   ];
   const safetyReasons = [
     booleanSafetyReason(

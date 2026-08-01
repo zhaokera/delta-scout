@@ -321,7 +321,7 @@ describe("App shell", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("QQ 官服")).toBeInTheDocument();
     expect(
-      screen.getByText("M7 棱镜攻势 · 极品 / 优品S")
+      screen.getByText("全账号统一评分 · M7 仅作品质标签")
     ).toBeInTheDocument();
     expect(screen.getByText("¥6,000 以内")).toBeInTheDocument();
   });
@@ -860,7 +860,7 @@ describe("App shell", () => {
       totalAssetsM: 999,
       score: {
         ...makeScore(95, {
-          m7: 20,
+          m7: 15,
           redSkins: 15,
           julang: 20,
           price: 23,
@@ -1491,7 +1491,7 @@ describe("App shell", () => {
     );
     expect(
       await screen.findByText(
-        "当前快照中没有满足 QQ 官服、¥6,000 以内与 M7 棱镜攻势极品或优品 S 条件的账号。"
+        "当前快照中没有同时证明 QQ 官服且价格不超过 ¥6,000 的账号。M7 不是入池门槛。"
       )
     ).toBeInTheDocument();
 

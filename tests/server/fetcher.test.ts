@@ -8,24 +8,7 @@ import {
 import type { SourceRequest } from "../../src/server/collector/types.js";
 
 const APPROVED_MTOP_BODY = JSON.stringify({
-  searchCondition: JSON.stringify({
-    attr_7393855783477590029: {
-      selectType: 2,
-      multiSearchCondition: true,
-      conditionList: [],
-      childCondition: {
-        mp_7393855783922186253: {
-          "极品|S": ["M7战斗步枪-棱镜攻势S2"],
-          "极品|A": ["M7战斗步枪-棱镜攻势S2"],
-          "极品|B": ["M7战斗步枪-棱镜攻势S2"],
-          "极品|C": ["M7战斗步枪-棱镜攻势S2"],
-          "优品|S": ["M7战斗步枪-棱镜攻势S2"]
-        }
-      },
-      statConditionList: [],
-      conditionType: 3
-    }
-  }),
+  searchCondition: JSON.stringify({}),
   relateId: "10101",
   pageSize: 16,
   modelType: "h5",

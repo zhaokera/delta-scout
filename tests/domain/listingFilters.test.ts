@@ -18,19 +18,26 @@ const DEFAULT_FILTERS: ListingFilters = {
 };
 
 describe("listing filters", () => {
-  it("defines complete key evidence from the five purchase fields", () => {
+  it("defines complete key evidence from the four purchase fields", () => {
     const complete = makeListing();
 
     expect(hasCompleteKeyEvidence(complete)).toBe(true);
     for (const incomplete of [
       makeListing({ priceCny: null }),
-      makeListing({ m7PrismQuality: null }),
       makeListing({ secondRealNameAvailable: null }),
       makeListing({ recoveryCoverage: null }),
       makeListing({ verificationAt: null })
     ]) {
       expect(hasCompleteKeyEvidence(incomplete)).toBe(false);
     }
+  });
+
+  it("treats M7 as an optional quality tag", () => {
+    expect(hasCompleteKeyEvidence(makeListing({
+      m7PrismStatus: "absent",
+      m7PrismQuality: null,
+      m7Evidence: []
+    }))).toBe(true);
   });
 
   it("applies the existing platform and safety filters strictly", () => {

@@ -30,14 +30,6 @@ function assertCandidate(candidate, poolName) {
     candidate.priceCny <= 6_000,
     `${poolName}: candidate exceeds budget`
   );
-  assert.ok(
-    candidate.m7PrismStatus === "peak" ||
-      (
-        candidate.m7PrismStatus === "premium" &&
-        candidate.m7PrismQuality === "S"
-      ),
-    `${poolName}: candidate lacks eligible M7 evidence`
-  );
   assert.ok(candidate.score, `${poolName}: candidate is missing a score`);
   for (const field of ["total", "value", "safety", "dataQuality"]) {
     assert.equal(
@@ -72,6 +64,24 @@ function assertCandidate(candidate, poolName) {
     Math.max(0, baseTotal + candidate.score.preferenceAdjustment),
     `${poolName}: overall score formula mismatch`
   );
+  for (const [part, maximum] of Object.entries({
+    m7: 15,
+    redSkins: 30,
+    julang: 20,
+    price: 25,
+    assets: 10
+  })) {
+    assert.equal(
+      typeof candidate.score.parts[part],
+      "number",
+      `${poolName}: score.parts.${part} is missing`
+    );
+    assert.ok(
+      candidate.score.parts[part] >= 0 &&
+        candidate.score.parts[part] <= maximum,
+      `${poolName}: score.parts.${part} exceeds ${maximum}`
+    );
+  }
 }
 
 function assertUniqueKeys(listings, poolName) {

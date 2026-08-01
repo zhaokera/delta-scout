@@ -779,8 +779,7 @@ export class JiaoyimaoBrowserTaskService {
             url: item.url,
             title: item.title,
             rawText: item.rawText,
-            priceCny: item.priceCny,
-            detailFetchHint: "m7_prism_query"
+            priceCny: item.priceCny
           };
           const requiresDetail =
             item.priceCny === null || item.priceCny <= 6_000;

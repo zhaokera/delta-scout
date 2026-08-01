@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { VALUE_SCORE_MAX } from "./scoreAllocation.js";
 
 export const SourceIdSchema = z.enum(["jiaoyimao", "panzhi", "pxb7"]);
 export const LoginPlatformSchema = z.enum(["qq", "wechat", "unknown"]);
@@ -45,11 +46,11 @@ export const ScoreSchema = z.object({
     totalSafetySignals: z.literal(3)
   }),
   parts: z.object({
-    m7: z.number().min(0).max(20),
-    redSkins: z.number().min(0).max(25),
-    julang: z.number().min(0).max(20),
-    price: z.number().min(0).max(25),
-    assets: z.number().min(0).max(10),
+    m7: z.number().min(0).max(VALUE_SCORE_MAX.m7),
+    redSkins: z.number().min(0).max(VALUE_SCORE_MAX.redSkins),
+    julang: z.number().min(0).max(VALUE_SCORE_MAX.julang),
+    price: z.number().min(0).max(VALUE_SCORE_MAX.price),
+    assets: z.number().min(0).max(VALUE_SCORE_MAX.assets),
     secondRealName: z.number().min(0).max(40),
     recovery: z.number().min(0).max(35),
     verification: z.number().min(0).max(25)

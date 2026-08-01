@@ -51,43 +51,12 @@ function normalized(value: string): string {
 export function validateFilterProof(
   proof: BrowserFilterProof
 ): FilterProofResult {
-  const expectedSignatures = [
-    "极品S",
-    "极品A",
-    "极品B",
-    "极品C",
-    "优品S"
-  ] as const;
-  const signatures = proof.m7FilterLabels.map((value) => {
-    const label = normalized(value);
-    if (
-      !label.includes("M7") ||
-      !label.includes(normalized("棱镜攻势"))
-    ) {
-      return null;
-    }
-    const matches = [
-      ...label.matchAll(/(极品|优品)([SABC])(?![A-Z])/gu)
-    ];
-    if (matches.length !== 1) return null;
-    const signature = `${matches[0][1]}${matches[0][2]}`;
-    return expectedSignatures.includes(
-      signature as (typeof expectedSignatures)[number]
-    )
-      ? signature
-      : null;
-  });
   const valid =
     JiaoyimaoFilterUrlSchema.safeParse(proof.currentUrl).success &&
     normalized(proof.gameLabel) === normalized("三角洲行动") &&
     normalized(proof.platformLabel) === "QQ" &&
     normalized(proof.categoryLabel) === normalized("账号") &&
-    signatures.length === expectedSignatures.length &&
-    signatures.every((signature) => signature !== null) &&
-    new Set(signatures).size === expectedSignatures.length &&
-    expectedSignatures.every((signature) =>
-      signatures.includes(signature)
-    );
+    proof.activeFilterLabels.length === 0;
   return valid
     ? { kind: "ok" }
     : { kind: "invalid", reason: "filter_mismatch" };

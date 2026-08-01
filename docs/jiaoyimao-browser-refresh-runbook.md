@@ -53,9 +53,9 @@ claim code 只来自创建任务时的一次性响应；bridge token 只保存�
 
 3. 调用 `claimJiaoyimaoBrowserJob({ jobId, claimCode })` 接管任务并保留返回的闭包客户端。claim 只执行一次；失败时只报告稳定错误码和脱敏消息，不复制响应体，不自行循环重试。
 
-4. 复用已经打开的精确筛选标签页；若没有才打开 `https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/`。目视确认三角洲行动、QQ、账号类别，以及 M7 棱镜攻势极品 S/A/B/C 和优品 S 共五个筛选，禁止改用宽泛搜索页，也不得从 cookies、localStorage 或网络请求推断筛选状态。若页面要求登录或 CAPTCHA，由用户本人在该标签页处理，Codex 不读取输入内容也不规避验证。
+4. 复用已经打开的三角洲全账号目录标签页；若没有才打开 `https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/`。目视确认三角洲行动、QQ、账号类别，并确认没有启用 M7、二次实名或其它商品属性筛选。不得从 cookies、localStorage 或网络请求推断筛选状态。若页面要求登录或 CAPTCHA，由用户本人在该标签页处理，Codex 不读取输入内容也不规避验证。
 
-5. 从页面可见标签构造 filter proof 并调用 `submitFilterProof`。proof 必须包含当前精确 URL、可见游戏/平台/类别标签、五到八个 M7 筛选标签和观察时间，并且五个必需签名必须恰好覆盖极品 S/A/B/C 与优品 S；筛选不匹配时停止并报告，不能绕过服务端校验。
+5. 从页面可见标签构造 filter proof 并调用 `submitFilterProof`。proof 必须包含当前批准 URL、可见游戏/平台/类别标签、空的 `activeFilterLabels` 和观察时间；任何活动商品筛选都会被服务端拒绝，防止 M7 再次成为隐藏准入门槛。筛选不匹配时停止并报告，不能绕过服务端校验。
 
 6. 列表阶段每轮先调用 `getWork`，再用 `waitUntilAllowed` 按服务端返回的 `nextActionAt` 或 `cooldownUntil` 等待，只执行一次加载动作。本轮有新增商品时先提交非空 `submitListBatch`，随后每次已经执行的加载动作都必须用 `submitLoadEvent` 报告 outcome，包括零新增、登录、CAPTCHA、限流或错误；在 outcome 被服务端接收前不得改用 `pause` 或直接重试。自然末页没有新增商品时不得发送空的 `submitListBatch`。普通列表动作间隔由服务端随机设为 `1,200–2,500 ms`；不要固定 sleep 或建立硬编码循环。
 
@@ -63,7 +63,7 @@ claim code 只来自创建任务时的一次性响应；bridge token 只保存�
 
 8. 限流必须按阶段处理。首次列表加载返回限流时，先调用 `submitLoadEvent({ ..., blockingState: "rate_limited" })`；服务端会自动进入第一档 `cooling_down`，此时不得再调用 `startCooldown`。冷却结束后，重新 `getWork` 取得一次性 action permit 并执行该次列表重试；若仍为限流，先把带 permit 的 `submitLoadEvent` 提交成功，再调用一次 `startCooldown` 进入下一档。详情导航尚无可提交的 detail outcome 就直接遇到限流时，按当前 `getWork` 的 state/permit 调用一次 `startCooldown`。四档冷却依次是 30 秒、2 分钟、5 分钟、15 分钟；每一步都以最新 `getWork` 返回的 `state`、`nextActionAt`、`cooldownUntil` 或错误 `retryAt` 为准。收到 `invalid_transition` 时停止当前动作、重新读取 `getWork` 并报告，不得循环调用。action permit 成功用于匹配 outcome 或明确失效后立即丢弃，禁止记录。
 
-9. 详情阶段按 `getWork` 给出的 `sourceListingId`、URL 和序号工作。服务端会自动跳过任务接管时仍在 6 小时内且可安全复用的详情：必须是同一商品 ID、标题和卡片原文完全一致，上一轮无解析警告且 QQ 官服、M7 与三项安全证据完整；价格仍取本轮列表。其余商品等待服务端时间后只打开该详情一次，只读取 head、report、safety、description 四个可见区块并调用 `submitDetails`。若正常详情区块不存在，但页面主状态明确显示“商品已下架”“商品不存在”或“页面不存在”，把该可见主状态文本放入 `sections.head`，其余三个区块置空后提交；服务端会把该商品记为已完成核验并从新快照排除。普通空白页、超时或结构未知不能冒充下架。普通详情动作间隔为 `2,000–3,500 ms`；每次提交后重新 `getWork`，不得预取、猜测下一条或构造重试循环。
+9. 详情阶段按 `getWork` 给出的 `sourceListingId`、URL 和序号工作。服务端会自动跳过任务接管时仍在 6 小时内且可安全复用的详情：必须是同一商品 ID、标题和卡片原文完全一致，上一轮无解析警告且 QQ 官服与三项安全证据完整；M7 只作为可选品质标签。价格仍取本轮列表。其余商品等待服务端时间后只打开该详情一次，只读取 head、report、safety、description 四个可见区块并调用 `submitDetails`。若正常详情区块不存在，但页面主状态明确显示“商品已下架”“商品不存在”或“页面不存在”，把该可见主状态文本放入 `sections.head`，其余三个区块置空后提交；服务端会把该商品记为已完成核验并从新快照排除。普通空白页、超时或结构未知不能冒充下架。普通详情动作间隔为 `2,000–3,500 ms`；每次提交后重新 `getWork`，不得预取、猜测下一条或构造重试循环。
 
 10. `getWork` 返回 validating、列表已自然结束且 `detailCompletedCount === detailRequiredCount` 后，只调用一次 `complete`。检查终态：`success` 表示仅交易猫正式数据被原子替换且三平台已重新评分；`quarantined` 表示新结果未发布、继续使用旧可信快照。完成或取消后丢弃客户端引用，不再使用旧 token。
 

@@ -8,6 +8,7 @@ import {
   type ReviewedListingSummary
 } from "../../domain/listingSummary";
 import { manualPreferenceAdjustment } from "../../domain/manualPreference";
+import { VALUE_SCORE_MAX } from "../../domain/scoreAllocation";
 import type { ListingHistoryView } from "../api";
 import { buildEvidenceExcerpt } from "../../domain/evidenceExcerpt";
 
@@ -270,7 +271,7 @@ export function ListingDetail({
       </section>
 
       <section className="evidence-block evidence-block--m7">
-        <span className="evidence-label">硬条件 / M7</span>
+        <span className="evidence-label">品质标签 / M7</span>
         <strong>M7 棱镜攻势 · {m7StatusLabel(listing)}</strong>
         {(listing.m7PrismStatus === "peak" ||
           listing.m7PrismStatus === "premium") &&
@@ -307,7 +308,7 @@ export function ListingDetail({
               ))}
             </div>
           ) : (
-            <p className="m7-finish-pending">稀有模板待核验</p>
+            <p className="m7-finish-pending">未发现稀有模板</p>
           )}
           {rareM7Excerpts.map(({ record, excerpt }) => (
             <blockquote
@@ -433,14 +434,14 @@ export function ListingDetail({
           </div>
           <div className="score-parts">
             <p>
-              M7 综合价值 {scorePart(listing.score.parts.m7)} / 20
+              M7 综合价值 {scorePart(listing.score.parts.m7)} / {VALUE_SCORE_MAX.m7}
             </p>
             <p>
-              角色红皮 {scorePart(listing.score.parts.redSkins)} / 25
+              角色红皮 {scorePart(listing.score.parts.redSkins)} / {VALUE_SCORE_MAX.redSkins}
             </p>
-            <p>巨浪 {scorePart(listing.score.parts.julang)} / 20</p>
-            <p>价格 {scorePart(listing.score.parts.price)} / 25</p>
-            <p>资产 {scorePart(listing.score.parts.assets)} / 10</p>
+            <p>巨浪 {scorePart(listing.score.parts.julang)} / {VALUE_SCORE_MAX.julang}</p>
+            <p>价格 {scorePart(listing.score.parts.price)} / {VALUE_SCORE_MAX.price}</p>
+            <p>资产 {scorePart(listing.score.parts.assets)} / {VALUE_SCORE_MAX.assets}</p>
             <p>
               二次实名 {scorePart(listing.score.parts.secondRealName)} / 40
             </p>

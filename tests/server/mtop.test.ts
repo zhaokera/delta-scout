@@ -19,24 +19,7 @@ const APP_KEY = "12574478";
 const ENTRY_URL = APPROVED_JIAOYIMAO_REFERER;
 const USER_AGENT =
   "DeltaAccountScout/0.1 (+local personal comparison tool)";
-const SEARCH_CONDITION = JSON.stringify({
-  attr_7393855783477590029: {
-    selectType: 2,
-    multiSearchCondition: true,
-    conditionList: [],
-    childCondition: {
-      mp_7393855783922186253: {
-        "极品|S": ["M7战斗步枪-棱镜攻势S2"],
-        "极品|A": ["M7战斗步枪-棱镜攻势S2"],
-        "极品|B": ["M7战斗步枪-棱镜攻势S2"],
-        "极品|C": ["M7战斗步枪-棱镜攻势S2"],
-        "优品|S": ["M7战斗步枪-棱镜攻势S2"]
-      }
-    },
-    statConditionList: [],
-    conditionType: 3
-  }
-});
+const SEARCH_CONDITION = JSON.stringify({});
 const GAME_CONDITION = JSON.stringify({
   gameId: 2_007_840,
   platformId: 2,
@@ -331,18 +314,11 @@ describe("anonymous MTop whitelist", () => {
 
   it.each([
     [
-      "filter value",
+      "item filter",
       mutateData((outer) => {
-        const search = JSON.parse(String(outer.searchCondition)) as {
-          attr_7393855783477590029: {
-            childCondition: {
-              mp_7393855783922186253: Record<string, string[]>;
-            };
-          };
-        };
-        search.attr_7393855783477590029.childCondition
-          .mp_7393855783922186253["极品|S"] = ["changed"];
-        outer.searchCondition = JSON.stringify(search);
+        outer.searchCondition = JSON.stringify({
+          m7: "棱镜攻势极品S"
+        });
       })
     ],
     [
@@ -356,18 +332,9 @@ describe("anonymous MTop whitelist", () => {
       })
     ],
     [
-      "missing premium S filter",
+      "array search condition",
       mutateData((outer) => {
-        const search = JSON.parse(String(outer.searchCondition)) as {
-          attr_7393855783477590029: {
-            childCondition: {
-              mp_7393855783922186253: Record<string, string[]>;
-            };
-          };
-        };
-        delete search.attr_7393855783477590029.childCondition
-          .mp_7393855783922186253["优品|S"];
-        outer.searchCondition = JSON.stringify(search);
+        outer.searchCondition = JSON.stringify([]);
       })
     ],
     [

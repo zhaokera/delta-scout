@@ -16,13 +16,7 @@ import {
 const BASE_URL = "https://www.pxb7.com/";
 const LIST_API_URL =
   "https://api-pc.pxb7.com/api/search/product/v2/selectSearchPageList";
-const SINGLE_SELECT_SEARCH_QUERIES = [
-  "M7战斗步枪-棱镜攻势S2 极品 S",
-  "M7战斗步枪-棱镜攻势S2 极品 A",
-  "M7战斗步枪-棱镜攻势S2 极品 B",
-  "M7战斗步枪-棱镜攻势S2 极品 C",
-  "M7战斗步枪-棱镜攻势S2 优品 S"
-] as const;
+const BROAD_SEARCH_QUERY = "三角洲行动" as const;
 
 const ProductSchema = z
   .object({
@@ -55,7 +49,7 @@ const SearchResponseSchema = z
   .passthrough();
 
 const SearchBodySchema = z.object({
-  query: z.enum(SINGLE_SELECT_SEARCH_QUERIES),
+  query: z.literal(BROAD_SEARCH_QUERY),
   gameId: z.literal("10371"),
   pageIndex: z.number().int().positive(),
   pageSize: z.literal(16),
@@ -77,7 +71,6 @@ function parseSearchResponse(content: string): SearchResponse | null {
 }
 
 function makeListRequest(
-  searchIndex: number,
   pageIndex: number,
   pageToken?: string
 ): SourceRequest {
@@ -90,7 +83,7 @@ function makeListRequest(
       origin: BASE_URL.slice(0, -1),
       referer: BASE_URL,
       body: JSON.stringify({
-        query: SINGLE_SELECT_SEARCH_QUERIES[searchIndex],
+        query: BROAD_SEARCH_QUERY,
         gameId: "10371",
         pageIndex,
         pageSize: 16,
@@ -229,7 +222,7 @@ export const pxb7Adapter: SourceAdapter = {
     if (!foundCatalog && !officialNuxtShell) {
       return { kind: "blocked", reason: "catalog_not_found" };
     }
-    return { kind: "ok", request: makeListRequest(0, 1) };
+    return { kind: "ok", request: makeListRequest(1) };
   },
 
   parseList(content) {
@@ -278,20 +271,13 @@ export const pxb7Adapter: SourceAdapter = {
     }
 
     const pageToken = response.data.properties.pageToken?.trim();
-    const searchIndex = SINGLE_SELECT_SEARCH_QUERIES.indexOf(
-      currentBody.query
-    );
     if (pageToken && pageToken !== currentBody.pageToken) {
       return makeListRequest(
-        searchIndex,
         currentBody.pageIndex + 1,
         pageToken
       );
     }
-    const nextSearchIndex = searchIndex + 1;
-    return nextSearchIndex < SINGLE_SELECT_SEARCH_QUERIES.length
-      ? makeListRequest(nextSearchIndex, 1)
-      : null;
+    return null;
   },
 
   detailRequest(summary) {

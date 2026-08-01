@@ -35,8 +35,7 @@ describe("asset amount normalization", () => {
             "https://www.jiaoyimao.com/jg2007840/1785247978474421.html",
           title: "总资产1B M7棱镜攻势极品S",
           rawText: "QQ官服 总资产1B M7棱镜攻势极品S",
-          priceCny: 5_000,
-          detailFetchHint: "m7_prism_query"
+          priceCny: 5_000
         },
         detail: null,
         detailAttempted: false,
@@ -68,9 +67,7 @@ describe("panzhi adapter", () => {
     expect(result).toEqual({
       kind: "ok",
       request: {
-        url:
-          "https://www.pzds.com/goodsList/391/6/headerSearch/" +
-          "M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%20%E6%9E%81%E5%93%81%20S"
+        url: "https://www.pzds.com/goodsList/391/6"
       }
     });
   });
@@ -151,34 +148,11 @@ describe("panzhi adapter", () => {
     });
   });
 
-  it("cycles mutually exclusive Panzhi M7 searches one at a time", async () => {
+  it("stops after the verified broad Panzhi catalog batch", async () => {
     const html = await fixture("panzhi-list-page-2.html");
-    const searchUrl = (term: string) =>
-      `https://www.pzds.com/goodsList/391/6/headerSearch/${encodeURIComponent(term)}`;
     expect(
       panzhiAdapter.nextPage(html, {
-        url: searchUrl("M7战斗步枪-棱镜攻势S2 极品 S")
-      })
-    ).toEqual({
-      url: searchUrl("M7战斗步枪-棱镜攻势S2 极品 A")
-    });
-    expect(
-      panzhiAdapter.nextPage(html, {
-        url: searchUrl("M7战斗步枪-棱镜攻势S2 极品 C")
-      })
-    ).toEqual({
-      url: searchUrl("M7战斗步枪-棱镜攻势S2 优品 S")
-    });
-    expect(
-      panzhiAdapter.nextPage(html, {
-        url: searchUrl("M7战斗步枪-棱镜攻势S2 优品 S")
-      })
-    ).toEqual({
-      url: searchUrl("M7战斗步枪-棱镜攻势S2")
-    });
-    expect(
-      panzhiAdapter.nextPage(html, {
-        url: searchUrl("M7战斗步枪-棱镜攻势S2")
+        url: "https://www.pzds.com/goodsList/391/6"
       })
     ).toBeNull();
   });
@@ -392,30 +366,9 @@ describe("jiaoyimao adapter", () => {
     });
   });
 
-  it("uses the broad peak S/A/B/C plus premium S catalog without a second-real-name filter", () => {
+  it("uses the broad account catalog without an M7 or second-real-name filter", () => {
     const entry = new URL(jiaoyimaoAdapter.entryUrl);
-    const search = JSON.parse(
-      entry.searchParams.get("searchCondition") ?? ""
-    ) as Record<string, unknown>;
-    expect(search).not.toHaveProperty("is_second_real_name");
-    expect(search).toEqual({
-      attr_7393855783477590029: {
-        selectType: 2,
-        multiSearchCondition: true,
-        conditionList: [],
-        childCondition: {
-          mp_7393855783922186253: {
-            "极品|S": ["M7战斗步枪-棱镜攻势S2"],
-            "极品|A": ["M7战斗步枪-棱镜攻势S2"],
-            "极品|B": ["M7战斗步枪-棱镜攻势S2"],
-            "极品|C": ["M7战斗步枪-棱镜攻势S2"],
-            "优品|S": ["M7战斗步枪-棱镜攻势S2"]
-          }
-        },
-        statConditionList: [],
-        conditionType: 3
-      }
-    });
+    expect(entry.searchParams.get("searchCondition")).toBeNull();
   });
 
   it("normalizes premium S from a visible Jiaoyimao card without calling it peak", () => {
@@ -496,6 +449,7 @@ describe("jiaoyimao adapter", () => {
     });
     expect(isApprovedJiaoyimaoMtopRequest(next!)).toBe(true);
     expect(JSON.parse(next?.options?.body ?? "")).toMatchObject({
+      searchCondition: "{}",
       page: "2",
       pageSize: 16,
       categoryId: 8845004,
@@ -522,9 +476,6 @@ describe("jiaoyimao adapter", () => {
     expect(parsed.items[0].rawText).toContain("威龙-凌霄戍卫");
     expect(parsed.items[0].rawText).toContain("不可二次实名");
     expect(parsed.items[0].rawText).toContain("赠永久包赔");
-    expect(parsed.items[0]).toMatchObject({
-      detailFetchHint: "m7_prism_query"
-    });
     expect(parsed.items[0].rawText).not.toContain(
       "M7战斗步枪-棱镜攻势S2(极品)"
     );
@@ -873,7 +824,7 @@ describe("pxb7 adapter", () => {
       }
     });
     expect(JSON.parse(result.request.options?.body ?? "")).toEqual({
-      query: "M7战斗步枪-棱镜攻势S2 极品 S",
+      query: "三角洲行动",
       gameId: "10371",
       pageIndex: 1,
       pageSize: 16,
@@ -917,7 +868,7 @@ describe("pxb7 adapter", () => {
     );
   });
 
-  it("uses only the response cursor to build an immutable next request", async () => {
+  it("uses only the response cursor to page the broad account query", async () => {
     const discovery = pxb7Adapter.discoverCatalog(
       await fixture("pxb7-home.html"),
       "三角洲行动"
@@ -930,7 +881,7 @@ describe("pxb7 adapter", () => {
     );
     expect(next).not.toBeNull();
     expect(JSON.parse(next?.options?.body ?? "")).toEqual({
-      query: "M7战斗步枪-棱镜攻势S2 极品 S",
+      query: "三角洲行动",
       gameId: "10371",
       pageIndex: 2,
       pageSize: 16,
@@ -939,19 +890,11 @@ describe("pxb7 adapter", () => {
       posType: 1,
       pageToken: "fixture-page-2"
     });
-    const nextQuality = pxb7Adapter.nextPage(
+    const naturalEnd = pxb7Adapter.nextPage(
       await fixture("pxb7-list-page-3.json"),
       next!
     );
-    expect(JSON.parse(nextQuality?.options?.body ?? "")).toEqual({
-      query: "M7战斗步枪-棱镜攻势S2 极品 A",
-      gameId: "10371",
-      pageIndex: 1,
-      pageSize: 16,
-      bizProd: 1,
-      type: "4",
-      posType: 1
-    });
+    expect(naturalEnd).toBeNull();
 
     const repeatedBody = {
       ...JSON.parse(next?.options?.body ?? ""),
@@ -967,50 +910,7 @@ describe("pxb7 adapter", () => {
         }
       }
     );
-    expect(JSON.parse(afterRepeatedToken?.options?.body ?? "")).toEqual({
-      query: "M7战斗步枪-棱镜攻势S2 极品 A",
-      gameId: "10371",
-      pageIndex: 1,
-      pageSize: 16,
-      bizProd: 1,
-      type: "4",
-      posType: 1
-    });
-
-    const finalQualityRequest = {
-      ...next!,
-      options: {
-        ...next!.options,
-        body: JSON.stringify({
-          ...JSON.parse(next?.options?.body ?? ""),
-          query: "M7战斗步枪-棱镜攻势S2 极品 C"
-        })
-      }
-    };
-    expect(
-      pxb7Adapter.nextPage(
-        await fixture("pxb7-list-page-3.json"),
-        finalQualityRequest
-      )
-    ).toMatchObject({
-      options: {
-        body: expect.any(String)
-      }
-    });
-    const premiumRequest = pxb7Adapter.nextPage(
-      await fixture("pxb7-list-page-3.json"),
-      finalQualityRequest
-    );
-    expect(JSON.parse(premiumRequest?.options?.body ?? "")).toMatchObject({
-      query: "M7战斗步枪-棱镜攻势S2 优品 S",
-      pageIndex: 1
-    });
-    expect(
-      pxb7Adapter.nextPage(
-        await fixture("pxb7-list-page-3.json"),
-        premiumRequest!
-      )
-    ).toBeNull();
+    expect(afterRepeatedToken).toBeNull();
   });
 
   it("preserves premium S in embedded PXB7 evidence", async () => {

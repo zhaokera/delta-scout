@@ -23,6 +23,7 @@ describe("calculateConfidence", () => {
       confidence: 0,
       m7Evidence: [],
       loginPlatform: "unknown",
+      service: "unknown",
       priceCny: null,
       secondRealNameAvailable: null,
       recoveryCoverage: null,
@@ -35,5 +36,16 @@ describe("calculateConfidence", () => {
     });
 
     expect(calculateConfidence(listing)).toBe(0);
+  });
+
+  it("can reach high confidence without M7 evidence", () => {
+    const listing = makeListing({
+      confidence: 0,
+      m7PrismStatus: "absent",
+      m7PrismQuality: null,
+      m7Evidence: []
+    });
+
+    expect(calculateConfidence(listing)).toBe(90);
   });
 });

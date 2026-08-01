@@ -57,7 +57,7 @@ function filterProof(overrides: Record<string, unknown> = {}) {
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", "优品S"],
+    activeFilterLabels: [],
     observedAt: now,
     ...overrides
   };
@@ -422,7 +422,7 @@ describe("safe visible text", () => {
   );
 
   it.each(forbiddenVisibleText)(
-    "rejects forbidden text in every filter label and pause message: %s",
+    "rejects forbidden text in every visible proof label and pause message: %s",
     (text) => {
       for (const field of [
         "gameLabel",
@@ -435,11 +435,6 @@ describe("safe visible text", () => {
           )
         ).toThrow();
       }
-      expect(() =>
-        BrowserFilterProofSchema.parse(filterProof({
-          m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", text]
-        }))
-      ).toThrow();
       expect(() =>
         BrowserPauseSchema.parse({
           reason: "captcha_required",
@@ -468,7 +463,7 @@ describe("safe visible text", () => {
       gameLabel: prompt,
       platformLabel: prompt,
       categoryLabel: prompt,
-      m7FilterLabels: [prompt, prompt, prompt, prompt, prompt]
+      activeFilterLabels: []
     })).success).toBe(true);
     expect(BrowserPauseSchema.safeParse({
       reason: "captcha_required",
@@ -508,18 +503,18 @@ describe("safe visible text", () => {
       gameLabel: comparison,
       platformLabel: comparison,
       categoryLabel: comparison,
-      m7FilterLabels: [
-        comparison,
-        comparison,
-        comparison,
-        comparison,
-        comparison
-      ]
+      activeFilterLabels: []
     })).success).toBe(true);
     expect(BrowserPauseSchema.safeParse({
       reason: "captcha_required",
       message: comparison
     }).success).toBe(true);
+  });
+
+  it("rejects every active item filter in a broad-catalog proof", () => {
+    expect(BrowserFilterProofSchema.safeParse(filterProof({
+      activeFilterLabels: ["M7 棱镜攻势 极品S"]
+    })).success).toBe(false);
   });
 });
 

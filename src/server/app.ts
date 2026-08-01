@@ -155,7 +155,7 @@ function sendManualReviewError(
     }
     response.status(409).json({
       error: error.code,
-      message: "该账号不满足候选硬条件，不能人工淘汰"
+      message: "该账号不满足 QQ 官服与预算条件，不能人工淘汰"
     });
     return;
   }

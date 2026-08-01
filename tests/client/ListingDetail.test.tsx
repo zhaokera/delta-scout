@@ -86,7 +86,7 @@ describe("ListingDetail", () => {
               totalSafetySignals: 3
             },
             parts: {
-              m7: 20,
+              m7: 15,
               redSkins: 20,
               julang: 20,
               price: 23,
@@ -119,18 +119,18 @@ describe("ListingDetail", () => {
     expect(screen.getByText("数据完整度 80 / 100")).toBeInTheDocument();
     expect(screen.getByText("中风险")).toBeInTheDocument();
     expect(screen.getByText("安全证据 2 / 3")).toBeInTheDocument();
-    expect(screen.getByText("M7 综合价值 20 / 20")).toBeInTheDocument();
-    expect(screen.getByText("角色红皮 20 / 25")).toBeInTheDocument();
+    expect(screen.getByText("M7 综合价值 15 / 15")).toBeInTheDocument();
+    expect(screen.getByText("角色红皮 20 / 30")).toBeInTheDocument();
     expect(screen.getByText("巨浪 20 / 20")).toBeInTheDocument();
     expect(screen.getByText("价格 23 / 25")).toBeInTheDocument();
     expect(screen.getByText("资产 9 / 10")).toBeInTheDocument();
   });
 
   it("shows trusted M7 finish tags, source evidence, and combined value", () => {
-    const score = makeScore(88, { m7: 17 });
+    const score = makeScore(88, { m7: 13 });
     score.valueReasons = [
-      "M7 极品A，品质价值 13.0/16",
-      "M7 稀有模板：珠光 M7 · 糖果 M7，价值 4.0/4"
+      "M7 极品A，品质价值 10.0/12",
+      "M7 稀有模板：珠光 M7 · 糖果 M7，价值 3.0/3"
     ];
 
     render(
@@ -156,12 +156,12 @@ describe("ListingDetail", () => {
     expect(screen.getByText("高价值模板")).toBeInTheDocument();
     expect(screen.getByText("珠光 M7")).toBeInTheDocument();
     expect(screen.getByText("糖果 M7")).toBeInTheDocument();
-    expect(screen.getByText("M7 综合价值 17 / 20")).toBeInTheDocument();
+    expect(screen.getByText("M7 综合价值 13 / 15")).toBeInTheDocument();
     expect(
-      screen.getByText("M7 极品A，品质价值 13.0/16")
+      screen.getByText("M7 极品A，品质价值 10.0/12")
     ).toBeInTheDocument();
     expect(
-      screen.getByText("M7 稀有模板：珠光 M7 · 糖果 M7，价值 4.0/4")
+      screen.getByText("M7 稀有模板：珠光 M7 · 糖果 M7，价值 3.0/3")
     ).toBeInTheDocument();
     expect(
       screen.getByLabelText(
@@ -176,7 +176,7 @@ describe("ListingDetail", () => {
     expect(screen.getAllByText(/珠光|糖果/).length).toBeGreaterThan(2);
   });
 
-  it("keeps an untagged M7 finish explicitly pending verification", () => {
+  it("shows an untagged M7 finish as not found", () => {
     render(
       <ListingDetail
         listing={makeReviewedListing({
@@ -187,7 +187,7 @@ describe("ListingDetail", () => {
       />
     );
 
-    expect(screen.getByText("稀有模板待核验")).toBeInTheDocument();
+    expect(screen.getByText("未发现稀有模板")).toBeInTheDocument();
     expect(screen.queryByText("没有稀有模板")).not.toBeInTheDocument();
   });
 

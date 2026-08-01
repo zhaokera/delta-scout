@@ -106,7 +106,19 @@ function parseApprovedUrl(value: string): URL | null {
 
 export const JiaoyimaoFilterUrlSchema = z.string().refine((value) => {
   const url = parseApprovedUrl(value);
-  return url !== null && APPROVED_FILTER_PATHS.has(url.pathname);
+  if (url === null || !APPROVED_FILTER_PATHS.has(url.pathname)) {
+    return false;
+  }
+  const allowed = new Set(["searchCondition", "enforcePlat", "newPage"]);
+  const seen = new Set<string>();
+  for (const [key, entryValue] of url.searchParams) {
+    if (seen.has(key) || !allowed.has(key)) return false;
+    seen.add(key);
+    if (key === "searchCondition" && entryValue !== "{}") return false;
+    if (key === "enforcePlat" && entryValue !== "2") return false;
+    if (key === "newPage" && entryValue !== "true") return false;
+  }
+  return true;
 }, "Expected the approved Jiaoyimao game catalog URL");
 
 export const JiaoyimaoDetailUrlSchema = z.string().refine((value) => {
@@ -160,7 +172,7 @@ export const BrowserFilterProofSchema = z.strictObject({
   gameLabel: SafeFilterLabelSchema,
   platformLabel: SafeFilterLabelSchema,
   categoryLabel: SafeFilterLabelSchema,
-  m7FilterLabels: z.array(SafeFilterLabelSchema).min(5).max(8),
+  activeFilterLabels: z.array(SafeFilterLabelSchema).length(0),
   observedAt: IsoDateTimeSchema
 });
 

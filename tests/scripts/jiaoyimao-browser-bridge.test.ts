@@ -117,7 +117,7 @@ function filterProof() {
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", "优品S"],
+    activeFilterLabels: [],
     observedAt
   };
 }
@@ -1098,13 +1098,7 @@ describe("Jiaoyimao Codex browser bridge", () => {
       { ...filterProof(), gameLabel: markup[0] },
       { ...filterProof(), platformLabel: markup[1] },
       { ...filterProof(), categoryLabel: markup[2] },
-      {
-        ...filterProof(),
-        m7FilterLabels: [
-          markup[0],
-          ...filterProof().m7FilterLabels.slice(1)
-        ]
-      }
+      { ...filterProof(), activeFilterLabels: [markup[0]] }
     ];
     for (const proof of invalidProofs) {
       await expect(
@@ -1435,7 +1429,8 @@ describe("Jiaoyimao browser refresh runbook", () => {
     expect(runbook).toContain("浏览器控制运行时");
     expect(runbook).toContain("jiaoyimao-browser-bridge.mjs");
     expect(runbook).toContain("复用");
-    expect(runbook).toContain("精确筛选");
+    expect(runbook).toContain("三角洲全账号目录");
+    expect(runbook).toContain("空的 `activeFilterLabels`");
     expect(runbook).toMatch(/登录.*CAPTCHA|CAPTCHA.*登录/);
     expect(runbook).toContain("getWork");
     expect(runbook).toContain("nextActionAt");

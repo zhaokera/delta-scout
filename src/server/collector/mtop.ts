@@ -7,7 +7,7 @@ import type {
 export const APPROVED_JIAOYIMAO_MTOP_ENDPOINT =
   "https://mtop.jiaoyimao.com/h5/mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist/1.0/";
 export const APPROVED_JIAOYIMAO_REFERER =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?searchCondition=%7B%22attr_7393855783477590029%22%3A%7B%22selectType%22%3A2%2C%22multiSearchCondition%22%3Atrue%2C%22conditionList%22%3A%5B%5D%2C%22childCondition%22%3A%7B%22mp_7393855783922186253%22%3A%7B%22%E6%9E%81%E5%93%81%7CS%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CA%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CB%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E6%9E%81%E5%93%81%7CC%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%2C%22%E4%BC%98%E5%93%81%7CS%22%3A%5B%22M7%E6%88%98%E6%96%97%E6%AD%A5%E6%9E%AA-%E6%A3%B1%E9%95%9C%E6%94%BB%E5%8A%BFS2%22%5D%7D%7D%2C%22statConditionList%22%3A%5B%5D%2C%22conditionType%22%3A3%7D%7D&enforcePlat=2&newPage=true";
+  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?enforcePlat=2&newPage=true";
 
 const APPROVED_API =
   "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist";
@@ -17,14 +17,6 @@ const APPROVED_ORIGIN = "https://www.jiaoyimao.com";
 const APPROVED_CONTENT_TYPE = "application/x-www-form-urlencoded";
 const APPROVED_CLASS =
   "com.jym.delivery.hsf.dto.unifiedgoodslist.GoodsListQueryParams";
-const APPROVED_PRISM_VALUE = "M7战斗步枪-棱镜攻势S2";
-const APPROVED_QUALITY_KEYS = [
-  "极品|S",
-  "极品|A",
-  "极品|B",
-  "极品|C",
-  "优品|S"
-] as const;
 
 export function signMtop(
   token: string,
@@ -208,56 +200,7 @@ export function deriveApprovedJiaoyimaoMtopPageOneData(
 
 function isApprovedSearchCondition(value: string): boolean {
   const search: unknown = JSON.parse(value);
-  if (
-    !isRecordWithExactKeys(search, [
-      "attr_7393855783477590029"
-    ])
-  ) {
-    return false;
-  }
-  const attribute = search.attr_7393855783477590029;
-  if (
-    !isRecordWithExactKeys(attribute, [
-      "selectType",
-      "multiSearchCondition",
-      "conditionList",
-      "childCondition",
-      "statConditionList",
-      "conditionType"
-    ]) ||
-    attribute.selectType !== 2 ||
-    attribute.multiSearchCondition !== true ||
-    !isEmptyArray(attribute.conditionList) ||
-    !isEmptyArray(attribute.statConditionList) ||
-    attribute.conditionType !== 3
-  ) {
-    return false;
-  }
-  const child = attribute.childCondition;
-  if (
-    !isRecordWithExactKeys(child, [
-      "mp_7393855783922186253"
-    ])
-  ) {
-    return false;
-  }
-  const qualities = child.mp_7393855783922186253;
-  if (
-    !isRecordWithExactKeys(
-      qualities,
-      [...APPROVED_QUALITY_KEYS]
-    )
-  ) {
-    return false;
-  }
-  return APPROVED_QUALITY_KEYS.every((key) => {
-    const selection = qualities[key];
-    return (
-      Array.isArray(selection) &&
-      selection.length === 1 &&
-      selection[0] === APPROVED_PRISM_VALUE
-    );
-  });
+  return isRecordWithExactKeys(search, []);
 }
 
 function isApprovedGameCondition(value: string): boolean {
@@ -290,10 +233,6 @@ function isRecordWithExactKeys(
     actualKeys.length === keys.length &&
     keys.every((key) => Object.hasOwn(value, key))
   );
-}
-
-function isEmptyArray(value: unknown): value is [] {
-  return Array.isArray(value) && value.length === 0;
 }
 
 function splitCombinedSetCookie(header: string | null): string[] {

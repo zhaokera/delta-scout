@@ -71,12 +71,12 @@ const EMPTY_STATES: Record<
   eligible: {
     title: "全部合格视图暂无记录",
     description:
-      "当前快照中没有满足 QQ 官服、¥6,000 以内与 M7 棱镜攻势极品或优品 S 条件的账号。"
+      "当前快照中没有同时证明 QQ 官服且价格不超过 ¥6,000 的账号。M7 不是入池门槛。"
   },
   needs_verification: {
     title: "待人工核验视图暂无记录",
     description:
-      "当前没有因价格、武器品质或安全证据不足而需要人工补充核验的记录。"
+      "当前没有因价格、登录平台或区服证据不足而需要人工补充核验的记录。"
   },
   rejected: {
     title: "已淘汰视图暂无记录",
@@ -1031,8 +1031,8 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               <strong>QQ 官服</strong>
             </div>
             <div className="mission-rule">
-              <small>WEAPON SKIN</small>
-              <strong>M7 棱镜攻势 · 极品 / 优品S</strong>
+              <small>EVALUATION</small>
+              <strong>全账号统一评分 · M7 仅作品质标签</strong>
             </div>
             <div className="mission-rule">
               <small>BUDGET CAP</small>

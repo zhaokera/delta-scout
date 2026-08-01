@@ -1828,7 +1828,7 @@ describe("ListingRepository", () => {
               score: null
             }
           : {
-              score: makeScore(99, { m7: 20 }),
+              score: makeScore(99, { m7: 15 }),
               possibleDuplicateKeys: []
             })
       }))
@@ -1861,25 +1861,27 @@ describe("ListingRepository", () => {
       m7PrismQuality: "S",
       eligibility: "eligible",
       score: {
-        parts: { m7: 6 }
+        parts: { m7: 5 }
       }
     });
     expect(repository.getListing(premiumA.key)).toMatchObject({
       m7PrismStatus: "premium",
       m7PrismQuality: "A",
-      eligibility: "rejected",
-      score: null
+      eligibility: "eligible",
+      score: {
+        parts: { m7: 0 }
+      }
     });
     expect(repository.getListing(reviewedPeak.key)).toMatchObject({
       possibleDuplicateKeys: [duplicatePeak.key],
       score: {
-        parts: { m7: 13 }
+        parts: { m7: 10 }
       }
     });
     expect(repository.getListing(duplicatePeak.key)).toMatchObject({
       possibleDuplicateKeys: [reviewedPeak.key],
       score: {
-        parts: { m7: 13 }
+        parts: { m7: 10 }
       }
     });
     expect(repository.getReviewedListing(reviewedPeak.key)).toMatchObject({

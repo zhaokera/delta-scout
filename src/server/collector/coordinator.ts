@@ -32,7 +32,10 @@ interface CollectionLimits {
 const DEFAULT_LIMITS: CollectionLimits = {
   maxPages: 100,
   maxSummaries: 2_000,
-  maxDetails: 500
+  // A broad catalog can require one detail check per summary to prove the
+  // QQ/official eligibility fields. Keep both caps aligned so the detail
+  // guard cannot truncate an otherwise valid full-catalog scan.
+  maxDetails: 2_000
 };
 const MIN_SUCCESSFUL_DETAILS_FOR_PARTIAL_CIRCUIT = 20;
 

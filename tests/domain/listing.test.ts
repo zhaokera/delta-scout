@@ -103,8 +103,8 @@ describe("ListingSchema", () => {
             totalSafetySignals: 3
           },
           parts: {
-            m7: 20,
-            redSkins: 25,
+            m7: 15,
+            redSkins: 30,
             julang: 20,
             price: 25,
             assets: 5,
@@ -121,8 +121,8 @@ describe("ListingSchema", () => {
   });
 
   it.each([
-    ["m7", 21],
-    ["redSkins", 26],
+    ["m7", 16],
+    ["redSkins", 31],
     ["julang", 21],
     ["price", 26],
     ["assets", 11]
@@ -138,8 +138,8 @@ describe("ListingSchema", () => {
         totalSafetySignals: 3
       },
       parts: {
-        m7: 20,
-        redSkins: 25,
+        m7: 15,
+        redSkins: 30,
         julang: 20,
         price: 25,
         assets: 10,

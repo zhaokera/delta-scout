@@ -21,24 +21,7 @@ import {
 
 const BASE_URL = "https://www.jiaoyimao.com/";
 const BROAD_CATALOG_URL = APPROVED_JIAOYIMAO_REFERER;
-const BROAD_SEARCH_CONDITION = {
-  attr_7393855783477590029: {
-    selectType: 2,
-    multiSearchCondition: true,
-    conditionList: [],
-    childCondition: {
-      mp_7393855783922186253: {
-        "极品|S": ["M7战斗步枪-棱镜攻势S2"],
-        "极品|A": ["M7战斗步枪-棱镜攻势S2"],
-        "极品|B": ["M7战斗步枪-棱镜攻势S2"],
-        "极品|C": ["M7战斗步枪-棱镜攻势S2"],
-        "优品|S": ["M7战斗步枪-棱镜攻势S2"]
-      }
-    },
-    statConditionList: [],
-    conditionType: 3
-  }
-};
+const BROAD_SEARCH_CONDITION = {};
 const GAME_CONDITION = {
   gameId: 2_007_840,
   platformId: 2,
@@ -199,8 +182,7 @@ function parseMtopComponent(component: unknown): ListingSummary | null {
     url,
     title,
     rawText: [...new Set(mtopComponentText(data))].join("\n"),
-    priceCny,
-    detailFetchHint: "m7_prism_query"
+    priceCny
   };
 }
 

@@ -667,14 +667,15 @@ export class BrowserRefreshRepository {
       observed_at: string;
     } | undefined;
     if (!row) return null;
-    return BrowserFilterProofSchema.parse({
+    const parsed = BrowserFilterProofSchema.safeParse({
       currentUrl: row.current_url,
       gameLabel: row.game_label,
       platformLabel: row.platform_label,
       categoryLabel: row.category_label,
-      m7FilterLabels: JSON.parse(row.m7_filter_labels_json),
+      activeFilterLabels: JSON.parse(row.m7_filter_labels_json),
       observedAt: row.observed_at
     });
+    return parsed.success ? parsed.data : null;
   }
 
   getLoadEvents(
@@ -1057,7 +1058,7 @@ export class BrowserRefreshRepository {
         parsed.gameLabel,
         parsed.platformLabel,
         parsed.categoryLabel,
-        JSON.stringify(parsed.m7FilterLabels),
+        JSON.stringify(parsed.activeFilterLabels),
         parsed.observedAt
       );
       this.database.prepare(`

@@ -32,13 +32,7 @@ function proof(overrides: Partial<BrowserFilterProof> = {}): BrowserFilterProof 
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    m7FilterLabels: [
-      "M7棱镜攻势极品S",
-      "M7棱镜攻势极品A",
-      "M7棱镜攻势极品B",
-      "M7棱镜攻势极品C",
-      "M7棱镜攻势优品S"
-    ],
+    activeFilterLabels: [],
     observedAt: baseTime.toISOString(),
     ...overrides
   };

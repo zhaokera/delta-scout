@@ -156,13 +156,7 @@ function browserProof(
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    m7FilterLabels: [
-      "M7棱镜攻势极品S",
-      "M7棱镜攻势极品A",
-      "M7棱镜攻势极品B",
-      "M7棱镜攻势极品C",
-      "M7棱镜攻势优品S"
-    ],
+    activeFilterLabels: [],
     observedAt: browserBaseTime.toISOString(),
     ...overrides
   };
@@ -1002,7 +996,7 @@ describe("listing API", () => {
     expect(ineligible.status).toBe(409);
     expect(ineligible.body).toEqual({
       error: "listing_not_eligible",
-      message: "该账号不满足候选硬条件，不能人工淘汰"
+      message: "该账号不满足 QQ 官服与预算条件，不能人工淘汰"
     });
 
     const firstRestore = await request(app).delete(eligiblePath);
@@ -1138,7 +1132,7 @@ describe("listing API", () => {
           sourceListingId: "high",
           score: {
             ...makeScore(88, {
-              m7: 20,
+              m7: 15,
               redSkins: 12,
               julang: 15,
               price: 18,

@@ -19,13 +19,7 @@ const validProof: BrowserFilterProof = {
   gameLabel: "三角洲行动",
   platformLabel: "QQ",
   categoryLabel: "账号",
-  m7FilterLabels: [
-    "M7棱镜攻势极品S",
-    "M7棱镜攻势极品A",
-    "M7棱镜攻势极品B",
-    "M7棱镜攻势极品C",
-    "M7棱镜攻势优品S"
-  ],
+  activeFilterLabels: [],
   observedAt
 };
 
@@ -49,7 +43,7 @@ function event(
 }
 
 describe("browser refresh completeness", () => {
-  it("requires visible proof for game, platform, category, and all M7 grades", () => {
+  it("requires visible proof for the broad game, platform, and category catalog", () => {
     expect(validateFilterProof(validProof)).toEqual({ kind: "ok" });
     for (const proof of [
       { ...validProof, gameLabel: "其他游戏" },
@@ -59,7 +53,7 @@ describe("browser refresh completeness", () => {
         ...validProof,
         currentUrl: "https://www.jiaoyimao.com/jg2007840/"
       },
-      { ...validProof, m7FilterLabels: validProof.m7FilterLabels.slice(0, 4) }
+      { ...validProof, activeFilterLabels: ["M7 棱镜攻势 极品S"] }
     ]) {
       expect(validateFilterProof(proof)).toEqual({
         kind: "invalid",
@@ -74,39 +68,20 @@ describe("browser refresh completeness", () => {
       gameLabel: "未知",
       platformLabel: "未知",
       categoryLabel: "未知",
-      m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", "优品S"]
+      activeFilterLabels: []
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
     expect(validateFilterProof({
       ...validProof,
-      m7FilterLabels: ["极品S", "极品A", "极品B", "极品C", "优品S"]
+      activeFilterLabels: ["极品S"]
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
   });
 
-  it("requires each M7 selection to contain exactly one standalone grade", () => {
-    const combined =
-      "M7 棱镜攻势 极品 S / 极品 A / 极品 B / 极品 C / 优品 S";
+  it("rejects every active item filter so M7 cannot become a hidden gate", () => {
     expect(validateFilterProof({
       ...validProof,
-      m7FilterLabels: [combined, combined, combined, combined, combined]
-    })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
-    expect(validateFilterProof({
-      ...validProof,
-      m7FilterLabels: [
-        "M7 战斗步枪 · 棱镜攻势 · 极品 S",
-        "M7 战斗步枪 · 棱镜攻势 · 极品 A",
-        "M7 战斗步枪 · 棱镜攻势 · 极品 B",
-        "M7 战斗步枪 · 棱镜攻势 · 极品 C",
-        "M7 战斗步枪 · 棱镜攻势 · 优品 S"
-      ]
-    })).toEqual({ kind: "ok" });
-    expect(validateFilterProof({
-      ...validProof,
-      m7FilterLabels: [
+      activeFilterLabels: [
         "M7 棱镜攻势 极品S",
-        "M7 棱镜攻势 极品A",
-        "M7 棱镜攻势 极品B",
-        "M7 棱镜攻势 极品C",
-        "M7 棱镜攻势 优品A"
+        "可二次实名"
       ]
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
   });
