@@ -716,7 +716,7 @@ export class JiaoyimaoBrowserTaskService {
           detail
         ])
       );
-      const listings = this.repository.getListItems(id, now).map(
+      const listings = this.repository.getListItems(id, now).flatMap(
         (item) => {
           const summary: ListingSummary = {
             source: "jiaoyimao",
@@ -744,14 +744,15 @@ export class JiaoyimaoBrowserTaskService {
             : null;
           if (
             requiresDetail &&
-            parsedDetail?.kind !== "ok"
+            parsedDetail?.kind === "blocked"
           ) {
             throw new BrowserRefreshServiceError(
               "staging_invalid",
               `Staged detail ${item.sourceListingId} could not be parsed`
             );
           }
-          return buildListing(
+          if (parsedDetail?.kind === "unavailable") return [];
+          return [buildListing(
             {
               summary,
               detail:
@@ -762,7 +763,7 @@ export class JiaoyimaoBrowserTaskService {
               warnings: []
             },
             now
-          );
+          )];
         }
       );
       const naturalEnd = evaluateNaturalEnd(

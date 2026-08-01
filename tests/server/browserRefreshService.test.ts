@@ -1339,6 +1339,87 @@ describe("JiaoyimaoBrowserTaskService", () => {
     expect(releaseAdmission).toHaveBeenCalledWith(created.id);
   });
 
+  it("excludes a listing that visibly became unavailable after list collection", async () => {
+    const database = createDatabase(":memory:");
+    const browserRepository = new BrowserRefreshRepository(database);
+    const listingRepository = new ListingRepository(database);
+    let time = baseTime.getTime();
+    const publish = vi.spyOn(
+      listingRepository,
+      "commitBrowserSourceRefresh"
+    );
+    const service = new JiaoyimaoBrowserTaskService(browserRepository, {
+      now: () => new Date(time),
+      random: () => 0,
+      publisher: listingRepository
+    });
+    const created = service.create();
+    const claim = service.claim(created.id, created.claimCode);
+    service.saveFilterProof(created.id, claim.bridgeToken, proof());
+    service.submitListBatch(
+      created.id,
+      claim.bridgeToken,
+      listBatch([["101", 5_000], ["102", 4_000]])
+    );
+    service.submitLoadEvent(
+      created.id,
+      claim.bridgeToken,
+      loadEvent(1, 2, 2, {
+        visibleTotalCount: 2,
+        endMarkerVisible: true
+      })
+    );
+    time += 2_000;
+    service.submitDetails(
+      created.id,
+      claim.bridgeToken,
+      {
+        sequence: 1,
+        items: [
+          {
+            sourceListingId: "101",
+            url:
+              "https://www.jiaoyimao.com/jg2007840/101.html",
+            observedAt: baseTime.toISOString(),
+            sections: {
+              head: "QQ双端帐号 M7 棱镜攻势 极品A",
+              report: "M7 棱镜攻势 极品A 可二次实名 永久包赔",
+              safety: "安全保障 永久包赔",
+              description: "威龙 红皮 巨浪"
+            }
+          },
+          {
+            sourceListingId: "102",
+            url:
+              "https://www.jiaoyimao.com/jg2007840/102.html",
+            observedAt: baseTime.toISOString(),
+            sections: {
+              head:
+                "商品已下架 很抱歉，无法查看【商品已下架】的商品信息 返回首页查看类似商品",
+              report: "",
+              safety: "",
+              description: ""
+            }
+          }
+        ]
+      }
+    );
+
+    const result = await service.complete(
+      created.id,
+      claim.bridgeToken
+    );
+
+    expect(result.state).toBe("success");
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listings: [
+          expect.objectContaining({ key: "jiaoyimao:101" })
+        ]
+      })
+    );
+  });
+
   it("refuses completion when staged visible detail cannot be parsed", () => {
     const database = createDatabase(":memory:");
     const browserRepository = new BrowserRefreshRepository(database);

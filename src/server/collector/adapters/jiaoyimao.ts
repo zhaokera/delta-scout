@@ -280,6 +280,13 @@ function extractDetail(
   }
 
   const $ = load(html);
+  const body = compactText($("body").text());
+  if (
+    /商品已下架/.test(body) &&
+    /无法查看.*商品信息/.test(body)
+  ) {
+    return { kind: "blocked", reason: "listing_unavailable" };
+  }
   const head = compactText($(".item-head-info-card").first().text());
   const report = compactText($(".cmp-elevator-container").first().text());
   const safety = compactText($(".safe-report-container").first().text());
@@ -290,10 +297,13 @@ function extractDetail(
     ).first().text()
   );
 
-  return parseJiaoyimaoVisibleDetail(
+  const parsed = parseJiaoyimaoVisibleDetail(
     { head, report, safety, description },
     _summary
   );
+  return parsed.kind === "unavailable"
+    ? { kind: "blocked", reason: parsed.reason }
+    : parsed;
 }
 
 export const jiaoyimaoAdapter: SourceAdapter = {

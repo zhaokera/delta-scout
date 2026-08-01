@@ -747,6 +747,31 @@ describe("jiaoyimao adapter", () => {
       "M7棱镜攻势S2 珠光"
     );
   });
+
+  it("maps a visibly unavailable detail page to a blocked legacy fetch", () => {
+    const result = jiaoyimaoAdapter.parseDetail(
+      `
+        <html><body>
+          商品已下架
+          很抱歉，无法查看【商品已下架】的商品信息
+        </body></html>
+      `,
+      {
+        source: "jiaoyimao",
+        sourceListingId: "1785384225212552",
+        url:
+          "https://www.jiaoyimao.com/jg2007840/1785384225212552.html",
+        title: "M7棱镜攻势 极品A",
+        rawText: "M7棱镜攻势 极品A",
+        priceCny: 4_000
+      }
+    );
+
+    expect(result).toEqual({
+      kind: "blocked",
+      reason: "listing_unavailable"
+    });
+  });
 });
 
 describe("pxb7 adapter", () => {

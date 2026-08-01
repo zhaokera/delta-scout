@@ -16,6 +16,10 @@ export interface JiaoyimaoVisibleSections {
   description: string;
 }
 
+export type JiaoyimaoVisibleDetailParseResult =
+  | DetailParseResult
+  | { kind: "unavailable"; reason: "listing_unavailable" };
+
 const MAX_STORED_EVIDENCE_CHARS = 2_000;
 const STORED_EVIDENCE_OVERLAP_CHARS = 256;
 const STORED_EVIDENCE_CHUNK_STEP =
@@ -65,7 +69,7 @@ function parseVerificationAt(text: string): string | null {
 export function parseJiaoyimaoVisibleDetail(
   sections: JiaoyimaoVisibleSections,
   _summary: ListingSummary
-): DetailParseResult {
+): JiaoyimaoVisibleDetailParseResult {
   const rawSections = Object.values(sections);
   if (
     rawSections.some(
@@ -84,6 +88,9 @@ export function parseJiaoyimaoVisibleDetail(
   const report = compactText(sections.report);
   const safety = compactText(sections.safety);
   const description = compactText(sections.description);
+  if (/^(?:商品已下架|商品不存在|页面不存在)/.test(head)) {
+    return { kind: "unavailable", reason: "listing_unavailable" };
+  }
   if (!head || !report) {
     return { kind: "blocked", reason: "structure_changed" };
   }

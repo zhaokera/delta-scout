@@ -41,6 +41,24 @@ async function fixtureSections(): Promise<JiaoyimaoVisibleSections> {
 }
 
 describe("parseJiaoyimaoVisibleDetail", () => {
+  it("recognizes a visibly unavailable listing without normal detail blocks", () => {
+    const result = parseJiaoyimaoVisibleDetail(
+      {
+        head:
+          "商品已下架 很抱歉，无法查看【商品已下架】的商品信息 返回首页查看类似商品",
+        report: "",
+        safety: "",
+        description: ""
+      },
+      summary
+    );
+
+    expect(result).toEqual({
+      kind: "unavailable",
+      reason: "listing_unavailable"
+    });
+  });
+
   it("parses the existing fixture into equivalent local detail fields and evidence", async () => {
     const result = parseJiaoyimaoVisibleDetail(
       await fixtureSections(),

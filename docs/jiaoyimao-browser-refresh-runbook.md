@@ -63,7 +63,7 @@ claim code 只来自创建任务时的一次性响应；bridge token 只保存�
 
 8. 限流必须按阶段处理。首次列表加载返回限流时，先调用 `submitLoadEvent({ ..., blockingState: "rate_limited" })`；服务端会自动进入第一档 `cooling_down`，此时不得再调用 `startCooldown`。冷却结束后，重新 `getWork` 取得一次性 action permit 并执行该次列表重试；若仍为限流，先把带 permit 的 `submitLoadEvent` 提交成功，再调用一次 `startCooldown` 进入下一档。详情导航尚无可提交的 detail outcome 就直接遇到限流时，按当前 `getWork` 的 state/permit 调用一次 `startCooldown`。四档冷却依次是 30 秒、2 分钟、5 分钟、15 分钟；每一步都以最新 `getWork` 返回的 `state`、`nextActionAt`、`cooldownUntil` 或错误 `retryAt` 为准。收到 `invalid_transition` 时停止当前动作、重新读取 `getWork` 并报告，不得循环调用。action permit 成功用于匹配 outcome 或明确失效后立即丢弃，禁止记录。
 
-9. 详情阶段按 `getWork` 给出的 `sourceListingId`、URL 和序号工作。等待服务端时间后只打开该详情一次，只读取 head、report、safety、description 四个可见区块并调用 `submitDetails`。普通详情动作间隔为 `2,000–3,500 ms`；每次提交后重新 `getWork`，不得预取、猜测下一条或构造重试循环。
+9. 详情阶段按 `getWork` 给出的 `sourceListingId`、URL 和序号工作。等待服务端时间后只打开该详情一次，只读取 head、report、safety、description 四个可见区块并调用 `submitDetails`。若正常详情区块不存在，但页面主状态明确显示“商品已下架”“商品不存在”或“页面不存在”，把该可见主状态文本放入 `sections.head`，其余三个区块置空后提交；服务端会把该商品记为已完成核验并从新快照排除。普通空白页、超时或结构未知不能冒充下架。普通详情动作间隔为 `2,000–3,500 ms`；每次提交后重新 `getWork`，不得预取、猜测下一条或构造重试循环。
 
 10. `getWork` 返回 validating、列表已自然结束且 `detailCompletedCount === detailRequiredCount` 后，只调用一次 `complete`。检查终态：`success` 表示仅交易猫正式数据被原子替换且三平台已重新评分；`quarantined` 表示新结果未发布、继续使用旧可信快照。完成或取消后丢弃客户端引用，不再使用旧 token。
 
