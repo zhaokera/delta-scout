@@ -946,6 +946,10 @@ button {
   cursor: pointer;
 }
 
+.source-card__browser-refresh[href] {
+  text-decoration: none;
+}
+
 .source-card__browser-refresh small {
   color: rgba(17, 21, 13, 0.65);
   font: 750 8px/1 var(--mono);

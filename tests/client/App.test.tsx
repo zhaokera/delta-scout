@@ -1412,11 +1412,14 @@ describe("App shell", () => {
         },
         {
           ...makeSourceStatus({ source: "panzhi" }),
-          state: "success",
+          state: "blocked",
           lastAttemptAt: "2026-07-28T10:00:00.000Z",
           lastSuccessAt: "2026-07-28T10:00:00.000Z",
+          pagesScanned: 0,
           itemCount: 10,
-          error: null,
+          stopReason: "error",
+          completion: "blocked",
+          error: "browser_snapshot_required",
           stale: false
         },
         {
@@ -1454,6 +1457,13 @@ describe("App shell", () => {
     render(<App api={api} />);
 
     expect(await screen.findByText("验证码阻塞")).toBeInTheDocument();
+    expect(screen.getByText("需要浏览器快照")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /打开盼之筛选页/ })
+    ).toHaveAttribute(
+      "href",
+      "https://www.pzds.com/goodsList/391/6"
+    );
     expect(screen.getByText("列表待人工接入")).toBeInTheDocument();
     const row = screen.getByRole("button", {
       name: /SA2PEAK.*¥5,560/

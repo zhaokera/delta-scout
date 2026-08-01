@@ -171,6 +171,18 @@ export function SourceStrip({
                 <small>OPEN BROWSER BRIDGE ↗</small>
               </button>
             ) : null}
+            {status.source === "panzhi" &&
+            status.error === "browser_snapshot_required" ? (
+              <a
+                className="source-card__browser-refresh"
+                href="https://www.pzds.com/goodsList/391/6"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span>打开盼之筛选页</span>
+                <small>LOGIN / FILTER / SNAPSHOT ↗</small>
+              </a>
+            ) : null}
           </article>
         );
       })}
