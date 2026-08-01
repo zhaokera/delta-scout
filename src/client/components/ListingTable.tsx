@@ -104,8 +104,11 @@ export interface ListingTableProps {
   poolMode?: PoolMode;
   totalCount?: number;
   sourceContributions?: Record<SourceId, number>;
+  comparisonKeys?: ReadonlySet<string>;
+  comparisonLimitReached?: boolean;
   onSortChange(sort: SortKey): void;
   onSelect(listing: ReviewedListing): void;
+  onToggleComparison?(listing: ReviewedListing): void;
 }
 
 export function ListingTable({
@@ -116,7 +119,10 @@ export function ListingTable({
   poolMode = "balanced",
   totalCount,
   sourceContributions = EMPTY_CONTRIBUTIONS,
-  onSelect
+  comparisonKeys = new Set<string>(),
+  comparisonLimitReached = false,
+  onSelect,
+  onToggleComparison
 }: ListingTableProps) {
   const sorted = sortListings(listings, sort);
   const loadedCount = totalCount ?? listings.length;
@@ -142,8 +148,8 @@ export function ListingTable({
           {view === "pool" ? (
             <p className="listing-panel__dek">
               {poolMode === "global"
-                ? "不设平台配额 · 跨平台总榜 Top 30"
-                : "每平台最多 10 · 跨平台统一评分 Top 30"}
+                ? "不设平台配额 · 已排除明确高风险与疑似重复号"
+                : "每平台最多 10 · 已排除明确高风险与疑似重复号"}
             </p>
           ) : (
             <p className="listing-panel__dek">
@@ -178,101 +184,134 @@ export function ListingTable({
         <span>推荐分</span>
       </div>
       <div className="listing-rows">
-        {sorted.map((listing, index) => (
-          <button
-            className={`listing-row${selectedKey === listing.key ? " is-selected" : ""}`}
-            type="button"
-            key={listing.key}
-            aria-label={`${listing.sourceListingId ?? ""} ${listing.title} ${money(listing.priceCny)}`.trim()}
-            onClick={() => onSelect(listing)}
-          >
-            <span className="listing-row__identity">
-              <small>{String(index + 1).padStart(2, "0")}</small>
-              <span>
-                <strong>
-                  {listing.sourceListingId ?? listing.title.slice(0, 18)}
-                </strong>
-                <em>{SOURCE_LABELS[listing.source]}</em>
-                {listing.manualReview ? (
-                  <span className="manual-review-badge">
-                    人工淘汰 ·{" "}
-                    {
-                      MANUAL_REVIEW_REASON_LABELS[
-                        listing.manualReview.reason
-                      ]
-                    }
+        {sorted.map((listing, index) => {
+          const compared = comparisonKeys.has(listing.key);
+          const compareDisabled =
+            !compared && comparisonLimitReached;
+          return (
+            <div
+              className={`listing-row${selectedKey === listing.key ? " is-selected" : ""}${compared ? " is-compared" : ""}`}
+              key={listing.key}
+              role="group"
+              aria-label={`候选 ${listing.sourceListingId ?? listing.title}`}
+            >
+              <button
+                className="listing-row__open"
+                type="button"
+                aria-label={`${listing.sourceListingId ?? ""} ${listing.title} ${money(listing.priceCny)}`.trim()}
+                onClick={() => onSelect(listing)}
+              >
+                <span className="listing-row__identity">
+                  <small>{String(index + 1).padStart(2, "0")}</small>
+                  <span>
+                    <strong>
+                      {listing.sourceListingId ?? listing.title.slice(0, 18)}
+                    </strong>
+                    <em>{SOURCE_LABELS[listing.source]}</em>
+                    {listing.manualReview ? (
+                      <span className="manual-review-badge">
+                        人工淘汰 ·{" "}
+                        {
+                          MANUAL_REVIEW_REASON_LABELS[
+                            listing.manualReview.reason
+                          ]
+                        }
+                      </span>
+                    ) : null}
+                    {listing.possibleDuplicateKeys.length > 0 ? (
+                      <span className="duplicate-badge">
+                        疑似跨平台同号 · 推荐池仅保留最高分
+                      </span>
+                    ) : null}
                   </span>
-                ) : null}
-              </span>
-              <b>{money(listing.priceCny)}</b>
-            </span>
-            <span className="listing-row__assets">
-              <strong>
-                {listing.totalAssetsM === null
-                  ? "待核验"
-                  : `${listing.totalAssetsM.toLocaleString("zh-CN")}M`}
-              </strong>
-              <span>
-                {listing.redSkinCount === null
-                  ? "红皮待核验"
-                  : `${listing.redSkinCount} 角色红皮`}
-              </span>
-              <span>{m7Label(listing)}</span>
-              {listing.m7RareFinishes.length > 0 ? (
-                <span
-                  className="m7-finish-tags"
-                  aria-label="M7 高价值模板"
-                >
-                  {listing.m7RareFinishes.map((finish) => (
-                    <span className="m7-finish-tag" key={finish}>
-                      {M7_RARE_FINISH_LABELS[finish]}
+                  <b>{money(listing.priceCny)}</b>
+                </span>
+                <span className="listing-row__assets">
+                  <strong>
+                    {listing.totalAssetsM === null
+                      ? "待核验"
+                      : `${listing.totalAssetsM.toLocaleString("zh-CN")}M`}
+                  </strong>
+                  <span>
+                    {listing.redSkinCount === null
+                      ? "红皮待核验"
+                      : `${listing.redSkinCount} 角色红皮`}
+                  </span>
+                  <span>{m7Label(listing)}</span>
+                  {listing.m7RareFinishes.length > 0 ? (
+                    <span
+                      className="m7-finish-tags"
+                      aria-label="M7 高价值模板"
+                    >
+                      {listing.m7RareFinishes.map((finish) => (
+                        <span className="m7-finish-tag" key={finish}>
+                          {M7_RARE_FINISH_LABELS[finish]}
+                        </span>
+                      ))}
                     </span>
-                  ))}
+                  ) : null}
+                  <span>{julangLabel(listing)}</span>
+                  <span
+                    className={`stability-badge stability-badge--${listing.scanStability}`}
+                  >
+                    {stabilityLabel(listing)}
+                  </span>
                 </span>
-              ) : null}
-              <span>{julangLabel(listing)}</span>
-              <span
-                className={`stability-badge stability-badge--${listing.scanStability}`}
-              >
-                {stabilityLabel(listing)}
-              </span>
-            </span>
-            <span className="listing-row__safety">
-              <span
-                className={
-                  listing.secondRealNameAvailable === true ? "positive" : ""
-                }
-              >
-                {listing.secondRealNameAvailable === null
-                  ? "实名待核验"
-                  : listing.secondRealNameAvailable
-                    ? "可二次实名"
-                    : "不可二次实名"}
-              </span>
-              <span
-                className={listing.recoveryCoverage === true ? "positive" : ""}
-              >
-                {listing.recoveryCoverage === null
-                  ? "包赔待核验"
-                  : listing.recoveryCoverage
-                    ? "支持包赔"
-                    : "无包赔"}
-              </span>
-              <span>置信度 {listing.confidence}%</span>
-            </span>
-            <span className="listing-row__score">
-              <strong>{listing.score?.total ?? "—"}</strong>
-              <small>/ 100</small>
-              {listing.score ? (
-                <span>
-                  价值 {Math.round(listing.score.value)} ·{" "}
-                  {RISK_LABELS[listing.score.riskLevel]}
+                <span className="listing-row__safety">
+                  <span
+                    className={
+                      listing.secondRealNameAvailable === true
+                        ? "positive"
+                        : ""
+                    }
+                  >
+                    {listing.secondRealNameAvailable === null
+                      ? "实名待核验"
+                      : listing.secondRealNameAvailable
+                        ? "可二次实名"
+                        : "不可二次实名"}
+                  </span>
+                  <span
+                    className={
+                      listing.recoveryCoverage === true ? "positive" : ""
+                    }
+                  >
+                    {listing.recoveryCoverage === null
+                      ? "包赔待核验"
+                      : listing.recoveryCoverage
+                        ? "支持包赔"
+                        : "无包赔"}
+                  </span>
+                  <span>解析置信度 {listing.confidence}%</span>
                 </span>
+                <span className="listing-row__score">
+                  <strong>{listing.score?.total ?? "—"}</strong>
+                  <small>/ 100</small>
+                  {listing.score ? (
+                    <span>
+                      价值 {Math.round(listing.score.value)} ·{" "}
+                      {RISK_LABELS[listing.score.riskLevel]}
+                    </span>
+                  ) : null}
+                  <i aria-hidden="true">查看证据 ↗</i>
+                </span>
+              </button>
+              {onToggleComparison ? (
+                <button
+                  className="listing-row__compare"
+                  type="button"
+                  aria-pressed={compared}
+                  disabled={compareDisabled}
+                  aria-label={compared ? "移出对比" : "加入对比"}
+                  onClick={() => onToggleComparison(listing)}
+                >
+                  <span aria-hidden="true">{compared ? "✓" : "+"}</span>
+                  {compared ? "已选" : compareDisabled ? "已满" : "对比"}
+                </button>
               ) : null}
-              <i aria-hidden="true">↗</i>
-            </span>
-          </button>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </section>
   );

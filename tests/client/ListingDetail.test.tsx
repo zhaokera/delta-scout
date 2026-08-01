@@ -292,7 +292,7 @@ describe("ListingDetail", () => {
     expect(screen.getByText("当前在售")).toBeInTheDocument();
     expect(screen.getByText("价格历史")).toBeInTheDocument();
     expect(screen.getByText("上涨 ¥311")).toBeInTheDocument();
-    expect(screen.getByText("¥2,199")).toBeInTheDocument();
+    expect(screen.getAllByText("¥2,199")).toHaveLength(2);
     expect(screen.getByText("¥1,888")).toBeInTheDocument();
     expect(screen.getByText("M7 品质")).toBeInTheDocument();
     expect(screen.getByText("A → S")).toBeInTheDocument();

@@ -36,4 +36,28 @@ describe("parseStoredListing", () => {
       parseStoredListing(JSON.stringify(damaged))
     ).toThrow();
   });
+
+  it("repairs legacy B-unit assets that were stored near zero", () => {
+    const legacy = makeListing({
+      title: "总资产1B M7棱镜攻势极品S",
+      originalDescription: "QQ官服 总资产1B",
+      totalAssetsM: 0.000001
+    });
+
+    expect(parseStoredListing(JSON.stringify(legacy)).totalAssetsM).toBe(
+      1_000
+    );
+  });
+
+  it("does not override a trusted detail asset value", () => {
+    const listing = makeListing({
+      title: "标题曾写总资产1B",
+      originalDescription: "详情验号总资产888M",
+      totalAssetsM: 888
+    });
+
+    expect(parseStoredListing(JSON.stringify(listing)).totalAssetsM).toBe(
+      888
+    );
+  });
 });

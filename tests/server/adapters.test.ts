@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { jiaoyimaoAdapter } from "../../src/server/collector/adapters/jiaoyimao.js";
 import { panzhiAdapter } from "../../src/server/collector/adapters/panzhi.js";
 import { pxb7Adapter } from "../../src/server/collector/adapters/pxb7.js";
+import { parseChineseAmount } from "../../src/server/collector/adapters/shared.js";
+import { buildListing } from "../../src/server/collector/buildListing.js";
 import {
   APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
   isApprovedJiaoyimaoMtopRequest
@@ -12,6 +14,40 @@ import {
 async function fixture(name: string): Promise<string> {
   return readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
 }
+
+describe("asset amount normalization", () => {
+  it.each([
+    ["总资产1B", 1_000_000_000],
+    ["总资产2.66亿", 266_000_000],
+    ["总资产91.9M", 91_900_000],
+    ["总资产8888万", 88_880_000]
+  ])("normalizes %s", (text, expected) => {
+    expect(parseChineseAmount(text, "总资产")).toBe(expected);
+  });
+
+  it("stores billion-unit summary assets in millions", () => {
+    const listing = buildListing(
+      {
+        summary: {
+          source: "jiaoyimao",
+          sourceListingId: "1785247978474421",
+          url:
+            "https://www.jiaoyimao.com/jg2007840/1785247978474421.html",
+          title: "总资产1B M7棱镜攻势极品S",
+          rawText: "QQ官服 总资产1B M7棱镜攻势极品S",
+          priceCny: 5_000,
+          detailFetchHint: "m7_prism_query"
+        },
+        detail: null,
+        detailAttempted: false,
+        warnings: []
+      },
+      new Date("2026-08-01T00:00:00.000Z")
+    );
+
+    expect(listing.totalAssetsM).toBe(1_000);
+  });
+});
 
 describe("pagination progress policy", () => {
   it("enables strict progress only for Jiaoyimao", () => {

@@ -27,6 +27,10 @@ import {
   type SortKey
 } from "./components/FilterBar";
 import { DetailDrawer } from "./components/DetailDrawer";
+import {
+  CandidateCompareDialog,
+  CompareTray
+} from "./components/CandidateCompare";
 import { ListingDetail } from "./components/ListingDetail";
 import { ListingTable } from "./components/ListingTable";
 import { ManualReviewDialog } from
@@ -122,6 +126,9 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewNotice, setReviewNotice] =
     useState<string | null>(null);
+  const [comparison, setComparison] =
+    useState<ReviewedListing[]>([]);
+  const [compareOpen, setCompareOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshStatus, setRefreshStatus] =
     useState<RefreshStatusView | null>(null);
@@ -148,7 +155,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const activeView = useRef<ListingView>(view);
   const activePoolMode = useRef<PoolMode>(poolMode);
   const narrowLayout = useMediaQuery("(max-width: 1100px)");
+  const compactLayout = useMediaQuery("(max-width: 760px)");
+  const [operationsOpen, setOperationsOpen] = useState(
+    () => !compactLayout
+  );
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const closeComparison = useCallback(() => setCompareOpen(false), []);
 
   const load = useCallback(
     async (
@@ -177,6 +189,13 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         ) return;
         setSources(nextSources);
         setListings(nextListings);
+        setComparison((current) =>
+          current.map(
+            (listing) =>
+              nextListings.find(({ key }) => key === listing.key) ??
+              listing
+          )
+        );
         const selectedKey = selectedKeyRef.current;
         const nextSelected =
           selectedKey === null
@@ -307,6 +326,14 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     if (listingsResult.status === "fulfilled") {
       const nextListings = listingsResult.value;
       setListings(nextListings);
+      setComparison((current) =>
+        current.flatMap((listing) => {
+          const refreshed = nextListings.find(
+            ({ key }) => key === listing.key
+          );
+          return refreshed ? [refreshed] : [];
+        })
+      );
       if (selectedKey !== null) {
         const nextSelected =
           nextListings.find(({ key }) => key === selectedKey) ?? null;
@@ -557,6 +584,36 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     if (!narrowLayout) setDrawerOpen(false);
   }, [narrowLayout]);
 
+  useEffect(() => {
+    if (!compactLayout) setOperationsOpen(true);
+  }, [compactLayout]);
+
+  useEffect(() => {
+    const browserNeedsAttention =
+      browserRefresh.job !== null &&
+      !["success", "quarantined", "failed", "cancelled", "expired"]
+        .includes(browserRefresh.job.state);
+    if (
+      refreshing ||
+      refreshStatus?.state === "running" ||
+      browserNeedsAttention ||
+      browserRefresh.error !== null
+    ) {
+      setOperationsOpen(true);
+    }
+  }, [
+    browserRefresh.error,
+    browserRefresh.job,
+    refreshStatus?.state,
+    refreshing
+  ]);
+
+  useEffect(() => {
+    if (compareOpen && comparison.length < 2) {
+      setCompareOpen(false);
+    }
+  }, [compareOpen, comparison.length]);
+
   const visibleListings = useMemo(
     () =>
       listings.filter((listing) =>
@@ -578,10 +635,40 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     }),
     [sources]
   );
+  const comparisonKeys = useMemo(
+    () => new Set(comparison.map(({ key }) => key)),
+    [comparison]
+  );
   const emptyState = EMPTY_STATES[view];
 
   function clearFilters() {
     setFilters(DEFAULT_FILTERS);
+  }
+
+  function toggleComparison(listing: ReviewedListing): void {
+    setReviewNotice(null);
+    setComparison((current) => {
+      if (current.some(({ key }) => key === listing.key)) {
+        return current.filter(({ key }) => key !== listing.key);
+      }
+      if (current.length >= 4) {
+        setReviewNotice("候选对比最多保留 4 个，请先移除一个");
+        return current;
+      }
+      return [...current, listing];
+    });
+  }
+
+  function removeComparison(key: string): void {
+    setComparison((current) =>
+      current.filter((listing) => listing.key !== key)
+    );
+  }
+
+  function openComparison(): void {
+    if (comparison.length < 2) return;
+    setDrawerOpen(false);
+    setCompareOpen(true);
   }
 
   function clearSelectionAfterReview(): void {
@@ -630,6 +717,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       setListings((current) =>
         current.filter(({ key }) => key !== target.key)
       );
+      removeComparison(target.key);
       clearSelectionAfterReview();
       setReviewTarget(null);
       setReviewNotice(
@@ -823,68 +911,94 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         </div>
       </header>
 
-      <RefreshProgress
-        status={refreshStatus}
-        transportWarning={transportWarning}
-      />
-
-      {scanHistory?.runs[0] ? (
-        <section
-          className="scan-history-summary"
-          aria-label="最近扫描历史"
-        >
-          <span>最近扫描</span>
-          <strong>#{scanHistory.runs[0].id}</strong>
-          <small>{scanHistory.runs[0].state.toUpperCase()}</small>
-        </section>
-      ) : null}
-
-      <JiaoyimaoBrowserRefreshPanel
-        job={browserRefresh.job}
-        claimCode={browserRefresh.claimCode}
-        conflict={browserRefresh.conflict}
-        busy={browserRefresh.busy || refreshing}
-        error={browserRefresh.error}
-        onStart={browserRefresh.start}
-        onCancel={browserRefresh.cancel}
-        onKeepWaiting={browserRefresh.keepWaiting}
-      />
-
-      <section className="mission-brief" aria-label="固定筛选条件">
-        <div className="mission-brief__label">
-          <span>01 / HARD FILTER</span>
-          <strong>固定任务条件</strong>
-        </div>
-        <div className="mission-rule">
-          <small>PLATFORM</small>
-          <strong>QQ 官服</strong>
-        </div>
-        <div className="mission-rule">
-          <small>WEAPON SKIN</small>
-          <strong>M7 棱镜攻势 · 极品 / 优品S</strong>
-        </div>
-        <div className="mission-rule">
-          <small>BUDGET CAP</small>
-          <strong>¥6,000 以内</strong>
-        </div>
-        <div className="mission-locked">
-          <span aria-hidden="true">⌁</span>
-          条件已锁定
-        </div>
-      </section>
-
-      <SourceStrip
-        statuses={sources}
-        jiaoyimaoRefreshDisabled={
-          browserRefresh.busy ||
-          refreshing ||
-          browserRefresh.conflict !== null ||
-          browserRefresh.blocksAllSourceRefresh
+      <details
+        className="operations-panel"
+        open={operationsOpen}
+        onToggle={(event) =>
+          setOperationsOpen(event.currentTarget.open)
         }
-        onJiaoyimaoRefresh={() => {
-          void browserRefresh.start();
-        }}
-      />
+      >
+        <summary>
+          <span>
+            <small>01 / DATA CONTROL</small>
+            <strong>数据、刷新与固定条件</strong>
+          </span>
+          <span className="operations-panel__summary-status">
+            {sources.length === 0
+              ? "正在读取平台状态"
+              : `${sources.filter(({ state }) => state === "success" || state === "partial").length} / 3 平台有可信快照`}
+            {scanHistory?.runs[0]
+              ? ` · 最近扫描 #${scanHistory.runs[0].id}`
+              : ""}
+          </span>
+          <b>{operationsOpen ? "收起" : "展开"}</b>
+        </summary>
+
+        <div className="operations-panel__body">
+          <RefreshProgress
+            status={refreshStatus}
+            transportWarning={transportWarning}
+          />
+
+          {scanHistory?.runs[0] ? (
+            <section
+              className="scan-history-summary"
+              aria-label="最近扫描历史"
+            >
+              <span>最近扫描</span>
+              <strong>#{scanHistory.runs[0].id}</strong>
+              <small>{scanHistory.runs[0].state.toUpperCase()}</small>
+            </section>
+          ) : null}
+
+          <JiaoyimaoBrowserRefreshPanel
+            job={browserRefresh.job}
+            claimCode={browserRefresh.claimCode}
+            conflict={browserRefresh.conflict}
+            busy={browserRefresh.busy || refreshing}
+            error={browserRefresh.error}
+            onStart={browserRefresh.start}
+            onCancel={browserRefresh.cancel}
+            onKeepWaiting={browserRefresh.keepWaiting}
+          />
+
+          <section className="mission-brief" aria-label="固定筛选条件">
+            <div className="mission-brief__label">
+              <span>HARD FILTER</span>
+              <strong>固定任务条件</strong>
+            </div>
+            <div className="mission-rule">
+              <small>PLATFORM</small>
+              <strong>QQ 官服</strong>
+            </div>
+            <div className="mission-rule">
+              <small>WEAPON SKIN</small>
+              <strong>M7 棱镜攻势 · 极品 / 优品S</strong>
+            </div>
+            <div className="mission-rule">
+              <small>BUDGET CAP</small>
+              <strong>¥6,000 以内</strong>
+            </div>
+            <div className="mission-locked">
+              <span aria-hidden="true">⌁</span>
+              条件已锁定
+            </div>
+          </section>
+
+          <SourceStrip
+            statuses={sources}
+            jiaoyimaoRefreshDisabled={
+              browserRefresh.busy ||
+              refreshing ||
+              browserRefresh.conflict !== null ||
+              browserRefresh.blocksAllSourceRefresh
+            }
+            onJiaoyimaoRefresh={() => {
+              void browserRefresh.start();
+            }}
+          />
+        </div>
+      </details>
 
       <PoolModeToggle
         mode={poolMode}
@@ -1018,8 +1132,11 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               poolMode={poolMode}
               totalCount={listings.length}
               sourceContributions={sourceContributions}
+              comparisonKeys={comparisonKeys}
+              comparisonLimitReached={comparison.length >= 4}
               onSortChange={setSort}
               onSelect={(listing) => void selectListing(listing)}
+              onToggleComparison={toggleComparison}
             />
           ) : (
             <section
@@ -1080,6 +1197,21 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           error={reviewError}
           onCancel={closeManualExclusion}
           onSubmit={excludeReviewedListing}
+        />
+      ) : null}
+
+      <CompareTray
+        listings={comparison}
+        onRemove={removeComparison}
+        onClear={() => setComparison([])}
+        onOpen={openComparison}
+      />
+
+      {compareOpen ? (
+        <CandidateCompareDialog
+          listings={comparison}
+          onRemove={removeComparison}
+          onClose={closeComparison}
         />
       ) : null}
 

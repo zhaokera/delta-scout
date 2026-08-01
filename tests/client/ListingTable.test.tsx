@@ -114,6 +114,58 @@ describe("ListingTable", () => {
     expect(onSelect).toHaveBeenCalledWith(listings[0]);
   });
 
+  it("adds a candidate to comparison without opening its detail", async () => {
+    const onSelect = vi.fn();
+    const onToggleComparison = vi.fn();
+    const listing = makeReviewedListing({ sourceListingId: "COMPARE-1" });
+    render(
+      <ListingTable
+        listings={[listing]}
+        selectedKey={null}
+        sort="score"
+        onSortChange={() => undefined}
+        onSelect={onSelect}
+        onToggleComparison={onToggleComparison}
+      />
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "加入对比" })
+    );
+
+    expect(onToggleComparison).toHaveBeenCalledWith(listing);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("shows comparison and duplicate states explicitly", () => {
+    const listing = makeReviewedListing({
+      key: "panzhi:compare",
+      sourceListingId: "COMPARE-2",
+      possibleDuplicateKeys: ["jiaoyimao:duplicate"]
+    });
+    render(
+      <ListingTable
+        listings={[listing]}
+        selectedKey={null}
+        sort="score"
+        comparisonKeys={new Set([listing.key])}
+        comparisonLimitReached
+        onSortChange={() => undefined}
+        onSelect={() => undefined}
+        onToggleComparison={() => undefined}
+      />
+    );
+
+    expect(
+      screen.getByText("疑似跨平台同号 · 推荐池仅保留最高分")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "移出对比" })
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("解析置信度 100%"))
+      .toBeInTheDocument();
+  });
+
   it("labels the global pool and shows scan stability", () => {
     render(
       <ListingTable
@@ -136,7 +188,7 @@ describe("ListingTable", () => {
       screen.getByRole("heading", { name: "全局 Top 30 1 / 30" })
     ).toBeInTheDocument();
     expect(
-      screen.getByText("不设平台配额 · 跨平台总榜 Top 30")
+      screen.getByText("不设平台配额 · 已排除明确高风险与疑似重复号")
     ).toBeInTheDocument();
     expect(screen.getByText("连续稳定 · 3 轮")).toBeInTheDocument();
   });

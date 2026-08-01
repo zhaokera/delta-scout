@@ -7,6 +7,8 @@ import {
 } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import type { Listing } from "../../domain/listing.js";
+import { parseStoredListing } from "../storedListing.js";
 import {
   BROWSER_REFRESH_LIMITS,
   BrowserDetailBatchSchema,
@@ -26,6 +28,7 @@ import type { JiaoyimaoVisibleSections } from "./visibleDetail.js";
 
 const JOB_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const TERMINAL_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1_000;
+const REUSABLE_DETAIL_MAX_AGE_MS = 6 * 60 * 60 * 1_000;
 const MAX_BATCH_SEQUENCE = BROWSER_REFRESH_LIMITS.maxUniqueItems;
 const MAX_COOLDOWN_ATTEMPTS = 4;
 const TERMINAL_STATES: readonly BrowserRefreshJobState[] = [
@@ -133,6 +136,39 @@ export interface StagedBrowserDetail {
   url: string;
   sections: JiaoyimaoVisibleSections;
   observedAt: string;
+}
+
+function compactVisibleText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+function canReuseDetail(
+  listing: Listing,
+  item: BrowserListItem,
+  now: Date
+): boolean {
+  const capturedAt = Date.parse(listing.capturedAt);
+  const age = now.getTime() - capturedAt;
+  const cardText = compactVisibleText(item.rawText);
+  const storedText = compactVisibleText(listing.originalDescription);
+  return (
+    listing.source === "jiaoyimao" &&
+    listing.sourceListingId === item.sourceListingId &&
+    age >= 0 &&
+    age <= REUSABLE_DETAIL_MAX_AGE_MS &&
+    compactVisibleText(listing.title) === compactVisibleText(item.title) &&
+    cardText.length >= 4 &&
+    storedText.includes(cardText) &&
+    listing.parseWarnings.length === 0 &&
+    listing.loginPlatform === "qq" &&
+    listing.service === "official" &&
+    (listing.m7PrismStatus === "peak" ||
+      listing.m7PrismStatus === "premium") &&
+    listing.secondRealNameAvailable !== null &&
+    listing.recoveryCoverage !== null &&
+    listing.verificationAt !== null &&
+    listing.evidence.length > 0
+  );
 }
 
 export interface BrowserRefreshOutcomeTransition {
@@ -744,13 +780,50 @@ export class BrowserRefreshRepository {
     }));
   }
 
+  getReusableDetailListings(
+    id: string,
+    now = new Date()
+  ): Map<string, Listing> {
+    this.expireJobs(now);
+    const job = this.requireRow(id);
+    const trustWindowAt = job.claimed_at
+      ? new Date(job.claimed_at)
+      : now;
+    const requiredItems = this.getListItems(id, now).filter(
+      (item) => item.priceCny === null || item.priceCny <= 6_000
+    );
+    if (requiredItems.length === 0) return new Map();
+    const currentRows = this.database.prepare(`
+      SELECT payload
+      FROM listings
+      WHERE source = 'jiaoyimao'
+    `).all() as Array<{ payload: string }>;
+    const currentById = new Map(
+      currentRows
+        .map(({ payload }) => parseStoredListing(payload))
+        .flatMap((listing) =>
+          listing.sourceListingId === null
+            ? []
+            : [[listing.sourceListingId, listing] as const]
+        )
+    );
+    return new Map(
+      requiredItems.flatMap((item) => {
+        const listing = currentById.get(item.sourceListingId);
+        return listing && canReuseDetail(listing, item, trustWindowAt)
+          ? [[item.sourceListingId, listing] as const]
+          : [];
+      })
+    );
+  }
+
   getNextRequiredDetail(
     id: string,
     now = new Date()
   ): RequiredDetailWork | null {
     this.expireJobs(now);
     this.requireRow(id);
-    const row = this.database.prepare(`
+    const rows = this.database.prepare(`
       SELECT li.source_listing_id, li.url
       FROM browser_refresh_list_items li
       LEFT JOIN browser_refresh_details d
@@ -760,11 +833,14 @@ export class BrowserRefreshRepository {
         AND (li.price_cny IS NULL OR li.price_cny <= 6000)
         AND d.source_listing_id IS NULL
       ORDER BY li.rowid
-      LIMIT 1
-    `).get(id) as {
+    `).all(id) as Array<{
       source_listing_id: string;
       url: string;
-    } | undefined;
+    }>;
+    const reusable = this.getReusableDetailListings(id, now);
+    const row = rows.find(
+      ({ source_listing_id }) => !reusable.has(source_listing_id)
+    );
     return row
       ? { sourceListingId: row.source_listing_id, url: row.url }
       : null;

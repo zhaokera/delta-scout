@@ -49,6 +49,12 @@ function scorePart(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
+function money(value: number | null): string {
+  return value === null
+    ? "待人工核验"
+    : `¥${value.toLocaleString("zh-CN")}`;
+}
+
 function stabilityLabel(listing: Listing): string {
   if (listing.scanStability === "stable") {
     return `连续稳定 · ${listing.consecutiveUnchangedScans} 轮`;
@@ -161,6 +167,37 @@ export function ListingDetail({
           <span>推荐分</span>
         </div>
       </header>
+
+      <section className="detail-decision-bar" aria-label="快速决策">
+        <div>
+          <span>当前报价</span>
+          <strong>{money(listing.priceCny)}</strong>
+        </div>
+        <div>
+          <a href={listing.url} target="_blank" rel="noreferrer">
+            平台核验 ↗
+          </a>
+          {listing.manualReview && onRestore ? (
+            <button
+              className="decision-action decision-action--restore"
+              type="button"
+              disabled={reviewPending}
+              onClick={() => onRestore(listing)}
+            >
+              {reviewPending ? "正在恢复…" : "恢复参与排名"}
+            </button>
+          ) : listing.eligibility === "eligible" && onExclude ? (
+            <button
+              className="decision-action decision-action--exclude"
+              type="button"
+              disabled={reviewPending}
+              onClick={() => onExclude(listing)}
+            >
+              {reviewPending ? "正在处理…" : "人工淘汰"}
+            </button>
+          ) : null}
+        </div>
+      </section>
 
       <section className="evidence-block evidence-block--m7">
         <span className="evidence-label">硬条件 / M7</span>
@@ -439,32 +476,6 @@ export function ListingDetail({
               listing.manualReview.reviewedAt
             ).toLocaleString("zh-CN")}
           </time>
-          {onRestore ? (
-            <button
-              className="manual-review-action manual-review-action--restore"
-              type="button"
-              disabled={reviewPending}
-              onClick={() => onRestore(listing)}
-            >
-              {reviewPending ? "正在恢复…" : "恢复参与排名"}
-            </button>
-          ) : null}
-        </section>
-      ) : listing.eligibility === "eligible" && onExclude ? (
-        <section
-          className="manual-review-action-block"
-          aria-label="人工判断"
-        >
-          <strong>人工判断</strong>
-          <p>确认不合适后可填写原因，并让该账号永久退出候选排名。</p>
-          <button
-            className="manual-review-action manual-review-action--exclude"
-            type="button"
-            disabled={reviewPending}
-            onClick={() => onExclude(listing)}
-          >
-            {reviewPending ? "正在处理…" : "人工淘汰"}
-          </button>
         </section>
       ) : null}
 

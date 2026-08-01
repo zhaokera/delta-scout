@@ -3,7 +3,11 @@ import { ZodError } from "zod";
 import {
   buildListing
 } from "../collector/buildListing.js";
-import type { ListingSummary } from "../collector/types.js";
+import type { Listing } from "../../domain/listing.js";
+import type {
+  ListingDetail,
+  ListingSummary
+} from "../collector/types.js";
 import type {
   CommitBrowserSourceRefreshInput,
   CommitBrowserSourceRefreshResult,
@@ -76,7 +80,7 @@ export const BROWSER_REFRESH_STATE_COMMANDS = {
     "cancel"
   ],
   cooling_down: ["getWork", "pause", "keepWaiting", "cancel"],
-  validating: ["complete", "pause", "keepWaiting", "cancel"],
+  validating: ["getWork", "complete", "pause", "keepWaiting", "cancel"],
   committing: ["keepWaiting"],
   success: [],
   quarantined: [],
@@ -145,6 +149,21 @@ export interface JiaoyimaoBrowserTaskServiceOptions {
 
 interface PlannedOutcome {
   transition: BrowserRefreshOutcomeTransition;
+}
+
+function reusableListingDetail(listing: Listing): ListingDetail {
+  return {
+    evidence: listing.evidence,
+    loginPlatform: listing.loginPlatform,
+    service: listing.service,
+    totalAssetsM: listing.totalAssetsM,
+    hafCoins: listing.hafCoins,
+    realNameStatus: listing.realNameStatus,
+    secondRealNameAvailable: listing.secondRealNameAvailable,
+    recoveryCoverage: listing.recoveryCoverage,
+    verificationAt: listing.verificationAt,
+    banNotes: listing.banNotes
+  };
 }
 
 const AUTHORIZED_BROWSER_REFRESH = Symbol(
@@ -446,7 +465,24 @@ export class JiaoyimaoBrowserTaskService {
     this.authenticate(id, bridgeToken, now);
     try {
       const replay = this.repository.replayDetailBatch(id, batch, now);
-      if (replay) return replay;
+      if (replay) {
+        const requiredIds = detailRequiredIds(
+          this.repository.getListItems(id, now)
+        );
+        const completedIds = this.repository.getCompletedDetailIds(id, now);
+        for (const reusableId of this.repository
+          .getReusableDetailListings(id, now)
+          .keys()) {
+          completedIds.add(reusableId);
+        }
+        const next = this.repository.getNextRequiredDetail(id, now);
+        return {
+          ...replay,
+          detailCompletedCount: completedIds.size,
+          detailRequiredCount: requiredIds.length,
+          nextSourceListingId: next?.sourceListingId ?? null
+        };
+      }
       const job = this.repository.getJob(id, now)!;
       this.assertCommand(job, "submitDetails");
       this.assertActionPermitForOutcome(job, batch.actionPermit, now);
@@ -463,6 +499,11 @@ export class JiaoyimaoBrowserTaskService {
         );
       }
       const completedIds = this.repository.getCompletedDetailIds(id, now);
+      for (const reusableId of this.repository
+        .getReusableDetailListings(id, now)
+        .keys()) {
+        completedIds.add(reusableId);
+      }
       for (const item of batch.items) {
         completedIds.add(item.sourceListingId);
       }
@@ -477,6 +518,7 @@ export class JiaoyimaoBrowserTaskService {
           patch: {
             stage: complete ? "validating" : "collecting_details",
             reason: null,
+            detailCompletedCount: completedIds.size,
             cooldownAttempt: 0,
             cooldownUntil: null,
             actionPermit: null,
@@ -488,7 +530,15 @@ export class JiaoyimaoBrowserTaskService {
         },
         now
       );
-      return result.accepted;
+      const next = complete
+        ? null
+        : this.repository.getNextRequiredDetail(id, now);
+      return {
+        ...result.accepted,
+        detailCompletedCount: completedIds.size,
+        detailRequiredCount: requiredIds.size,
+        nextSourceListingId: next?.sourceListingId ?? null
+      };
     } catch (error) {
       if (error instanceof BrowserRefreshServiceError) throw error;
       throw this.mapError(error);
@@ -694,7 +744,10 @@ export class JiaoyimaoBrowserTaskService {
       this.repository.getFilterProof(id, now),
       this.repository.getLoadEvents(id, now),
       this.repository.getListItems(id, now),
-      this.repository.getCompletedDetailIds(id, now)
+      new Set([
+        ...this.repository.getCompletedDetailIds(id, now),
+        ...this.repository.getReusableDetailListings(id, now).keys()
+      ])
     );
     if (readiness.kind !== "ready") {
       throw new BrowserRefreshServiceError(
@@ -716,6 +769,8 @@ export class JiaoyimaoBrowserTaskService {
           detail
         ])
       );
+      const reusableDetails =
+        this.repository.getReusableDetailListings(id, now);
       const listings = this.repository.getListItems(id, now).flatMap(
         (item) => {
           const summary: ListingSummary = {
@@ -730,7 +785,8 @@ export class JiaoyimaoBrowserTaskService {
           const requiresDetail =
             item.priceCny === null || item.priceCny <= 6_000;
           const stagedDetail = details.get(item.sourceListingId);
-          if (requiresDetail && !stagedDetail) {
+          const reusableDetail = reusableDetails.get(item.sourceListingId);
+          if (requiresDetail && !stagedDetail && !reusableDetail) {
             throw new BrowserRefreshServiceError(
               "details_incomplete",
               `Required detail ${item.sourceListingId} is missing`
@@ -758,7 +814,9 @@ export class JiaoyimaoBrowserTaskService {
               detail:
                 parsedDetail?.kind === "ok"
                   ? parsedDetail.detail
-                  : null,
+                  : reusableDetail
+                    ? reusableListingDetail(reusableDetail)
+                    : null,
               detailAttempted: requiresDetail,
               warnings: []
             },
@@ -1009,21 +1067,23 @@ export class JiaoyimaoBrowserTaskService {
         };
       }
       const requiredCount = detailRequiredIds(items).length;
+      const reusableCount =
+        this.repository.getReusableDetailListings(id, now).size;
       return {
         transition: {
-          next: requiredCount === 0
+          next: requiredCount === reusableCount
             ? "validating"
             : "collecting_details",
           patch: {
-            stage: requiredCount === 0
+            stage: requiredCount === reusableCount
               ? "validating"
               : "collecting_details",
             reason: naturalEnd.reason,
             detailRequiredCount: requiredCount,
-            detailCompletedCount: 0,
+            detailCompletedCount: reusableCount,
             cooldownAttempt: 0,
             cooldownUntil: null,
-            nextActionAt: requiredCount === 0
+            nextActionAt: requiredCount === reusableCount
               ? null
               : this.nextActionTimestamp("detail", now),
             actionPermit: null,

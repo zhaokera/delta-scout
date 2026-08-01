@@ -20,6 +20,7 @@ import {
 import { ListingRepository } from "../../src/server/repository.js";
 import { RefreshAdmissionController } from "../../src/server/refreshAdmission.js";
 import { RefreshTracker } from "../../src/server/refreshTracker.js";
+import { makeListing } from "../domain/listingFactory.js";
 
 const baseTime = new Date("2026-07-30T10:00:00.000Z");
 const filterUrl =
@@ -101,6 +102,32 @@ function details(
     })),
     ...(actionPermit ? { actionPermit } : {})
   };
+}
+
+function reusableJiaoyimaoListing(capturedAt: string) {
+  return makeListing({
+    key: "jiaoyimao:1",
+    source: "jiaoyimao",
+    sourceListingId: "1",
+    url: "https://www.jiaoyimao.com/jg2007840/1.html",
+    title: "商品 1",
+    originalDescription:
+      "商品卡片\nQQ 官服 M7 棱镜攻势 极品A 总资产266M " +
+      "可二次实名 支持包赔",
+    capturedAt,
+    evidence: [
+      { text: "商品卡片", truncated: false },
+      {
+        text: "QQ 官服 M7 棱镜攻势 极品A 总资产266M",
+        truncated: false
+      },
+      { text: "可二次实名 支持包赔", truncated: false }
+    ],
+    parseWarnings: [],
+    verificationAt: new Date(
+      Date.parse(capturedAt) - 60_000
+    ).toISOString()
+  });
 }
 
 function fixture(random = 0) {
@@ -255,6 +282,89 @@ describe("JiaoyimaoBrowserTaskService", () => {
       kind: "detail",
       sourceListingId: "30",
       nextDetailSequence: 1
+    });
+  });
+
+  it("reuses a recent unchanged trusted detail while keeping the new price", () => {
+    const f = claimed();
+    f.listingRepository.replaceSourceSnapshot(
+      "jiaoyimao",
+      [
+        reusableJiaoyimaoListing(
+          new Date(baseTime.getTime() - 60 * 60 * 1_000).toISOString()
+        )
+      ],
+      "success",
+      baseTime,
+      { pagesScanned: 1, stopReason: "end_of_pages" }
+    );
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitListBatch(
+      f.id,
+      f.token,
+      listBatch([["1", 4_500]])
+    );
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+
+    expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
+      state: "validating",
+      detailRequiredCount: 1,
+      detailCompletedCount: 1,
+      nextActionAt: null
+    });
+    // Reuse eligibility is fixed when the task is claimed, so a slow manual
+    // verification session cannot invalidate an otherwise complete snapshot.
+    f.advance(6 * 60 * 60 * 1_000);
+    expect(f.service.getWork(f.id, f.token).kind).toBe("validating");
+    const completed = f.service.complete(f.id, f.token);
+    expect(completed.state).toBe("success");
+    expect(f.listingRepository.getListing("jiaoyimao:1")).toMatchObject({
+      priceCny: 4_500,
+      totalAssetsM: 266,
+      secondRealNameAvailable: true,
+      recoveryCoverage: true
+    });
+  });
+
+  it("does not reuse an unchanged detail after the six-hour trust window", () => {
+    const f = claimed();
+    f.listingRepository.replaceSourceSnapshot(
+      "jiaoyimao",
+      [
+        reusableJiaoyimaoListing(
+          new Date(baseTime.getTime() - 7 * 60 * 60 * 1_000).toISOString()
+        )
+      ],
+      "success",
+      baseTime,
+      { pagesScanned: 1, stopReason: "end_of_pages" }
+    );
+    f.service.saveFilterProof(f.id, f.token, proof());
+    f.service.submitListBatch(
+      f.id,
+      f.token,
+      listBatch([["1", 4_500]])
+    );
+    f.service.submitLoadEvent(
+      f.id,
+      f.token,
+      loadEvent(1, 1, 1, {
+        visibleTotalCount: 1,
+        endMarkerVisible: true
+      })
+    );
+
+    expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
+      state: "collecting_details",
+      detailRequiredCount: 1,
+      detailCompletedCount: 0
     });
   });
 

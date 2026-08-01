@@ -957,7 +957,7 @@ describe("App shell", () => {
       })
     ).toBeInTheDocument();
     expect(
-      screen.getByText("每平台最多 10 · 跨平台统一评分 Top 30")
+      screen.getByText("每平台最多 10 · 已排除明确高风险与疑似重复号")
     ).toBeInTheDocument();
     expect(screen.getByText("交易猫 10")).toBeInTheDocument();
     expect(screen.getByText("盼之 3")).toBeInTheDocument();
@@ -969,6 +969,47 @@ describe("App shell", () => {
     expect(within(row).getByText("M7 · 极品S")).toBeInTheDocument();
     expect(within(row).getByText("3 角色红皮")).toBeInTheDocument();
     expect(within(row).getByText("巨浪 · 极品")).toBeInTheDocument();
+  });
+
+  it("selects candidates into the comparison tray and opens the matrix", async () => {
+    const first = makeListing({
+      key: "jiaoyimao:compare-a",
+      source: "jiaoyimao",
+      sourceListingId: "COMPARE-A",
+      score: makeScore(78)
+    });
+    const second = makeListing({
+      key: "pxb7:compare-b",
+      source: "pxb7",
+      sourceListingId: "COMPARE-B",
+      score: makeScore(71),
+      priceCny: 2_250
+    });
+    const user = userEvent.setup();
+    render(<App api={makeApi({
+      getListings: async () => [first, second]
+    })} />);
+
+    const firstRow = await screen.findByRole("group", {
+      name: "候选 COMPARE-A"
+    });
+    const secondRow = screen.getByRole("group", {
+      name: "候选 COMPARE-B"
+    });
+    await user.click(within(firstRow).getByRole("button", {
+      name: "加入对比"
+    }));
+    await user.click(within(secondRow).getByRole("button", {
+      name: "加入对比"
+    }));
+    expect(screen.getByText("已选 2 / 4")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "开始对比" }));
+    expect(screen.getByRole("dialog", {
+      name: "候选账号横向对比"
+    })).toBeInTheDocument();
+    expect(screen.getByText("最低价")).toBeInTheDocument();
+    expect(screen.getByText("最高分")).toBeInTheDocument();
   });
 
   it("applies advanced filters only inside the loaded view", async () => {

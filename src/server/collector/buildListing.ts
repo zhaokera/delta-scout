@@ -38,12 +38,13 @@ function inferService(text: string): Service {
 
 function parseTotalAssetsM(text: string): number | null {
   const match = text.match(
-    /总资产[】：:\s]*([\d.]+)\s*(亿|[mM]|万|[wW])?/
+    /总资产[】：:\s]*([\d.]+)\s*(亿|[bBmM]|万|[wW])?/
   );
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return null;
   if (match[2] === "亿") return value * 100;
+  if (match[2]?.toLowerCase() === "b") return value * 1_000;
   if (match[2]?.toLowerCase() === "m") return value;
   if (match[2] === "万" || match[2]?.toLowerCase() === "w") {
     return value / 100;

@@ -109,6 +109,39 @@ describe("selectBalancedCandidatePool", () => {
       "panzhi:1"
     ]);
   });
+
+  it("keeps explicit high-risk accounts out of recommendations", () => {
+    const highRisk = scoredListing("panzhi", 1, {
+      score: { ...makeScore(99), riskLevel: "high" }
+    });
+    const reviewable = scoredListing("panzhi", 2, {
+      score: { ...makeScore(70), riskLevel: "medium" }
+    });
+
+    expect(selectBalancedCandidatePool([highRisk, reviewable])).toEqual([
+      reviewable
+    ]);
+  });
+
+  it("keeps only the strongest cross-platform possible duplicate", () => {
+    const strongest = scoredListing("jiaoyimao", 1, {
+      score: makeScore(95),
+      possibleDuplicateKeys: ["panzhi:2"]
+    });
+    const duplicate = scoredListing("panzhi", 2, {
+      score: makeScore(90),
+      possibleDuplicateKeys: ["jiaoyimao:1"]
+    });
+    const unique = scoredListing("pxb7", 3, {
+      score: makeScore(85)
+    });
+
+    expect(
+      selectBalancedCandidatePool([duplicate, unique, strongest]).map(
+        ({ key }) => key
+      )
+    ).toEqual(["jiaoyimao:1", "pxb7:3"]);
+  });
 });
 
 describe("selectGlobalCandidatePool", () => {
@@ -145,5 +178,25 @@ describe("selectGlobalCandidatePool", () => {
       Array.from({ length: 30 }, (_, index) => `jiaoyimao:${index}`)
     );
     expect(new Set(result.map(({ key }) => key)).size).toBe(30);
+  });
+
+  it("applies safety and duplicate gates to the global pool", () => {
+    const highRisk = scoredListing("jiaoyimao", 1, {
+      score: { ...makeScore(100), riskLevel: "high" }
+    });
+    const strongest = scoredListing("panzhi", 2, {
+      score: makeScore(90),
+      possibleDuplicateKeys: ["pxb7:3"]
+    });
+    const duplicate = scoredListing("pxb7", 3, {
+      score: makeScore(80),
+      possibleDuplicateKeys: ["panzhi:2"]
+    });
+
+    expect(
+      selectGlobalCandidatePool([highRisk, duplicate, strongest]).map(
+        ({ key }) => key
+      )
+    ).toEqual(["panzhi:2"]);
   });
 });
