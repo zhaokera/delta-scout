@@ -8,6 +8,11 @@ import {
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import type { Listing } from "../../domain/listing.js";
+import {
+  CANDIDATE_PRICE_MAX_CNY,
+  CANDIDATE_PRICE_MIN_CNY,
+  requiresCandidateDetail
+} from "../../domain/priceRange.js";
 import { parseStoredListing } from "../storedListing.js";
 import {
   BROWSER_REFRESH_LIMITS,
@@ -791,7 +796,7 @@ export class BrowserRefreshRepository {
       ? new Date(job.claimed_at)
       : now;
     const requiredItems = this.getListItems(id, now).filter(
-      (item) => item.priceCny === null || item.priceCny <= 6_000
+      (item) => requiresCandidateDetail(item.priceCny)
     );
     if (requiredItems.length === 0) return new Map();
     const listingKeys = requiredItems.map(
@@ -836,10 +841,17 @@ export class BrowserRefreshRepository {
         ON d.job_id = li.job_id
         AND d.source_listing_id = li.source_listing_id
       WHERE li.job_id = ?
-        AND (li.price_cny IS NULL OR li.price_cny <= 6000)
+        AND (
+          li.price_cny IS NULL OR
+          li.price_cny BETWEEN ? AND ?
+        )
         AND d.source_listing_id IS NULL
       ORDER BY li.rowid
-    `).all(id) as Array<{
+    `).all(
+      id,
+      CANDIDATE_PRICE_MIN_CNY,
+      CANDIDATE_PRICE_MAX_CNY
+    ) as Array<{
       source_listing_id: string;
       url: string;
     }>;
@@ -1367,8 +1379,15 @@ export class BrowserRefreshRepository {
           ON li.job_id = d.job_id
           AND li.source_listing_id = d.source_listing_id
         WHERE d.job_id = ?
-          AND (li.price_cny IS NULL OR li.price_cny <= 6000)
-      `).get(id) as { count: number };
+          AND (
+            li.price_cny IS NULL OR
+            li.price_cny BETWEEN ? AND ?
+          )
+      `).get(
+        id,
+        CANDIDATE_PRICE_MIN_CNY,
+        CANDIDATE_PRICE_MAX_CNY
+      ) as { count: number };
       const next = this.database.prepare(`
         SELECT li.source_listing_id
         FROM browser_refresh_list_items li
@@ -1376,11 +1395,18 @@ export class BrowserRefreshRepository {
           ON d.job_id = li.job_id
           AND d.source_listing_id = li.source_listing_id
         WHERE li.job_id = ?
-          AND (li.price_cny IS NULL OR li.price_cny <= 6000)
+          AND (
+            li.price_cny IS NULL OR
+            li.price_cny BETWEEN ? AND ?
+          )
           AND d.source_listing_id IS NULL
         ORDER BY li.rowid
         LIMIT 1
-      `).get(id) as { source_listing_id: string } | undefined;
+      `).get(
+        id,
+        CANDIDATE_PRICE_MIN_CNY,
+        CANDIDATE_PRICE_MAX_CNY
+      ) as { source_listing_id: string } | undefined;
       const result: DetailProgressView = {
         acceptedCount: parsed.items.length,
         detailCompletedCount: completed.count,

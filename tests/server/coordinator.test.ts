@@ -6,6 +6,9 @@ import {
   jiaoyimaoAdapter
 } from "../../src/server/collector/adapters/jiaoyimao.js";
 import {
+  panzhiAdapter
+} from "../../src/server/collector/adapters/panzhi.js";
+import {
   CollectionCoordinator,
   type RefreshProgressEvent
 } from "../../src/server/collector/coordinator.js";
@@ -94,7 +97,7 @@ function summary(index = 1): ListingSummary {
     url: `https://source.test/detail/${index}`,
     title: `候选 ${index}`,
     rawText: "QQ官服 M7棱镜攻势(极品A) 总资产268M 哈夫币2888w",
-    priceCny: 5_288
+    priceCny: 3_288
   };
 }
 
@@ -116,6 +119,10 @@ function listingDetail(): ListingDetail {
   return {
     evidence: [
       { text: "M7棱镜攻势(极品A)", truncated: false },
+      {
+        text: "骇爪-维什戴尔 露娜-黑天际线",
+        truncated: false
+      },
       { text: "威龙 红皮", truncated: false },
       { text: "巨浪(极品)", truncated: false }
     ],
@@ -237,6 +244,8 @@ async function collectJiaoyimaoMtopItem(
   }
   product.sellPoints = [
     { desc: "威龙-凌霄戍卫" },
+    { desc: "骇爪-维什戴尔" },
+    { desc: "露娜-黑天际线" },
     { desc: "巨浪(极品)" }
   ];
   const pageContent = JSON.stringify(page);
@@ -432,6 +441,41 @@ describe("CollectionCoordinator", () => {
           observedItemCount: 0
         })
       ]
+    });
+  });
+
+  it("requires a Panzhi browser snapshot without fetching the broad SSR catalog", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [makeListing({ key: "panzhi:trusted", sourceListingId: "trusted" })],
+      "success",
+      new Date("2026-07-31T10:00:00.000Z")
+    );
+    const runId = repository.startScan(
+      new Date("2026-08-01T10:00:00.000Z")
+    );
+    const fetcher = new LifecycleFetcher((request) =>
+      ok(request.url, "must not be fetched")
+    );
+
+    const state = await new CollectionCoordinator({
+      adapters: [panzhiAdapter],
+      fetcher,
+      repository,
+      now: () => new Date("2026-08-01T10:00:00.000Z")
+    }).refreshAll(runId);
+
+    expect(state).toBe("failed");
+    expect(fetcher.events).toEqual(["begin:panzhi", "end:panzhi"]);
+    expect(repository.getListings().map(({ key }) => key)).toEqual([
+      "panzhi:trusted"
+    ]);
+    expect(sourceStatus(repository, "panzhi")).toMatchObject({
+      state: "blocked",
+      error: "browser_snapshot_required",
+      itemCount: 1,
+      lastSuccessAt: "2026-07-31T10:00:00.000Z"
     });
   });
 
@@ -691,6 +735,41 @@ describe("CollectionCoordinator", () => {
       .toHaveLength(2);
   });
 
+  it("collects independent sources concurrently", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapters = [
+      freshSourceAdapter("jiaoyimao", 1),
+      freshSourceAdapter("panzhi", 2),
+      freshSourceAdapter("pxb7", 3)
+    ];
+    let activeEntryRequests = 0;
+    let maximumActiveEntryRequests = 0;
+    const fetcher: PageFetcher = {
+      async fetchPage(request, source) {
+        if (request.url === `https://${source}.test/`) {
+          activeEntryRequests += 1;
+          maximumActiveEntryRequests = Math.max(
+            maximumActiveEntryRequests,
+            activeEntryRequests
+          );
+          await Promise.resolve();
+          activeEntryRequests -= 1;
+          return ok(request.url, "home");
+        }
+        return ok(request.url, "list");
+      }
+    };
+
+    await new CollectionCoordinator({
+      adapters,
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(maximumActiveEntryRequests).toBe(3);
+    expect(repository.getListings()).toHaveLength(3);
+  });
+
   it("releases the refresh lock after an uncaught refresh error", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     vi.spyOn(repository, "getListings").mockImplementationOnce(() => {
@@ -817,6 +896,35 @@ describe("CollectionCoordinator", () => {
     expect(repository.getListings("eligible")).toHaveLength(1);
   });
 
+  it("skips detail requests outside the configured price range", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const items = [1_899, 1_900, 4_000, 4_001].map((priceCny, index) => ({
+      ...summary(index + 1),
+      rawText: "QQ官服 普通账号",
+      priceCny
+    }));
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items })
+    });
+    const fetcher = new RoutingFetcher((request) =>
+      ok(request.url, request.url.includes("/detail/") ? "detail" : "list")
+    );
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository
+    }).refreshAll();
+
+    expect(
+      fetcher.calls
+        .map(({ url }) => url)
+        .filter((url) => url.includes("/detail/"))
+    ).toEqual([items[1].url, items[2].url]);
+    expect(repository.getListings().map(({ eligibility }) => eligibility))
+      .toEqual(["rejected", "eligible", "eligible", "rejected"]);
+  });
+
   it("uses the MTop query hint for detail fetching without treating it as quality evidence", async () => {
     const { fetcher, listing, detailUrl } =
       await collectJiaoyimaoMtopItem(
@@ -827,7 +935,7 @@ describe("CollectionCoordinator", () => {
     expect(listing).toMatchObject({
       m7PrismStatus: "unknown",
       m7PrismQuality: null,
-      redSkins: ["威龙"],
+      redSkins: ["威龙", "露娜", "骇爪"],
       julangStatus: "owned",
       julangQuality: "极品"
     });
@@ -846,7 +954,7 @@ describe("CollectionCoordinator", () => {
       expect(listing).toMatchObject({
         m7PrismStatus: "peak",
         m7PrismQuality: quality,
-        redSkins: ["威龙"],
+        redSkins: ["威龙", "露娜", "骇爪"],
         julangStatus: "owned",
         julangQuality: "极品"
       });
@@ -866,7 +974,8 @@ describe("CollectionCoordinator", () => {
       eligibility: "eligible"
     });
     expect(listing.priceCny).not.toBeNull();
-    expect(listing.priceCny).toBeLessThanOrEqual(6_000);
+    expect(listing.priceCny).toBeGreaterThanOrEqual(1_900);
+    expect(listing.priceCny).toBeLessThanOrEqual(4_000);
   });
 
   it("keeps MTop premium detail evidence out of conflict", async () => {
@@ -1047,7 +1156,13 @@ describe("CollectionCoordinator", () => {
         kind: "ok",
         detail: {
           ...listingDetail(),
-          evidence: [{ text: "QQ官服 普通账号", truncated: false }]
+          evidence: [
+            { text: "QQ官服 普通账号", truncated: false },
+            {
+              text: "骇爪-维什戴尔 露娜-黑天际线",
+              truncated: false
+            }
+          ]
         }
       })
     });
@@ -1146,64 +1261,6 @@ describe("CollectionCoordinator", () => {
       stopReason: "end_of_pages"
     });
   });
-
-  it.each(["B", "C"] as const)(
-    "sends SSR peak quality %s through the real detail prefilter",
-    async (quality) => {
-      const id = quality === "B"
-        ? "1784550994519444"
-        : "1784550994519555";
-      const detailUrl =
-        `https://www.jiaoyimao.com/jg2007840/${id}.html`;
-      const entryHtml = jiaoyimaoSsrCard(
-        id,
-        `M7-极品${quality} 安卓QQ`
-      );
-      const terminalMtopPage = JSON.stringify({
-        ret: ["SUCCESS::调用成功"],
-        data: {
-          result: {
-            hasNextPage: "false",
-            deliverComps: []
-          }
-        }
-      });
-      const repository = new ListingRepository(createDatabase(":memory:"));
-      const fetcher = new RoutingFetcher((request) => {
-        if (request.url === jiaoyimaoAdapter.entryUrl) {
-          return ok(request.url, entryHtml);
-        }
-        if (request.url === APPROVED_JIAOYIMAO_MTOP_ENDPOINT) {
-          return ok(request.url, terminalMtopPage);
-        }
-        if (request.url === detailUrl) {
-          return ok(
-            request.url,
-            jiaoyimaoDetail(
-              `M7战斗步枪-棱镜攻势S2(极品${quality})`
-            )
-          );
-        }
-        return {
-          kind: "failed",
-          url: request.url,
-          error: "missing_fixture"
-        };
-      });
-
-      await new CollectionCoordinator({
-        adapters: [jiaoyimaoAdapter],
-        fetcher,
-        repository
-      }).refreshAll();
-
-      expect(fetcher.calls.map(({ url }) => url)).toContain(detailUrl);
-      expect(repository.getListings()[0]).toMatchObject({
-        m7PrismStatus: "peak",
-        m7PrismQuality: quality
-      });
-    }
-  );
 
   it("stops before fetching the same request fingerprint twice", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
@@ -1345,7 +1402,7 @@ describe("CollectionCoordinator", () => {
     expect(repository.getListings("eligible")).toHaveLength(2);
     expect(repository.getListings("eligible")[0]).toMatchObject({
       m7PrismStatus: "peak",
-      redSkins: ["威龙"],
+      redSkins: ["威龙", "露娜", "骇爪"],
       julangStatus: "owned",
       score: { total: expect.any(Number) }
     });
@@ -1370,6 +1427,10 @@ describe("CollectionCoordinator", () => {
               ...listingDetail(),
               evidence: [
                 { text: "M7战斗步枪-棱镜攻势S2(极品A)", truncated: false },
+                {
+                  text: "骇爪-维什戴尔 露娜-黑天际线",
+                  truncated: false
+                },
                 {
                   text: "市场价5万+三角券的珠光粉M7",
                   truncated: false
@@ -1714,14 +1775,14 @@ describe("CollectionCoordinator", () => {
       url: "https://SOURCE.test/detail/1?b=2&a=1",
       title: "第一页有效标题",
       rawText: "QQ官服 普通账号",
-      priceCny: 1_888,
+      priceCny: 2_000,
       embeddedDetail: listingDetail()
     };
     const duplicate = {
       ...first,
       url: "https://source.test/detail/1?a=1&utm_campaign=x&b=2#card",
       title: "重复页不应覆盖",
-      priceCny: 5_999
+      priceCny: 4_500
     };
     const adapter = fakeAdapter({
       parseList: (html) => ({
@@ -1751,7 +1812,7 @@ describe("CollectionCoordinator", () => {
     expect(repository.getListings()).toHaveLength(1);
     expect(repository.getListings()[0]).toMatchObject({
       title: "第一页有效标题",
-      priceCny: 1_888
+      priceCny: 2_000
     });
     expect(sourceStatus(repository)).toMatchObject({
       state: "success",
@@ -1856,7 +1917,7 @@ describe("CollectionCoordinator", () => {
   it("uses one normalization set for fresh listings from different sources", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const cheap = summaryForSource("panzhi", 1, {
-      priceCny: 1_000,
+      priceCny: 2_000,
       embeddedDetail: {
         ...listingDetail(),
         totalAssetsM: 100,
@@ -1864,7 +1925,7 @@ describe("CollectionCoordinator", () => {
       }
     });
     const rich = summaryForSource("pxb7", 1, {
-      priceCny: 5_000,
+      priceCny: 3_500,
       embeddedDetail: {
         ...listingDetail(),
         totalAssetsM: 500,
@@ -1953,6 +2014,78 @@ describe("CollectionCoordinator", () => {
     expect(sourceStatus(repository)).toMatchObject({
       state: "partial",
       pagesScanned: 2,
+      stopReason: "safety_limit"
+    });
+  });
+
+  it("applies source limits without changing the global fallback", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const makeAdapter = (
+      source: ListingSummary["source"]
+    ): SourceAdapter =>
+      fakeAdapter({
+        source,
+        entryUrl: `https://${source}.test/`,
+        discoverCatalog: () => ({
+          kind: "ok",
+          request: { url: `https://${source}.test/list/1` }
+        }),
+        parseList: (html) => {
+          const page = Number(html.replace(`${source}-page-`, ""));
+          return {
+            kind: "ok",
+            items: [{
+              ...summaryForSource(source, page),
+              embeddedDetail: listingDetail()
+            }]
+          };
+        },
+        nextPage: (html) => ({
+          url: `https://${source}.test/list/${
+            Number(html.replace(`${source}-page-`, "")) + 1
+          }`
+        })
+      });
+    const adapters = [makeAdapter("panzhi"), makeAdapter("pxb7")];
+    const fetcher = new RoutingFetcher((request) => {
+      const source = request.url.includes("pxb7") ? "pxb7" : "panzhi";
+      if (request.url === `https://${source}.test/`) {
+        return ok(request.url, "home");
+      }
+      const page = request.url.match(/\/list\/(\d+)/)?.[1] ?? "1";
+      return ok(request.url, `${source}-page-${page}`);
+    });
+
+    await new CollectionCoordinator({
+      adapters,
+      fetcher,
+      repository,
+      limits: { maxPages: 2, maxSummaries: 8, maxDetails: 4 },
+      limitsBySource: { pxb7: { maxPages: 3 } }
+    }).refreshAll();
+
+    const listCalls = fetcher.calls
+      .filter(({ url }) => url.includes("/list/"))
+      .map(({ url }) => url);
+    expect(listCalls.filter((url) => url.includes("panzhi"))).toEqual([
+      "https://panzhi.test/list/1",
+      "https://panzhi.test/list/2"
+    ]);
+    expect(listCalls.filter((url) => url.includes("pxb7"))).toEqual([
+      "https://pxb7.test/list/1",
+      "https://pxb7.test/list/2",
+      "https://pxb7.test/list/3"
+    ]);
+    expect(sourceStatus(repository, "panzhi")).toMatchObject({
+      state: "partial",
+      itemCount: 2,
+      pagesScanned: 2,
+      stopReason: "safety_limit"
+    });
+    expect(sourceStatus(repository, "pxb7")).toMatchObject({
+      state: "partial",
+      itemCount: 3,
+      pagesScanned: 3,
       stopReason: "safety_limit"
     });
   });
@@ -2060,7 +2193,56 @@ describe("CollectionCoordinator", () => {
       state: "partial",
       itemCount: 5,
       pagesScanned: 1,
-      stopReason: "safety_limit"
+      stopReason: "end_of_pages",
+      error: "detail_limit_reached"
+    });
+  });
+
+  it("continues list pagination after reaching the detail budget", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapter = fakeAdapter({
+      parseList: (html) => ({
+        kind: "ok",
+        items: [1, 2].map((offset) => ({
+          ...summary(html === "page-one" ? offset : offset + 2),
+          rawText: "QQ官服 查询匹配"
+        }))
+      }),
+      nextPage: (html) =>
+        html === "page-one"
+          ? { url: "https://source.test/list/2" }
+          : null
+    });
+    const fetcher = new RoutingFetcher((request) => {
+      if (request.url === adapter.entryUrl) {
+        return ok(request.url, "home");
+      }
+      if (request.url.endsWith("/list/1")) {
+        return ok(request.url, "page-one");
+      }
+      if (request.url.endsWith("/list/2")) {
+        return ok(request.url, "page-two");
+      }
+      return ok(request.url, "detail");
+    });
+
+    await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      limits: { maxPages: 5, maxSummaries: 8, maxDetails: 1 }
+    }).refreshAll();
+
+    expect(
+      fetcher.calls.filter(({ url }) => url.includes("/detail/"))
+    ).toHaveLength(1);
+    expect(repository.getListings()).toHaveLength(4);
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "partial",
+      itemCount: 4,
+      pagesScanned: 2,
+      stopReason: "end_of_pages",
+      error: "detail_limit_reached"
     });
   });
 

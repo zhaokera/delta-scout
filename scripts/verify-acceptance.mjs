@@ -27,8 +27,22 @@ function assertCandidate(candidate, poolName) {
     `${poolName}: candidate price is unknown`
   );
   assert.ok(
-    candidate.priceCny <= 6_000,
+    candidate.priceCny >= 1_900,
+    `${poolName}: candidate is below the configured price floor`
+  );
+  assert.ok(
+    candidate.priceCny <= 4_000,
     `${poolName}: candidate exceeds budget`
+  );
+  assert.equal(
+    candidate.requiredRedSkinStatus,
+    "complete",
+    `${poolName}: required operator skins are not fully proven`
+  );
+  assert.deepEqual(
+    [...candidate.requiredRedSkins].sort(),
+    ["露娜-黑天际线", "骇爪-维什戴尔"].sort(),
+    `${poolName}: required operator skin set is incomplete`
   );
   assert.ok(candidate.score, `${poolName}: candidate is missing a score`);
   for (const field of ["total", "value", "safety", "dataQuality"]) {

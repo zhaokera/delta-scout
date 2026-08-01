@@ -41,13 +41,17 @@ export function makeListing(overrides: Partial<Listing> = {}): Listing {
     title: "棱镜攻势极品账号",
     originalDescription: "QQ 官服 M7 棱镜攻势 极品",
     capturedAt: "2026-07-28T10:00:00+08:00",
-    priceCny: 1888,
+    priceCny: 2888,
     loginPlatform: "qq",
     service: "official",
     totalAssetsM: 266,
     hafCoins: 28_880_000,
     evidence: [
       { text: "QQ 官服 M7 棱镜攻势 极品", truncated: false },
+      {
+        text: "骇爪-维什戴尔 露娜-黑天际线",
+        truncated: false
+      },
       { text: "威龙 红皮", truncated: false },
       { text: "巨浪 极品", truncated: false }
     ],
@@ -59,6 +63,8 @@ export function makeListing(overrides: Partial<Listing> = {}): Listing {
     redSkins: ["威龙"],
     redSkinCount: 1,
     redSkinUnnamed: false,
+    requiredRedSkins: ["骇爪-维什戴尔", "露娜-黑天际线"],
+    requiredRedSkinStatus: "complete",
     julangStatus: "owned",
     julangQuality: "极品",
     realNameStatus: "second_available",

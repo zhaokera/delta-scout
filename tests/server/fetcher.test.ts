@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PublicPageFetcher } from "../../src/server/collector/fetcher.js";
 import {
   APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
-  APPROVED_JIAOYIMAO_REFERER
+  APPROVED_JIAOYIMAO_REFERER,
+  APPROVED_JIAOYIMAO_SEARCH_CONDITION
 } from "../../src/server/collector/mtop.js";
 import type { SourceRequest } from "../../src/server/collector/types.js";
 
 const APPROVED_MTOP_BODY = JSON.stringify({
-  searchCondition: JSON.stringify({}),
+  searchCondition: JSON.stringify(
+    APPROVED_JIAOYIMAO_SEARCH_CONDITION
+  ),
   relateId: "10101",
   pageSize: 16,
   modelType: "h5",
@@ -79,11 +82,11 @@ describe("PublicPageFetcher", () => {
     ["referer", { referer: `${APPROVED_JIAOYIMAO_REFERER}&extra=1` }],
     ["missing metadata", { anonymousMtop: undefined }],
     [
-      "SSR-only page 1 body",
+      "zero page body",
       {
         body: APPROVED_MTOP_BODY.replace(
           '"page":"2"',
-          '"page":"1"'
+          '"page":"0"'
         )
       }
     ]
@@ -203,6 +206,31 @@ describe("PublicPageFetcher", () => {
     ).resolves.toEqual({
       kind: "blocked",
       url: "https://example.com",
+      reason: "captcha_required"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("recognizes the Aliyun WAF challenge returned by Panzhi", async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(
+        '<meta name="aliyun_waf_aa" content="challenge">' +
+          '<div id="aliyunCaptcha-sliding-slider"></div>',
+        { status: 200 }
+      )
+    );
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      minimumIntervalMs: 0
+    });
+
+    await expect(fetcher.fetchPage({
+      url:
+        "https://api.pzds.com/api/web-client/v2/public/goodsPublic/page"
+    }, "panzhi")).resolves.toEqual({
+      kind: "blocked",
+      url:
+        "https://api.pzds.com/api/web-client/v2/public/goodsPublic/page",
       reason: "captcha_required"
     });
     expect(fetchFn).toHaveBeenCalledTimes(1);

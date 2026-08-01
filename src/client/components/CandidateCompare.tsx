@@ -222,6 +222,14 @@ export function CandidateCompareDialog({
 
                 <dl className="compare-card__facts">
                   <div>
+                    <dt>指定红皮</dt>
+                    <dd>
+                      {listing.requiredRedSkinStatus === "complete"
+                        ? "维什戴尔 · 黑天际线"
+                        : "待核验"}
+                    </dd>
+                  </div>
+                  <div>
                     <dt>M7 品质</dt>
                     <dd>{m7Label(listing)}</dd>
                   </div>

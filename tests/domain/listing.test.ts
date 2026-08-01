@@ -24,6 +24,11 @@ const validListing = {
   redSkins: ["威龙"],
   redSkinCount: 1,
   redSkinUnnamed: false,
+  requiredRedSkins: [
+    "骇爪-维什戴尔",
+    "露娜-黑天际线"
+  ] as const,
+  requiredRedSkinStatus: "complete",
   julangStatus: "owned",
   julangQuality: "极品",
   realNameStatus: "second_available",
@@ -49,6 +54,17 @@ describe("ListingSchema", () => {
     expect(() =>
       ListingSchema.parse({ ...validListing, loginPlatform: "" })
     ).toThrow();
+  });
+
+  it("keeps the required red-skin status consistent with its exact labels", () => {
+    expect(() => ListingSchema.parse({
+      ...validListing,
+      requiredRedSkins: ["骇爪-维什戴尔"]
+    })).toThrow();
+    expect(() => ListingSchema.parse({
+      ...validListing,
+      requiredRedSkinStatus: "partial"
+    })).toThrow();
   });
 
   it("rejects confidence outside 0–100", () => {

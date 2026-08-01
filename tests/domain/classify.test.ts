@@ -1,28 +1,36 @@
 import { classifyListing } from "../../src/domain/classify";
 
 describe("classifyListing", () => {
-  it("requires only QQ, 官服 and an in-budget price", () => {
-    expect(
-      classifyListing({
-        loginPlatform: "qq",
-        service: "official",
-        priceCny: 5_999
-      })
-    ).toBe("eligible");
+  it.each([1_900, 3_999, 4_000])(
+    "accepts the inclusive candidate price range at %s",
+    (priceCny) => {
+      expect(
+        classifyListing({
+          loginPlatform: "qq",
+          service: "official",
+          priceCny,
+          requiredRedSkinStatus: "complete"
+        })
+      ).toBe("eligible");
+    }
+  );
 
+  it("still requires a proven official service", () => {
     expect(
       classifyListing({
         loginPlatform: "qq",
         service: "unknown",
-        priceCny: 5_999
+        priceCny: 3_999,
+        requiredRedSkinStatus: "complete"
       })
     ).toBe("needs_verification");
   });
 
   it.each([
-    ["wechat", "official", 5_999],
-    ["qq", "non_official", 5_999],
-    ["qq", "official", 6_001]
+    ["wechat", "official", 3_999],
+    ["qq", "non_official", 3_999],
+    ["qq", "official", 1_899],
+    ["qq", "official", 4_001]
   ] as const)(
     "rejects a known failed condition",
     (loginPlatform, service, priceCny) => {
@@ -30,7 +38,8 @@ describe("classifyListing", () => {
         classifyListing({
           loginPlatform,
           service,
-          priceCny
+          priceCny,
+          requiredRedSkinStatus: "complete"
         })
       ).toBe("rejected");
     }
@@ -42,7 +51,8 @@ describe("classifyListing", () => {
         classifyListing({
           loginPlatform: "qq",
           service: "official",
-          priceCny: 5_999
+          priceCny: 3_999,
+          requiredRedSkinStatus: "complete"
         }),
         label
       ).toBe("eligible");
@@ -50,14 +60,19 @@ describe("classifyListing", () => {
   });
 
   it.each([
-    ["unknown", "official", 5_999],
-    ["qq", "unknown", 5_999],
+    ["unknown", "official", 3_999],
+    ["qq", "unknown", 3_999],
     ["qq", "official", null]
   ] as const)(
     "keeps an unknown hard condition pending",
     (loginPlatform, service, priceCny) => {
       expect(
-        classifyListing({ loginPlatform, service, priceCny })
+        classifyListing({
+          loginPlatform,
+          service,
+          priceCny,
+          requiredRedSkinStatus: "complete"
+        })
       ).toBe("needs_verification");
     }
   );
@@ -65,10 +80,32 @@ describe("classifyListing", () => {
   it("prioritizes a known rejection over another unknown field", () => {
     expect(
       classifyListing({
-        loginPlatform: "qq",
+        loginPlatform: "unknown",
         service: "official",
-        priceCny: 6_001
+        priceCny: 1_899,
+        requiredRedSkinStatus: "unknown"
       })
     ).toBe("rejected");
+  });
+
+  it.each(["unknown", "partial"] as const)(
+    "keeps an unproven required red-skin condition pending at %s",
+    (requiredRedSkinStatus) => {
+      expect(classifyListing({
+        loginPlatform: "qq",
+        service: "official",
+        priceCny: 3_999,
+        requiredRedSkinStatus
+      })).toBe("needs_verification");
+    }
+  );
+
+  it("rejects an explicitly missing required red skin", () => {
+    expect(classifyListing({
+      loginPlatform: "qq",
+      service: "official",
+      priceCny: 3_999,
+      requiredRedSkinStatus: "missing"
+    })).toBe("rejected");
   });
 });

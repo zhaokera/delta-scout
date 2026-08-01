@@ -50,6 +50,10 @@ import {
   RefreshAdmissionController
 } from "./refreshAdmission.js";
 import type { RefreshTracker } from "./refreshTracker.js";
+import {
+  buildPanzhiBrowserListings,
+  PanzhiBrowserSnapshotSchema
+} from "./panzhiBrowserSnapshot.js";
 
 interface RefreshCoordinator {
   refreshAll(
@@ -155,7 +159,7 @@ function sendManualReviewError(
     }
     response.status(409).json({
       error: error.code,
-      message: "该账号不满足 QQ 官服与预算条件，不能人工淘汰"
+      message: "该账号不满足 QQ 官服与 ¥1,900–¥4,000 价格条件，不能人工淘汰"
     });
     return;
   }
@@ -175,6 +179,9 @@ const BROWSER_REFRESH_PATH_PREFIXES = [
   "/api/browser-refresh",
   "/api/sources/jiaoyimao/browser-refresh"
 ] as const;
+const PANZHI_BROWSER_SNAPSHOT_PATH =
+  "/api/sources/panzhi/browser-snapshot";
+const PANZHI_BROWSER_SNAPSHOT_MAX_BYTES = 1024 * 1024;
 
 function isBrowserRefreshPath(path: string): boolean {
   const pathname = (path.split("?")[0] ?? "").toLowerCase();
@@ -189,12 +196,11 @@ function hasJsonContentType(contentType: string | undefined): boolean {
     .test(contentType.trim());
 }
 
-const readBrowserBody: RequestHandler = (
-  request,
-  response,
-  next
-) => {
-  const limit = BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes;
+function createStrictJsonBodyReader(
+  limit: number,
+  tooLargeMessage: string
+): RequestHandler {
+  return (request, response, next) => {
   let settled = false;
   let received = 0;
   const chunks: Buffer[] = [];
@@ -207,7 +213,7 @@ const readBrowserBody: RequestHandler = (
     request.resume();
     response.status(413).json({
       error: "browser_payload_too_large",
-      message: "浏览器刷新请求超过 128 KiB 限制"
+      message: tooLargeMessage
     });
   };
   const rejectInvalid = (
@@ -294,7 +300,17 @@ const readBrowserBody: RequestHandler = (
       rejectInvalid(400, "浏览器刷新请求格式无效");
     }
   });
-};
+  };
+}
+
+const readBrowserBody = createStrictJsonBodyReader(
+  BROWSER_REFRESH_LIMITS.maxBatchUtf8Bytes,
+  "浏览器刷新请求超过 128 KiB 限制"
+);
+const readPanzhiBrowserSnapshotBody = createStrictJsonBodyReader(
+  PANZHI_BROWSER_SNAPSHOT_MAX_BYTES,
+  "盼之浏览器快照请求超过 1 MiB 限制"
+);
 
 interface CurrentListingSnapshot {
   statuses: SourceStatus[];
@@ -391,6 +407,10 @@ export function createApp(dependencies?: AppDependencies): Express {
   for (const prefix of BROWSER_REFRESH_PATH_PREFIXES) {
     app.use(prefix, readBrowserBody);
   }
+  app.use(
+    PANZHI_BROWSER_SNAPSHOT_PATH,
+    readPanzhiBrowserSnapshotBody
+  );
   app.use(express.json({ limit: "256kb" }));
   app.get("/api/health", (_request, response) => {
     response.json({
@@ -414,6 +434,92 @@ export function createApp(dependencies?: AppDependencies): Express {
   const bridgeToken = (
     authorization: string | undefined
   ): string => readBearerToken(authorization);
+
+  app.post(PANZHI_BROWSER_SNAPSHOT_PATH, (request, response) => {
+    const capturedAt = now();
+    try {
+      const snapshot = PanzhiBrowserSnapshotSchema.parse(request.body);
+      const built = buildPanzhiBrowserListings(snapshot, capturedAt);
+      const sourceState = snapshot.stopReason === "captcha_required"
+        ? "partial" as const
+        : "success" as const;
+      const acquired = admission.withAllSourcesLease(() => {
+        const runId = repository.startScopedScan("panzhi", capturedAt);
+        try {
+          const state = repository.commitScanRefresh(
+            runId,
+            built.listings,
+            [
+              {
+                source: "panzhi",
+                state: sourceState,
+                attemptedAt: capturedAt,
+                itemCount: built.listings.length,
+                metadata: {
+                  pagesScanned: snapshot.loadActionCount,
+                  stopReason: snapshot.stopReason,
+                  error: sourceState === "partial"
+                    ? "captcha_required"
+                    : null
+                }
+              }
+            ],
+            capturedAt
+          );
+          return { runId, state };
+        } catch (error) {
+          try {
+            repository.failScan(
+              runId,
+              "盼之浏览器快照发布失败",
+              capturedAt
+            );
+          } catch {
+            // Preserve the original publish error.
+          }
+          throw error;
+        }
+      });
+      if (acquired.kind === "conflict") {
+        response.status(409).json({
+          error: "refresh_conflict",
+          message: "另一个刷新任务正在进行",
+          activeKind: acquired.activeKind,
+          ...(acquired.jobId ? { jobId: acquired.jobId } : {})
+        });
+        return;
+      }
+      acquired.lease.release();
+      tracker.synchronize(repository.getRefreshSnapshot());
+      const published = repository.getScanHistory(1)[0]?.sources.some(
+        (source) =>
+          source.source === "panzhi" &&
+          source.published
+      ) ?? false;
+      response.json({
+        source: "panzhi",
+        state: published
+          ? sourceState
+          : "quarantined",
+        scanRunId: acquired.value.runId,
+        observedItemCount: snapshot.items.length,
+        publishedItemCount: published ? built.listings.length : 0,
+        droppedByPrice: built.droppedByPrice
+      });
+    } catch (error) {
+      if (error instanceof ZodError) {
+        response.status(400).json({
+          error: "invalid_panzhi_browser_snapshot",
+          message: "盼之浏览器快照或原生价格筛选证明无效"
+        });
+        return;
+      }
+      response.status(500).json({
+        error: "panzhi_browser_snapshot_failed",
+        message: "盼之浏览器快照发布失败"
+      });
+    }
+  });
 
   app.post(
     "/api/sources/jiaoyimao/browser-refresh",

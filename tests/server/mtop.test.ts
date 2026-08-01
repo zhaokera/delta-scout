@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PublicPageFetcher } from "../../src/server/collector/fetcher.js";
 import {
   APPROVED_JIAOYIMAO_REFERER,
+  APPROVED_JIAOYIMAO_SEARCH_CONDITION,
   buildJymMeta,
   buildMtopUrl,
   extractAnonymousMtopSession,
@@ -19,7 +20,9 @@ const APP_KEY = "12574478";
 const ENTRY_URL = APPROVED_JIAOYIMAO_REFERER;
 const USER_AGENT =
   "DeltaAccountScout/0.1 (+local personal comparison tool)";
-const SEARCH_CONDITION = JSON.stringify({});
+const SEARCH_CONDITION = JSON.stringify(
+  APPROVED_JIAOYIMAO_SEARCH_CONDITION
+);
 const GAME_CONDITION = JSON.stringify({
   gameId: 2_007_840,
   platformId: 2,
@@ -271,6 +274,11 @@ describe("anonymous MTop helpers", () => {
 describe("anonymous MTop whitelist", () => {
   it("accepts only the exact Jiaoyimao public goods-list request", () => {
     expect(isApprovedJiaoyimaoMtopRequest(approvedRequest())).toBe(true);
+    expect(
+      isApprovedJiaoyimaoMtopRequest(
+        approvedRequest(dataForPage(1))
+      )
+    ).toBe(true);
   });
 
   it.each([
@@ -328,6 +336,42 @@ describe("anonymous MTop whitelist", () => {
           String(outer.searchCondition)
         ) as Record<string, unknown>;
         search.is_second_real_name = true;
+        outer.searchCondition = JSON.stringify(search);
+      })
+    ],
+    [
+      "missing required operator-skin filter",
+      mutateData((outer) => {
+        const search = JSON.parse(
+          String(outer.searchCondition)
+        ) as Record<string, unknown>;
+        delete search.selling_point_7322805066952352771;
+        outer.searchCondition = JSON.stringify(search);
+      })
+    ],
+    [
+      "only one required operator skin",
+      mutateData((outer) => {
+        const search = JSON.parse(
+          String(outer.searchCondition)
+        ) as Record<string, {
+          conditionList: string[];
+          statConditionList: string[];
+        }>;
+        const condition =
+          search.selling_point_7322805066952352771;
+        condition.conditionList = ["骇爪-维什戴尔"];
+        condition.statConditionList = ["骇爪-维什戴尔"];
+        outer.searchCondition = JSON.stringify(search);
+      })
+    ],
+    [
+      "OR-style operator-skin selector",
+      mutateData((outer) => {
+        const search = JSON.parse(
+          String(outer.searchCondition)
+        ) as Record<string, Record<string, unknown>>;
+        search.selling_point_7322805066952352771.selectType = 2;
         outer.searchCondition = JSON.stringify(search);
       })
     ],
@@ -434,6 +478,48 @@ describe("PublicPageFetcher anonymous MTop transport", () => {
       error: "unapproved_mtop_request"
     });
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("returns the signed native-filtered page one used to prime the session", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (calls.length === 1) {
+        return responseWithCookies(
+          '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"]}',
+          [
+            "_m_h5_tk=page-one-token_1; Path=/",
+            "_m_h5_tk_enc=page-one-enc; Path=/"
+          ]
+        );
+      }
+      return new Response(SUCCESS_BODY, { status: 200 });
+    });
+    const fetcher = new PublicPageFetcher({
+      fetchFn,
+      now: () => 1_700_000_000_000,
+      minimumIntervalMs: 0
+    });
+    fetcher.beginSource("jiaoyimao");
+
+    await expect(
+      fetcher.fetchPage(
+        approvedRequest(dataForPage(1)),
+        "jiaoyimao"
+      )
+    ).resolves.toEqual({
+      kind: "ok",
+      url: ENDPOINT,
+      status: 200,
+      html: SUCCESS_BODY
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(
+      calls.map(({ init }) =>
+        new URLSearchParams(String(init?.body)).get("data")
+      )
+    ).toEqual([dataForPage(1), dataForPage(1)]);
   });
 
   it("bootstraps page 2 with a page-1 handshake and signed prime", async () => {

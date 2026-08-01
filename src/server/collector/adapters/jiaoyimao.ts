@@ -10,6 +10,7 @@ import type {
 import {
   APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
   APPROVED_JIAOYIMAO_REFERER,
+  APPROVED_JIAOYIMAO_SEARCH_CONDITION,
   isApprovedJiaoyimaoMtopRequest
 } from "../mtop.js";
 import {
@@ -20,8 +21,7 @@ import {
 } from "./shared.js";
 
 const BASE_URL = "https://www.jiaoyimao.com/";
-const BROAD_CATALOG_URL = APPROVED_JIAOYIMAO_REFERER;
-const BROAD_SEARCH_CONDITION = {};
+const FILTERED_CATALOG_URL = APPROVED_JIAOYIMAO_REFERER;
 const GAME_CONDITION = {
   gameId: 2_007_840,
   platformId: 2,
@@ -229,9 +229,11 @@ function makeMtopListRequest(page: number): SourceRequest {
       accept: "application/json",
       contentType: "application/x-www-form-urlencoded",
       origin: "https://www.jiaoyimao.com",
-      referer: BROAD_CATALOG_URL,
+      referer: FILTERED_CATALOG_URL,
       body: JSON.stringify({
-        searchCondition: JSON.stringify(BROAD_SEARCH_CONDITION),
+        searchCondition: JSON.stringify(
+          APPROVED_JIAOYIMAO_SEARCH_CONDITION
+        ),
         relateId: "10101",
         pageSize: 16,
         modelType: "h5",
@@ -290,8 +292,10 @@ function extractDetail(
 
 export const jiaoyimaoAdapter: SourceAdapter = {
   source: "jiaoyimao",
-  entryUrl: BROAD_CATALOG_URL,
+  entryUrl: FILTERED_CATALOG_URL,
   strictPaginationProgress: true,
+  allowPagesWithoutNewItems: true,
+  maxConsecutivePagesWithoutNewItems: 3,
 
   discoverCatalog(html, _query) {
     if (isBlockedHtml(html)) {
@@ -302,7 +306,7 @@ export const jiaoyimaoAdapter: SourceAdapter = {
       ".pcGoodsListItem[data-goodsid][data-price][href]"
     ).first();
     return verifiedCard.length > 0 && isVisibleLink(verifiedCard)
-      ? { kind: "ok", request: { url: BROAD_CATALOG_URL } }
+      ? { kind: "ok", request: makeMtopListRequest(1) }
       : { kind: "blocked", reason: "unverified_structure" };
   },
 
@@ -339,20 +343,18 @@ export const jiaoyimaoAdapter: SourceAdapter = {
         currentRequest.options?.body ?? ""
       ) as { page?: unknown };
       const currentPage = Number(body.page);
-      return Number.isSafeInteger(currentPage) && currentPage >= 2
+      return Number.isSafeInteger(currentPage) && currentPage >= 1
         ? makeMtopListRequest(currentPage + 1)
         : null;
     }
     if (
       envelope.kind === "invalid" ||
-      currentRequest.url !== BROAD_CATALOG_URL ||
+      currentRequest.url !== FILTERED_CATALOG_URL ||
       currentRequest.options !== undefined
     ) {
       return null;
     }
-    return parseSsrList(content).kind === "ok"
-      ? makeMtopListRequest(2)
-      : null;
+    return null;
   },
 
   detailRequest(summary) {

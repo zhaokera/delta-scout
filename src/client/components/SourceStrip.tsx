@@ -28,6 +28,9 @@ function sourceState(status: SourceStatusView): {
   if (status.error === "captcha_required") {
     return { label: "验证码阻塞", tone: "warn" };
   }
+  if (status.error === "browser_snapshot_required") {
+    return { label: "需要浏览器快照", tone: "warn" };
+  }
   if (status.error === "unverified_structure") {
     return { label: "列表待人工接入", tone: "warn" };
   }
@@ -41,14 +44,21 @@ const STOP_REASON_LABELS: Record<string, string> = {
   repeated_request: "重复请求保护停止",
   safety_limit: "达到安全上限",
   captcha_required: "入口触发验证码",
+  browser_snapshot_required: "需在网页完成原生筛选",
   unverified_structure: "列表结构待核验",
   entry_failed: "入口请求失败",
   anomaly_guard: "异常量保护已启用",
   error: "采集过程出错"
 };
 
-function stopReasonLabel(value: string | null): string {
+function stopReasonLabel(
+  value: string | null,
+  error: string | null
+): string {
   if (!value) return "未记录停止原因";
+  if (value === "error" && error && STOP_REASON_LABELS[error]) {
+    return STOP_REASON_LABELS[error];
+  }
   return STOP_REASON_LABELS[value] ?? value;
 }
 
@@ -141,7 +151,7 @@ export function SourceStrip({
                 }
               >
                 <small>STOP</small>
-                <span>{stopReasonLabel(status.stopReason)}</span>
+                <span>{stopReasonLabel(status.stopReason, status.error)}</span>
               </p>
               <p className="source-card__time">
                 最近成功 <time>{formatTime(status.lastSuccessAt)}</time>

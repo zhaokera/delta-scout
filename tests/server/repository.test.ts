@@ -1407,6 +1407,55 @@ describe("ListingRepository", () => {
     });
   });
 
+  it("publishes a recovered partial volume and clears a pending guard", () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      sourceListings("panzhi", 44, "trusted"),
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+    const failures = [
+      failureUpdate("jiaoyimao"),
+      failureUpdate("pxb7")
+    ];
+    repository.commitScanRefresh(
+      repository.startScan(scanTime),
+      sourceListings("panzhi", 10, "suspect"),
+      [successUpdate("panzhi", 10, "success", 1), ...failures],
+      scanTime
+    );
+    const recovered = sourceListings("panzhi", 43, "partial-recovered");
+    const recoveredAt = new Date(scanTime.getTime() + 1_000);
+    repository.commitScanRefresh(
+      repository.startScan(recoveredAt),
+      recovered,
+      [successUpdate("panzhi", 43, "partial", 5), ...failures],
+      recoveredAt
+    );
+
+    expect(
+      repository.getListings().filter(({ source }) => source === "panzhi")
+    ).toHaveLength(43);
+    expect(
+      repository.getSourceStatuses().find(({ source }) => source === "panzhi")
+    ).toMatchObject({
+      state: "partial",
+      itemCount: 43,
+      pagesScanned: 5,
+      anomaly: { state: "clear" }
+    });
+    expect(repository.getScanHistory(1)[0].sources).toContainEqual(
+      expect.objectContaining({
+        source: "panzhi",
+        state: "partial",
+        anomalyState: "recovered",
+        published: true
+      })
+    );
+  });
+
   it("stores trusted field and price changes for an active listing", () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const failures = [
@@ -1735,7 +1784,9 @@ describe("ListingRepository", () => {
       url: "https://www.pzds.com/item/premium-s",
       evidence: [
         {
-          text: "M7战斗步枪-棱镜攻势S2(优品S)",
+          text:
+            "M7战斗步枪-棱镜攻势S2(优品S) " +
+            "骇爪-维什戴尔 露娜-黑天际线",
           truncated: false
         }
       ],
@@ -1756,7 +1807,9 @@ describe("ListingRepository", () => {
       url: "https://www.pzds.com/item/premium-a",
       evidence: [
         {
-          text: "M7战斗步枪-棱镜攻势S2(优品A)",
+          text:
+            "M7战斗步枪-棱镜攻势S2(优品A) " +
+            "骇爪-维什戴尔 露娜-黑天际线",
           truncated: false
         }
       ],
@@ -1777,6 +1830,10 @@ describe("ListingRepository", () => {
       url: "https://www.pzds.com/item/reviewed-peak",
       evidence: [
         { text: "M7棱镜攻势(极品A)", truncated: false },
+        {
+          text: "骇爪-维什戴尔 露娜-黑天际线",
+          truncated: false
+        },
         { text: "威龙 红皮", truncated: false },
         { text: "巨浪 极品", truncated: false }
       ],
@@ -1791,6 +1848,10 @@ describe("ListingRepository", () => {
       url: "https://www.pxb7.com/item/duplicate-peak",
       evidence: [
         { text: "M7棱镜攻势(极品A)", truncated: false },
+        {
+          text: "骇爪-维什戴尔 露娜-黑天际线",
+          truncated: false
+        },
         { text: "威龙 红皮", truncated: false },
         { text: "巨浪 极品", truncated: false }
       ],

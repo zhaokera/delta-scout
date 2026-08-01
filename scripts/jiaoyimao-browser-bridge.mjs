@@ -90,6 +90,25 @@ const FORBIDDEN_VISIBLE_TEXT = [
   /<!(?:--|doctype\b|\[CDATA\[)/i
 ];
 const FILTER_ORIGIN = "https://www.jiaoyimao.com";
+const FILTER_LABELS = [
+  "1900-4000",
+  "骇爪-维什戴尔",
+  "露娜-黑·天际线"
+];
+const FILTER_SEARCH_CONDITION = JSON.stringify({
+  price: {
+    conditionList: ["1900,4000"],
+    groupName: "价格范围",
+    statConditionList: [FILTER_LABELS[0]]
+  },
+  selling_point_7322805066952352771: {
+    selectType: 1,
+    multiSearchCondition: false,
+    conditionList: [FILTER_LABELS[1], FILTER_LABELS[2]],
+    statConditionList: [FILTER_LABELS[1], FILTER_LABELS[2]],
+    conditionType: 3
+  }
+});
 const FILTER_PATHS = new Set([
   "/jg2007840/f8845003-c8845004/o110/",
   "/jg2007840/f8845003-c8845004/o1687157900084320/"
@@ -288,12 +307,32 @@ function validateFilterProof(value) {
   ]);
   const filterUrl = parseApprovedUrl(proof.currentUrl);
   if (!FILTER_PATHS.has(filterUrl.pathname)) throw bridgeError();
+  const allowedQuery = new Map([
+    ["searchCondition", FILTER_SEARCH_CONDITION],
+    ["enforcePlat", "2"],
+    ["newPage", "true"]
+  ]);
+  const seenQuery = new Set();
+  for (const [key, entryValue] of filterUrl.searchParams) {
+    if (
+      seenQuery.has(key) ||
+      !allowedQuery.has(key) ||
+      allowedQuery.get(key) !== entryValue
+    ) {
+      throw bridgeError();
+    }
+    seenQuery.add(key);
+  }
+  if (seenQuery.size !== allowedQuery.size) throw bridgeError();
   assertSafeText(proof.gameLabel, 1, 100);
   assertSafeText(proof.platformLabel, 1, 100);
   assertSafeText(proof.categoryLabel, 1, 100);
   if (
     !Array.isArray(proof.activeFilterLabels) ||
-    proof.activeFilterLabels.length !== 0
+    proof.activeFilterLabels.length !== FILTER_LABELS.length ||
+    !proof.activeFilterLabels.every(
+      (label, index) => label === FILTER_LABELS[index]
+    )
   ) {
     throw bridgeError();
   }

@@ -32,7 +32,7 @@ interface PublicPageFetcherOptions {
 }
 
 const BLOCKED_PATTERN =
-  /验证码|安全验证|_____tmd_____|\/punish|action\s*[:=]\s*["']captcha["']|请完成.{0,10}验证|访问过于频繁/i;
+  /验证码|安全验证|_____tmd_____|\/punish|action\s*[:=]\s*["']captcha["']|请完成.{0,10}验证|访问过于频繁|aliyun_waf_(?:aa|bb)|aliyunCaptcha-sliding-slider/i;
 const USER_AGENT =
   "DeltaAccountScout/0.1 (+local personal comparison tool)";
 
@@ -311,6 +311,16 @@ export class PublicPageFetcher implements PageFetcher {
           primePayload.ret.includes("SUCCESS::调用成功")
             ? "invalid_mtop_response"
             : "mtop_request_failed"
+      };
+    }
+
+    if (requestedData === pageOneData) {
+      state.session = session;
+      return {
+        kind: "ok",
+        url,
+        status: prime.status,
+        html: prime.html
       };
     }
 

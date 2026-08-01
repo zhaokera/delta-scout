@@ -2,7 +2,7 @@ import { load, type Cheerio } from "cheerio";
 import { normalizeListingUrl } from "../../../domain/url.js";
 
 const BLOCKED_PATTERN =
-  /验证码|安全验证|_____tmd_____|\/punish|action\s*[:=]\s*["']captcha["']|请完成.{0,10}验证|访问过于频繁/i;
+  /验证码|安全验证|_____tmd_____|\/punish|action\s*[:=]\s*["']captcha["']|请完成.{0,10}验证|访问过于频繁|aliyun_waf_(?:aa|bb)|aliyunCaptcha-sliding-slider/i;
 
 export function isBlockedHtml(html: string): boolean {
   return BLOCKED_PATTERN.test(html);

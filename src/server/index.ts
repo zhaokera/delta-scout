@@ -45,7 +45,19 @@ const browserService = new JiaoyimaoBrowserTaskService(
 const coordinator = new CollectionCoordinator({
   adapters: sourceAdapters,
   fetcher: new PublicPageFetcher(),
-  repository
+  repository,
+  limitsBySource: {
+    jiaoyimao: {
+      maxPages: 650,
+      maxSummaries: 10_100,
+      maxDetails: 120
+    },
+    pxb7: {
+      maxPages: 650,
+      maxSummaries: 10_100,
+      maxDetails: 10_100
+    }
+  }
 });
 
 createApp({

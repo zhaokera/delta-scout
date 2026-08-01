@@ -3,11 +3,18 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { jiaoyimaoAdapter } from "../../src/server/collector/adapters/jiaoyimao.js";
 import { panzhiAdapter } from "../../src/server/collector/adapters/panzhi.js";
-import { pxb7Adapter } from "../../src/server/collector/adapters/pxb7.js";
+import {
+  PXB_REQUIRED_OPERATOR_SKIN_FILTER,
+  pxb7Adapter
+} from "../../src/server/collector/adapters/pxb7.js";
 import { parseChineseAmount } from "../../src/server/collector/adapters/shared.js";
-import { buildListing } from "../../src/server/collector/buildListing.js";
+import {
+  buildListing,
+  shouldFetchListingDetail
+} from "../../src/server/collector/buildListing.js";
 import {
   APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
+  APPROVED_JIAOYIMAO_SEARCH_CONDITION,
   isApprovedJiaoyimaoMtopRequest
 } from "../../src/server/collector/mtop.js";
 
@@ -48,12 +55,65 @@ describe("asset amount normalization", () => {
   });
 });
 
+describe("candidate price detail window", () => {
+  it.each([
+    [null, true],
+    [1_899.99, false],
+    [1_900, true],
+    [4_000, true],
+    [4_000.01, false]
+  ] as const)("maps price %s to detail-required=%s", (priceCny, expected) => {
+    expect(shouldFetchListingDetail({
+      source: "jiaoyimao",
+      sourceListingId: "1",
+      url: "https://www.jiaoyimao.com/jg2007840/1.html",
+      title: "候选",
+      rawText: "QQ官服",
+      priceCny
+    })).toBe(expected);
+  });
+
+  it("uses complete Jiaoyimao card safety tags without a detail page", () => {
+    const listing = buildListing(
+      {
+        summary: {
+          source: "jiaoyimao",
+          sourceListingId: "1784550994519222",
+          url:
+            "https://www.jiaoyimao.com/jg2007840/1784550994519222.html",
+          title: "总资产33.3M 6干员外观",
+          rawText:
+            "QQ双端\n安卓QQ\n不可二次实名\n赠永久包赔\n" +
+            "骇爪-维什戴尔\n露娜-黑天际线",
+          priceCny: 2_000
+        },
+        detail: null,
+        detailAttempted: false,
+        warnings: []
+      },
+      new Date("2026-08-01T00:00:00.000Z")
+    );
+
+    expect(listing).toMatchObject({
+      loginPlatform: "qq",
+      service: "official",
+      realNameStatus: "already_second",
+      secondRealNameAvailable: false,
+      recoveryCoverage: true,
+      eligibility: "eligible"
+    });
+  });
+});
+
 describe("pagination progress policy", () => {
   it("enables strict progress only for Jiaoyimao", () => {
     expect(jiaoyimaoAdapter.strictPaginationProgress).toBe(true);
     expect(panzhiAdapter.strictPaginationProgress).toBeUndefined();
     expect(pxb7Adapter.strictPaginationProgress).toBeUndefined();
+    expect(jiaoyimaoAdapter.allowPagesWithoutNewItems).toBe(true);
+    expect(jiaoyimaoAdapter.maxConsecutivePagesWithoutNewItems).toBe(3);
     expect(panzhiAdapter.allowPagesWithoutNewItems).toBe(true);
+    expect(panzhiAdapter.requiresBrowserSnapshot).toBe(true);
     expect(pxb7Adapter.allowPagesWithoutNewItems).toBe(true);
   });
 });
@@ -366,9 +426,10 @@ describe("jiaoyimao adapter", () => {
     });
   });
 
-  it("uses the broad account catalog without an M7 or second-real-name filter", () => {
+  it("uses the native price and two-skin AND filters without M7 or real-name filters", () => {
     const entry = new URL(jiaoyimaoAdapter.entryUrl);
-    expect(entry.searchParams.get("searchCondition")).toBeNull();
+    expect(JSON.parse(entry.searchParams.get("searchCondition") ?? ""))
+      .toEqual(APPROVED_JIAOYIMAO_SEARCH_CONDITION);
   });
 
   it("normalizes premium S from a visible Jiaoyimao card without calling it peak", () => {
@@ -395,15 +456,21 @@ describe("jiaoyimao adapter", () => {
     );
   });
 
-  it("recognizes the verified broad catalog and parses its SSR cards", async () => {
+  it("recognizes the verified catalog before switching to native-filtered MTop", async () => {
     const html = await fixture("jiaoyimao-list.html");
     const discovery = jiaoyimaoAdapter.discoverCatalog(
       html,
       "三角洲行动"
     );
-    expect(discovery).toEqual({
-      kind: "ok",
-      request: { url: jiaoyimaoAdapter.entryUrl }
+    expect(discovery.kind).toBe("ok");
+    if (discovery.kind !== "ok") throw new Error("expected discovery");
+    expect(discovery.request.url).toBe(APPROVED_JIAOYIMAO_MTOP_ENDPOINT);
+    expect(isApprovedJiaoyimaoMtopRequest(discovery.request)).toBe(true);
+    expect(JSON.parse(discovery.request.options?.body ?? "")).toMatchObject({
+      searchCondition: JSON.stringify(
+        APPROVED_JIAOYIMAO_SEARCH_CONDITION
+      ),
+      page: "1"
     });
 
     const result = jiaoyimaoAdapter.parseList(html);
@@ -428,11 +495,14 @@ describe("jiaoyimao adapter", () => {
     );
   });
 
-  it("continues from SSR page one with the approved MTop page-two request", async () => {
+  it("starts the native-filtered MTop scan at page one", async () => {
     const html = await fixture("jiaoyimao-list.html");
-    const next = jiaoyimaoAdapter.nextPage(html, {
-      url: jiaoyimaoAdapter.entryUrl
-    });
+    const discovery = jiaoyimaoAdapter.discoverCatalog(
+      html,
+      "三角洲行动"
+    );
+    if (discovery.kind !== "ok") throw new Error("expected discovery");
+    const next = discovery.request;
 
     expect(next).not.toBeNull();
     expect(next?.url).toBe(APPROVED_JIAOYIMAO_MTOP_ENDPOINT);
@@ -449,8 +519,10 @@ describe("jiaoyimao adapter", () => {
     });
     expect(isApprovedJiaoyimaoMtopRequest(next!)).toBe(true);
     expect(JSON.parse(next?.options?.body ?? "")).toMatchObject({
-      searchCondition: "{}",
-      page: "2",
+      searchCondition: JSON.stringify(
+        APPROVED_JIAOYIMAO_SEARCH_CONDITION
+      ),
+      page: "1",
       pageSize: 16,
       categoryId: 8845004,
       parentId: 8845003
@@ -483,10 +555,13 @@ describe("jiaoyimao adapter", () => {
       url: parsed.items[0].url
     });
 
-    const pageTwo = jiaoyimaoAdapter.nextPage(
+    const discovery = jiaoyimaoAdapter.discoverCatalog(
       await fixture("jiaoyimao-list.html"),
-      { url: jiaoyimaoAdapter.entryUrl }
+      "三角洲行动"
     );
+    if (discovery.kind !== "ok") throw new Error("expected discovery");
+    const pageOne = discovery.request;
+    const pageTwo = jiaoyimaoAdapter.nextPage(page, pageOne);
     if (!pageTwo?.options?.body) {
       throw new Error("expected page-two MTop request");
     }
@@ -599,9 +674,15 @@ describe("jiaoyimao adapter", () => {
     expect(parsed.items).toHaveLength(1);
     expect(parsed.items[0].sourceListingId).toBe("1784550994519333");
 
-    const pageTwo = jiaoyimaoAdapter.nextPage(
+    const discovery = jiaoyimaoAdapter.discoverCatalog(
       await fixture("jiaoyimao-list.html"),
-      { url: jiaoyimaoAdapter.entryUrl }
+      "三角洲行动"
+    );
+    if (discovery.kind !== "ok") throw new Error("expected discovery");
+    const pageOne = discovery.request;
+    const pageTwo = jiaoyimaoAdapter.nextPage(
+      await fixture("jiaoyimao-list-page-2.json"),
+      pageOne
     );
     const pageThree = jiaoyimaoAdapter.nextPage(
       await fixture("jiaoyimao-list-page-2.json"),
@@ -830,7 +911,13 @@ describe("pxb7 adapter", () => {
       pageSize: 16,
       bizProd: 1,
       type: "4",
-      posType: 1
+      posType: 1,
+      filterDTOList: [{
+        attrId: "price",
+        attrType: 3,
+        attrValList: [1900, 4000]
+      }, PXB_REQUIRED_OPERATOR_SKIN_FILTER],
+      combineFilterList: []
     });
   });
 
@@ -868,7 +955,32 @@ describe("pxb7 adapter", () => {
     );
   });
 
-  it("uses only the response cursor to page the broad account query", async () => {
+  it("uses public structured highlights when the visible title says only to view details", async () => {
+    const response = JSON.parse(
+      await fixture("pxb7-list-page-1.json")
+    ) as {
+      data: { list: Array<Record<string, unknown>> };
+    };
+    response.data.list = [response.data.list[0]];
+    response.data.list[0].showTitle =
+      "详情看图【实际信息请以详情为准】【QQ登录】【可二次实名】";
+    response.data.list[0].important = [
+      "露娜黑天际线",
+      "骇爪维什戴尔"
+    ];
+    response.data.list[0].importantHighlights = [
+      "露娜黑天际线",
+      "骇爪维什戴尔"
+    ];
+
+    const result = pxb7Adapter.parseList(JSON.stringify(response));
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected PXB list");
+    expect(result.items[0].rawText).toContain("露娜黑天际线");
+    expect(result.items[0].rawText).toContain("骇爪维什戴尔");
+  });
+
+  it("keeps the response cursor while incrementing the native filtered page index", async () => {
     const discovery = pxb7Adapter.discoverCatalog(
       await fixture("pxb7-home.html"),
       "三角洲行动"
@@ -888,6 +1000,12 @@ describe("pxb7 adapter", () => {
       bizProd: 1,
       type: "4",
       posType: 1,
+      filterDTOList: [{
+        attrId: "price",
+        attrType: 3,
+        attrValList: [1900, 4000]
+      }, PXB_REQUIRED_OPERATOR_SKIN_FILTER],
+      combineFilterList: [],
       pageToken: "fixture-page-2"
     });
     const naturalEnd = pxb7Adapter.nextPage(
@@ -910,7 +1028,35 @@ describe("pxb7 adapter", () => {
         }
       }
     );
-    expect(afterRepeatedToken).toBeNull();
+    expect(JSON.parse(afterRepeatedToken?.options?.body ?? "")).toEqual({
+      query: "三角洲行动",
+      gameId: "10371",
+      pageIndex: 3,
+      pageSize: 16,
+      bizProd: 1,
+      type: "4",
+      posType: 1,
+      filterDTOList: [{
+        attrId: "price",
+        attrType: 3,
+        attrValList: [1900, 4000]
+      }, PXB_REQUIRED_OPERATOR_SKIN_FILTER],
+      combineFilterList: [],
+      pageToken: "fixture-page-2"
+    });
+
+    const emptyResponse = JSON.parse(
+      await fixture("pxb7-list-page-1.json")
+    ) as {
+      data: { list: unknown[] };
+    };
+    emptyResponse.data.list = [];
+    expect(
+      pxb7Adapter.nextPage(
+        JSON.stringify(emptyResponse),
+        afterRepeatedToken!
+      )
+    ).toBeNull();
   });
 
   it("preserves premium S in embedded PXB7 evidence", async () => {

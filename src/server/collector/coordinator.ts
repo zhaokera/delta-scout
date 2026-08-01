@@ -45,6 +45,9 @@ interface CoordinatorOptions {
   repository: ListingRepository;
   now?: () => Date;
   limits?: Partial<CollectionLimits>;
+  limitsBySource?: Partial<
+    Record<SourceId, Partial<CollectionLimits>>
+  >;
 }
 
 type CollectedSummary = CollectedListingInput;
@@ -184,6 +187,10 @@ export class CollectionCoordinator {
   private readonly repository: ListingRepository;
   private readonly now: () => Date;
   private readonly limits: CollectionLimits;
+  private readonly limitsBySource = new Map<
+    SourceId,
+    CollectionLimits
+  >();
   private refreshInProgress = false;
 
   constructor(options: CoordinatorOptions) {
@@ -197,6 +204,25 @@ export class CollectionCoordinator {
       maxSummaries: positiveLimit(limits.maxSummaries, "maxSummaries"),
       maxDetails: positiveLimit(limits.maxDetails, "maxDetails")
     };
+    for (const [source, overrides] of Object.entries(
+      options.limitsBySource ?? {}
+    ) as Array<[SourceId, Partial<CollectionLimits>]>) {
+      const sourceLimits = { ...this.limits, ...overrides };
+      this.limitsBySource.set(source, {
+        maxPages: positiveLimit(
+          sourceLimits.maxPages,
+          `${source}.maxPages`
+        ),
+        maxSummaries: positiveLimit(
+          sourceLimits.maxSummaries,
+          `${source}.maxSummaries`
+        ),
+        maxDetails: positiveLimit(
+          sourceLimits.maxDetails,
+          `${source}.maxDetails`
+        )
+      });
+    }
   }
 
   private failedSource(
@@ -240,6 +266,20 @@ export class CollectionCoordinator {
     refreshStartedAt: Date,
     onProgress?: ProgressListener
   ): Promise<RefreshSourceResult> {
+    if (adapter.requiresBrowserSnapshot) {
+      return {
+        kind: "failed",
+        source: adapter.source,
+        statusUpdate: {
+          source: adapter.source,
+          state: "blocked",
+          attemptedAt: this.now(),
+          error: "browser_snapshot_required"
+        }
+      };
+    }
+    const limits =
+      this.limitsBySource.get(adapter.source) ?? this.limits;
     const entry = await this.fetcher.fetchPage(
       { url: adapter.entryUrl },
       adapter.source
@@ -269,6 +309,7 @@ export class CollectionCoordinator {
     let pages = 0;
     let detailCount = 0;
     let successfulDetailCount = 0;
+    let consecutivePagesWithoutNewItems = 0;
     let consecutiveDetailFailures = 0;
     let consecutiveDetailFailureState: "blocked" | "failed" = "blocked";
     let detailCircuitOpen = false;
@@ -388,7 +429,7 @@ export class CollectionCoordinator {
           }
           continue;
         }
-        if (collected.length >= this.limits.maxSummaries) {
+        if (collected.length >= limits.maxSummaries) {
           summaryLimitReached = true;
           break;
         }
@@ -405,6 +446,9 @@ export class CollectionCoordinator {
         collected.push(record);
         pageRecords.push(record);
       }
+      consecutivePagesWithoutNewItems = newItemCount === 0
+        ? consecutivePagesWithoutNewItems + 1
+        : 0;
 
       onProgress?.({
         type: "list_page",
@@ -428,7 +472,7 @@ export class CollectionCoordinator {
             );
             continue;
           }
-          if (detailCount >= this.limits.maxDetails) {
+          if (detailCount >= limits.maxDetails) {
             detailLimitReached = true;
             record.warnings.push("达到详情采集上限，待人工核验");
             continue;
@@ -506,7 +550,11 @@ export class CollectionCoordinator {
         }
       }
 
-      if (summaryLimitReached || detailLimitReached) {
+      if (detailLimitReached) {
+        partial = true;
+        sourceError ??= "detail_limit_reached";
+      }
+      if (summaryLimitReached) {
         partial = true;
         stopReason = "safety_limit";
         break;
@@ -524,7 +572,8 @@ export class CollectionCoordinator {
       if (
         adapter.strictPaginationProgress &&
         pages > 1 &&
-        newItemCount === 0
+        consecutivePagesWithoutNewItems >=
+          (adapter.maxConsecutivePagesWithoutNewItems ?? 1)
       ) {
         if (parsed.items.length > 0 || next !== null) {
           partial = true;
@@ -558,8 +607,8 @@ export class CollectionCoordinator {
         break;
       }
       if (
-        pages >= this.limits.maxPages ||
-        collected.length >= this.limits.maxSummaries
+        pages >= limits.maxPages ||
+        collected.length >= limits.maxSummaries
       ) {
         partial = true;
         stopReason = "safety_limit";
@@ -631,11 +680,9 @@ export class CollectionCoordinator {
   ): Promise<ScanState> {
     const refreshStartedAt = this.now();
     const retainedListings = this.repository.getListings();
-    const outcomes: RefreshSourceResult[] = [];
-    let totalPages = 0;
-    let totalSummaries = 0;
-    let totalDetails = 0;
-    for (const adapter of this.adapters) {
+    const sourceResults = await Promise.all(this.adapters.map(async (
+      adapter
+    ) => {
       let result: RefreshSourceResult;
       let sourceDetails = 0;
       onProgress?.({
@@ -676,16 +723,12 @@ export class CollectionCoordinator {
           );
         }
       }
-      outcomes.push(result);
       const sourcePages =
         "metadata" in result.statusUpdate
           ? result.statusUpdate.metadata.pagesScanned
           : 0;
       const sourceSummaries =
         result.kind === "fresh" ? result.listings.length : 0;
-      totalPages += sourcePages;
-      totalSummaries += sourceSummaries;
-      totalDetails += sourceDetails;
       onProgress?.({
         type: "source_complete",
         phase: "list",
@@ -696,7 +739,26 @@ export class CollectionCoordinator {
         sourceState: result.statusUpdate.state,
         message: "来源扫描结束"
       });
-    }
+      return {
+        result,
+        sourcePages,
+        sourceSummaries,
+        sourceDetails
+      };
+    }));
+    const outcomes = sourceResults.map(({ result }) => result);
+    const totalPages = sourceResults.reduce(
+      (total, source) => total + source.sourcePages,
+      0
+    );
+    const totalSummaries = sourceResults.reduce(
+      (total, source) => total + source.sourceSummaries,
+      0
+    );
+    const totalDetails = sourceResults.reduce(
+      (total, source) => total + source.sourceDetails,
+      0
+    );
 
     const freshOutcomes = outcomes.filter(
       (

@@ -21,10 +21,12 @@ import { ListingRepository } from "../../src/server/repository.js";
 import { RefreshAdmissionController } from "../../src/server/refreshAdmission.js";
 import { RefreshTracker } from "../../src/server/refreshTracker.js";
 import { makeListing } from "../domain/listingFactory.js";
+import {
+  APPROVED_JIAOYIMAO_REFERER
+} from "../../src/server/collector/mtop.js";
 
 const baseTime = new Date("2026-07-30T10:00:00.000Z");
-const filterUrl =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/";
+const filterUrl = APPROVED_JIAOYIMAO_REFERER;
 
 function proof(overrides: Partial<BrowserFilterProof> = {}): BrowserFilterProof {
   return {
@@ -32,7 +34,11 @@ function proof(overrides: Partial<BrowserFilterProof> = {}): BrowserFilterProof 
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    activeFilterLabels: [],
+    activeFilterLabels: [
+      "1900-4000",
+      "骇爪-维什戴尔",
+      "露娜-黑·天际线"
+    ],
     observedAt: baseTime.toISOString(),
     ...overrides
   };
@@ -220,7 +226,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
       () => missing.service.submitListBatch(
         missing.id,
         missing.token,
-        listBatch([["1", 100]])
+        listBatch([["1", 2_500]])
       ),
       "filter_mismatch"
     );
@@ -250,19 +256,25 @@ describe("JiaoyimaoBrowserTaskService", () => {
     f.service.submitListBatch(
       f.id,
       f.token,
-      listBatch([["30", null], ["10", 6_001], ["20", 6_000]])
+      listBatch([
+        ["30", null],
+        ["05", 1_899],
+        ["10", 1_900],
+        ["20", 4_000],
+        ["40", 4_001]
+      ])
     );
     f.service.submitLoadEvent(
       f.id,
       f.token,
-      loadEvent(1, 3, 3, {
-        visibleTotalCount: 3,
+      loadEvent(1, 5, 5, {
+        visibleTotalCount: 5,
         endMarkerVisible: true
       })
     );
     expect(f.repository.getJob(f.id, baseTime)).toMatchObject({
       state: "collecting_details",
-      detailRequiredCount: 2,
+      detailRequiredCount: 3,
       nextActionAt: "2026-07-30T10:00:02.000Z"
     });
     f.advance(1_999);
@@ -296,7 +308,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     f.service.submitListBatch(
       f.id,
       f.token,
-      listBatch([["1", 4_500]])
+      listBatch([["1", 3_500]])
     );
     f.service.submitLoadEvent(
       f.id,
@@ -320,7 +332,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     const completed = f.service.complete(f.id, f.token);
     expect(completed.state).toBe("success");
     expect(f.listingRepository.getListing("jiaoyimao:1")).toMatchObject({
-      priceCny: 4_500,
+      priceCny: 3_500,
       totalAssetsM: 266,
       secondRealNameAvailable: true,
       recoveryCoverage: true
@@ -344,7 +356,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     f.service.submitListBatch(
       f.id,
       f.token,
-      listBatch([["1", 4_500]])
+      listBatch([["1", 3_500]])
     );
     f.service.submitLoadEvent(
       f.id,
@@ -365,7 +377,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
   it("uses exact list and detail replay without advancing cursors", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    const batch = listBatch([["1", 5_000]]);
+    const batch = listBatch([["1", 3_000]]);
     expect(f.service.submitListBatch(f.id, f.token, batch)).toEqual(
       f.service.submitListBatch(f.id, f.token, batch)
     );
@@ -390,7 +402,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
   it("pauses and explicitly resumes without losing list cursors", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 2_500]]));
     const pause: BrowserPause = {
       reason: "structure_changed",
       message: "等待页面恢复"
@@ -594,7 +606,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     list.service.submitListBatch(
       list.id,
       list.token,
-      listBatch([["1", 5_000]])
+      listBatch([["1", 3_000]])
     );
     list.service.submitLoadEvent(
       list.id,
@@ -616,7 +628,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     detail.service.submitListBatch(
       detail.id,
       detail.token,
-      listBatch([["1", 5_000], ["2", 5_000]])
+      listBatch([["1", 3_000], ["2", 3_000]])
     );
     detail.service.submitLoadEvent(
       detail.id,
@@ -756,7 +768,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
   it("persists staging across a recreated service using the same database", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 2_500]]));
     const recreated = new JiaoyimaoBrowserTaskService(f.repository, {
       now: () => baseTime,
       random: () => 0
@@ -808,7 +820,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     f.service.submitListBatch(
       f.id,
       f.token,
-      listBatch([["1", 100], ["2", 100]])
+      listBatch([["1", 2_500], ["2", 2_500]])
     );
     f.service.submitLoadEvent(
       f.id,
@@ -1105,7 +1117,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
   it("uses the normal detail delay for explicit exhausted-stage continuation", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 2_500]]));
     f.service.submitLoadEvent(
       f.id,
       f.token,
@@ -1141,7 +1153,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
   it("rolls back a load event if its natural-end transition fails", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 2_500]]));
     f.database.exec(`
       CREATE TRIGGER inject_load_transition_failure
       BEFORE UPDATE OF state ON browser_refresh_jobs
@@ -1187,7 +1199,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
   it("replays the same stable error after a count-mismatch commit", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 2_500]]));
     const mismatch = loadEvent(1, 0, 0, {
       visibleTotalCount: 0,
       endMarkerVisible: true
@@ -1228,7 +1240,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
   it("rolls back detail evidence if its validation transition fails", () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    f.service.submitListBatch(f.id, f.token, listBatch([["1", 100]]));
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 2_500]]));
     f.service.submitLoadEvent(
       f.id,
       f.token,
@@ -1289,7 +1301,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
   it("refuses incomplete completion and invokes the scoped publisher exactly once", async () => {
     const f = claimed();
     f.service.saveFilterProof(f.id, f.token, proof());
-    f.service.submitListBatch(f.id, f.token, listBatch([["1", 5_000]]));
+    f.service.submitListBatch(f.id, f.token, listBatch([["1", 3_000]]));
     expectCode(
       () => f.service.complete(f.id, f.token),
       "list_incomplete"
@@ -1368,14 +1380,15 @@ describe("JiaoyimaoBrowserTaskService", () => {
       created.id,
       claim.bridgeToken,
       {
-        ...listBatch([["101", 5_000]]),
+        ...listBatch([["101", 3_000]]),
         items: [{
           sourceListingId: "101",
           url:
             "https://www.jiaoyimao.com/jg2007840/101.html",
           title: "M7 棱镜攻势 极品A",
-          rawText: "QQ 官服 M7 棱镜攻势 极品A",
-          priceCny: 5_000
+          rawText:
+            "QQ 官服 M7 棱镜攻势 极品A 骇爪-维什戴尔 露娜-黑·天际线",
+          priceCny: 3_000
         }]
       }
     );
@@ -1403,7 +1416,9 @@ describe("JiaoyimaoBrowserTaskService", () => {
             report:
               "M7 棱镜攻势 极品A 可二次实名 永久包赔 验号时间：2026-07-30 17:00:00",
             safety: "安全保障 永久包赔",
-            description: "威龙 红皮 巨浪 极品 总资产：2.66亿 哈夫币：28880000"
+            description:
+              "威龙 红皮 骇爪-维什戴尔 露娜-黑·天际线 " +
+              "巨浪 极品 总资产：2.66亿 哈夫币：28880000"
           }
         }]
       }
@@ -1463,7 +1478,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     service.submitListBatch(
       created.id,
       claim.bridgeToken,
-      listBatch([["101", 5_000], ["102", 4_000]])
+      listBatch([["101", 3_000], ["102", 4_000]])
     );
     service.submitLoadEvent(
       created.id,
@@ -1542,7 +1557,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
     service.submitListBatch(
       created.id,
       claim.bridgeToken,
-      listBatch([["101", 5_000]])
+      listBatch([["101", 3_000]])
     );
     service.submitLoadEvent(
       created.id,
@@ -1753,7 +1768,7 @@ describe("JiaoyimaoBrowserTaskService", () => {
       () => f.service.submitListBatch(
         f.id,
         f.token,
-        listBatch([["1", 100]])
+        listBatch([["1", 2_500]])
       )
     );
     expect(error).toMatchObject({

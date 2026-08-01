@@ -4,6 +4,7 @@ import {
   buildListing
 } from "../collector/buildListing.js";
 import type { Listing } from "../../domain/listing.js";
+import { requiresCandidateDetail } from "../../domain/priceRange.js";
 import type {
   ListingDetail,
   ListingSummary
@@ -781,8 +782,7 @@ export class JiaoyimaoBrowserTaskService {
             rawText: item.rawText,
             priceCny: item.priceCny
           };
-          const requiresDetail =
-            item.priceCny === null || item.priceCny <= 6_000;
+          const requiresDetail = requiresCandidateDetail(item.priceCny);
           const stagedDetail = details.get(item.sourceListingId);
           const reusableDetail = reusableDetails.get(item.sourceListingId);
           if (requiresDetail && !stagedDetail && !reusableDetail) {

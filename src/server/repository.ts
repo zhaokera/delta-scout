@@ -21,10 +21,14 @@ import {
 import {
   type Eligibility,
   type Listing,
-  type SourceId
+  type SourceId,
+  SourceIdSchema
 } from "../domain/listing.js";
 import { ListingSchema } from "../domain/listing.js";
-import { parseM7 } from "../domain/evidence.js";
+import {
+  parseM7,
+  parseRequiredRedSkins
+} from "../domain/evidence.js";
 import {
   ManualReviewReasonSchema,
   type ManualExclusionInput,
@@ -377,6 +381,22 @@ export class ListingRepository {
     return Number(result.lastInsertRowid);
   }
 
+  startScopedScan(
+    source: SourceId,
+    startedAt = new Date()
+  ): number {
+    const parsedSource = SourceIdSchema.parse(source);
+    const result = this.database
+      .prepare(`
+        INSERT INTO scan_runs (
+          started_at, finished_at, state, error, is_baseline,
+          scope, requested_source
+        ) VALUES (?, NULL, 'running', NULL, 0, 'single_source', ?)
+      `)
+      .run(startedAt.toISOString(), parsedSource);
+    return Number(result.lastInsertRowid);
+  }
+
   failScan(
     runId: number,
     error: string,
@@ -558,14 +578,21 @@ export class ListingRepository {
           pending: null,
           observedAt: update.attemptedAt.toISOString()
         });
+        const recoveredPending =
+          pending !== null && partialDrop.kind === "accept";
         return {
           original: update,
           state: "partial",
           published:
-            pending === null && partialDrop.kind !== "quarantine",
-          anomalyState: pending ? "suspect" : "none",
-          nextGuard: undefined,
-          stopReason: pending
+            recoveredPending ||
+            (pending === null && partialDrop.kind !== "quarantine"),
+          anomalyState: recoveredPending
+            ? "recovered"
+            : pending
+              ? "suspect"
+              : "none",
+          nextGuard: recoveredPending ? null : undefined,
+          stopReason: pending && !recoveredPending
             ? "anomaly_guard"
             : (update.metadata.stopReason ?? "error"),
           error: update.metadata.error ?? null
@@ -664,7 +691,15 @@ export class ListingRepository {
         ? (incomingBySource.get(source) ?? [])
         : (oldBySource.get(source) ?? []);
     });
-    const candidateSources = new Set(
+    const runScope = this.database.prepare(`
+      SELECT COALESCE(scope, 'all_sources') AS scope
+      FROM scan_runs
+      WHERE id = ? AND is_baseline = 0
+    `).get(runId) as
+      | { scope: "all_sources" | "single_source" }
+      | undefined;
+    if (!runScope) throw new Error("刷新轮次不存在");
+    const candidateSources = new Set<SourceId>(
       preparedUpdates
         .filter(
           ({ published, anomalyState }) =>
@@ -672,6 +707,13 @@ export class ListingRepository {
         )
         .map(({ original }) => original.source)
     );
+    if (runScope.scope === "single_source") {
+      for (const status of sourceStatus.values()) {
+        if (status.state === "success" || status.state === "partial") {
+          candidateSources.add(status.source);
+        }
+      }
+    }
     const markedCandidates = markPossibleDuplicates(
       effectiveListings
         .filter(({ source }) => candidateSources.has(source))
@@ -2136,14 +2178,18 @@ export class ListingRepository {
           parsedM7 === null
             ? listing.m7PrismQuality
             : (parsedM7.quality ?? null);
+        const requiredRedSkins = parseRequiredRedSkins(listing.evidence);
         return {
           ...listing,
           m7PrismStatus,
           m7PrismQuality,
+          requiredRedSkins: requiredRedSkins.names,
+          requiredRedSkinStatus: requiredRedSkins.status,
           eligibility: classifyListing({
             loginPlatform: listing.loginPlatform,
             service: listing.service,
-            priceCny: listing.priceCny
+            priceCny: listing.priceCny,
+            requiredRedSkinStatus: requiredRedSkins.status
           }),
           score: null,
           possibleDuplicateKeys: []

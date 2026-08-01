@@ -139,7 +139,9 @@ function parseDetail(
       ? "official"
       : /渠道服|非官服/.test(body)
         ? "non_official"
-        : "unknown";
+        : loginPlatform === "qq"
+          ? "official"
+          : "unknown";
 
   const cannotSecond = /不可二次实名/.test(body);
   const canSecond = !cannotSecond && /可二次实名/.test(body);
@@ -179,6 +181,12 @@ function parseDetail(
 export const panzhiAdapter: SourceAdapter = {
   source: "panzhi",
   entryUrl: BASE_URL,
+  // The current public list API requires a browser-generated signature and
+  // presents an Aliyun WAF challenge to an unsigned public client. The SSR
+  // route only contains an unfiltered first batch, so treating it as the
+  // requested native filter would produce a false successful scan. Use the
+  // separately validated browser-snapshot ingestion path instead.
+  requiresBrowserSnapshot: true,
   allowPagesWithoutNewItems: true,
 
   discoverCatalog(html, query) {

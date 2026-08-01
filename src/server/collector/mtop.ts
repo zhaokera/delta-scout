@@ -6,8 +6,28 @@ import type {
 
 export const APPROVED_JIAOYIMAO_MTOP_ENDPOINT =
   "https://mtop.jiaoyimao.com/h5/mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist/1.0/";
+export const APPROVED_JIAOYIMAO_SEARCH_CONDITION = {
+  price: {
+    conditionList: ["1900,4000"],
+    groupName: "价格范围",
+    statConditionList: ["1900-4000"]
+  },
+  selling_point_7322805066952352771: {
+    selectType: 1,
+    multiSearchCondition: false,
+    conditionList: ["骇爪-维什戴尔", "露娜-黑·天际线"],
+    statConditionList: ["骇爪-维什戴尔", "露娜-黑·天际线"],
+    conditionType: 3
+  }
+} as const;
+export const APPROVED_JIAOYIMAO_SEARCH_CONDITION_JSON = JSON.stringify(
+  APPROVED_JIAOYIMAO_SEARCH_CONDITION
+);
 export const APPROVED_JIAOYIMAO_REFERER =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/?enforcePlat=2&newPage=true";
+  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/" +
+  `?searchCondition=${encodeURIComponent(
+    APPROVED_JIAOYIMAO_SEARCH_CONDITION_JSON
+  )}&enforcePlat=2&newPage=true`;
 
 const APPROVED_API =
   "mtop.com.jym.layout.pc.goodslist.getunifiedgoodslist";
@@ -181,7 +201,7 @@ export function isApprovedJiaoyimaoMtopData(data: string): boolean {
       outer.parentId === 8_845_003 &&
       outer.class === APPROVED_CLASS &&
       typeof outer.page === "string" &&
-      /^(?:[2-9]|[1-9]\d+)$/.test(outer.page)
+      /^[1-9]\d*$/.test(outer.page)
     );
   } catch {
     return false;
@@ -193,14 +213,55 @@ export function deriveApprovedJiaoyimaoMtopPageOneData(
 ): string | null {
   if (!isApprovedJiaoyimaoMtopData(data)) return null;
   const outer = JSON.parse(data) as Record<string, unknown>;
-  if (outer.page !== "2") return null;
+  if (outer.page !== "1" && outer.page !== "2") return null;
   outer.page = "1";
   return JSON.stringify(outer);
 }
 
 function isApprovedSearchCondition(value: string): boolean {
   const search: unknown = JSON.parse(value);
-  return isRecordWithExactKeys(search, []);
+  if (
+    !isRecordWithExactKeys(search, [
+      "price",
+      "selling_point_7322805066952352771"
+    ])
+  ) {
+    return false;
+  }
+  const price = search.price;
+  const operatorSkins = search.selling_point_7322805066952352771;
+  return (
+    isRecordWithExactKeys(price, [
+      "conditionList",
+      "groupName",
+      "statConditionList"
+    ]) &&
+    Array.isArray(price.conditionList) &&
+    price.conditionList.length === 1 &&
+    price.conditionList[0] === "1900,4000" &&
+    price.groupName === "价格范围" &&
+    Array.isArray(price.statConditionList) &&
+    price.statConditionList.length === 1 &&
+    price.statConditionList[0] === "1900-4000" &&
+    isRecordWithExactKeys(operatorSkins, [
+      "selectType",
+      "multiSearchCondition",
+      "conditionList",
+      "statConditionList",
+      "conditionType"
+    ]) &&
+    operatorSkins.selectType === 1 &&
+    operatorSkins.multiSearchCondition === false &&
+    Array.isArray(operatorSkins.conditionList) &&
+    operatorSkins.conditionList.length === 2 &&
+    operatorSkins.conditionList[0] === "骇爪-维什戴尔" &&
+    operatorSkins.conditionList[1] === "露娜-黑·天际线" &&
+    Array.isArray(operatorSkins.statConditionList) &&
+    operatorSkins.statConditionList.length === 2 &&
+    operatorSkins.statConditionList[0] === "骇爪-维什戴尔" &&
+    operatorSkins.statConditionList[1] === "露娜-黑·天际线" &&
+    operatorSkins.conditionType === 3
+  );
 }
 
 function isApprovedGameCondition(value: string): boolean {

@@ -28,6 +28,16 @@ export const RealNameStatusSchema = z.enum([
   "second_available",
   "already_second"
 ]);
+export const RequiredRedSkinSchema = z.enum([
+  "骇爪-维什戴尔",
+  "露娜-黑天际线"
+]);
+export const RequiredRedSkinStatusSchema = z.enum([
+  "complete",
+  "partial",
+  "missing",
+  "unknown"
+]);
 
 export const EvidenceRecordSchema = z.object({
   text: z.string().max(2_000),
@@ -94,6 +104,8 @@ export const ListingSchema = z.object({
   redSkins: z.array(z.string().min(1)),
   redSkinCount: z.number().int().nonnegative().nullable(),
   redSkinUnnamed: z.boolean(),
+  requiredRedSkins: z.array(RequiredRedSkinSchema).default([]),
+  requiredRedSkinStatus: RequiredRedSkinStatusSchema.default("unknown"),
   julangStatus: JulangStatusSchema,
   julangQuality: z.string().min(1).nullable(),
   realNameStatus: RealNameStatusSchema,
@@ -114,6 +126,45 @@ export const ListingSchema = z.object({
     .int()
     .nonnegative()
     .default(0)
+}).superRefine((listing, context) => {
+  const uniqueRequiredSkins = new Set(listing.requiredRedSkins);
+  if (uniqueRequiredSkins.size !== listing.requiredRedSkins.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["requiredRedSkins"],
+      message: "Required red skins must be unique"
+    });
+  }
+  if (
+    listing.requiredRedSkinStatus === "complete" &&
+    uniqueRequiredSkins.size !== 2
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["requiredRedSkinStatus"],
+      message: "Complete required red-skin evidence needs both skins"
+    });
+  }
+  if (
+    listing.requiredRedSkinStatus === "partial" &&
+    uniqueRequiredSkins.size !== 1
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["requiredRedSkinStatus"],
+      message: "Partial required red-skin evidence needs one skin"
+    });
+  }
+  if (
+    listing.requiredRedSkinStatus === "unknown" &&
+    uniqueRequiredSkins.size !== 0
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["requiredRedSkinStatus"],
+      message: "Unknown required red-skin evidence cannot claim a skin"
+    });
+  }
 });
 
 export type SourceId = z.infer<typeof SourceIdSchema>;

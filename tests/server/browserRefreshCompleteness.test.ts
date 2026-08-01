@@ -11,15 +11,19 @@ import type {
   BrowserListItem,
   BrowserLoadEvent
 } from "../../src/server/browserRefresh/contracts.js";
+import { APPROVED_JIAOYIMAO_REFERER } from "../../src/server/collector/mtop.js";
 
 const observedAt = "2026-07-30T10:00:00.000Z";
 const validProof: BrowserFilterProof = {
-  currentUrl:
-    "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/",
+  currentUrl: APPROVED_JIAOYIMAO_REFERER,
   gameLabel: "三角洲行动",
   platformLabel: "QQ",
   categoryLabel: "账号",
-  activeFilterLabels: [],
+  activeFilterLabels: [
+    "1900-4000",
+    "骇爪-维什戴尔",
+    "露娜-黑·天际线"
+  ],
   observedAt
 };
 
@@ -43,9 +47,9 @@ function event(
 }
 
 describe("browser refresh completeness", () => {
-  it("requires visible proof for the broad game, platform, and category catalog", () => {
+  it("requires visible proof for the approved game, platform, category, price, and two skins", () => {
     expect(validateFilterProof(validProof)).toEqual({ kind: "ok" });
-    for (const proof of [
+    for (const proof of ([
       { ...validProof, gameLabel: "其他游戏" },
       { ...validProof, platformLabel: "微信" },
       { ...validProof, categoryLabel: "道具" },
@@ -53,8 +57,9 @@ describe("browser refresh completeness", () => {
         ...validProof,
         currentUrl: "https://www.jiaoyimao.com/jg2007840/"
       },
+      { ...validProof, activeFilterLabels: [] },
       { ...validProof, activeFilterLabels: ["M7 棱镜攻势 极品S"] }
-    ]) {
+    ] as unknown as BrowserFilterProof[])) {
       expect(validateFilterProof(proof)).toEqual({
         kind: "invalid",
         reason: "filter_mismatch"
@@ -68,22 +73,32 @@ describe("browser refresh completeness", () => {
       gameLabel: "未知",
       platformLabel: "未知",
       categoryLabel: "未知",
-      activeFilterLabels: []
+      activeFilterLabels: [
+        "1900-4000",
+        "骇爪-维什戴尔",
+        "露娜-黑·天际线"
+      ]
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
     expect(validateFilterProof({
       ...validProof,
       activeFilterLabels: ["极品S"]
-    })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
+    } as unknown as BrowserFilterProof)).toEqual({
+      kind: "invalid",
+      reason: "filter_mismatch"
+    });
   });
 
-  it("rejects every active item filter so M7 cannot become a hidden gate", () => {
+  it("rejects extra item filters so M7 cannot become a hidden gate", () => {
     expect(validateFilterProof({
       ...validProof,
       activeFilterLabels: [
         "M7 棱镜攻势 极品S",
         "可二次实名"
       ]
-    })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
+    } as unknown as BrowserFilterProof)).toEqual({
+      kind: "invalid",
+      reason: "filter_mismatch"
+    });
   });
 
   it("accepts two consecutive normal zero-growth observations", () => {
@@ -152,17 +167,19 @@ describe("browser refresh completeness", () => {
     ])).toEqual({ kind: "incomplete", reason: "safety_limit" });
   });
 
-  it("requires details only for unknown or budget-priced staged items", () => {
+  it("requires details only for unknown or target-range staged items", () => {
     const items = [
       staged("3", null),
-      staged("1", 6_000),
-      staged("2", 6_000.01)
+      staged("0", 1_899.99),
+      staged("4", 1_900),
+      staged("1", 4_000),
+      staged("2", 4_000.01)
     ];
-    expect(detailRequiredIds(items)).toEqual(["3", "1"]);
+    expect(detailRequiredIds(items)).toEqual(["3", "4", "1"]);
   });
 
   it("requires valid proof, natural end, and every required detail", () => {
-    const items = [staged("1", 5_000), staged("2", 7_000)];
+    const items = [staged("1", 3_000), staged("2", 5_000)];
     const events = [
       event(1, 2, 2),
       event(2, 2, 0),

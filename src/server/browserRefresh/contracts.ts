@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { APPROVED_JIAOYIMAO_SEARCH_CONDITION_JSON } from "../collector/mtop.js";
 
 export const BROWSER_REFRESH_SOURCE = "jiaoyimao" as const;
 
@@ -114,11 +115,21 @@ export const JiaoyimaoFilterUrlSchema = z.string().refine((value) => {
   for (const [key, entryValue] of url.searchParams) {
     if (seen.has(key) || !allowed.has(key)) return false;
     seen.add(key);
-    if (key === "searchCondition" && entryValue !== "{}") return false;
+    if (
+      key === "searchCondition" &&
+      entryValue !== APPROVED_JIAOYIMAO_SEARCH_CONDITION_JSON
+    ) {
+      return false;
+    }
     if (key === "enforcePlat" && entryValue !== "2") return false;
     if (key === "newPage" && entryValue !== "true") return false;
   }
-  return true;
+  return (
+    seen.size === 3 &&
+    seen.has("searchCondition") &&
+    seen.has("enforcePlat") &&
+    seen.has("newPage")
+  );
 }, "Expected the approved Jiaoyimao game catalog URL");
 
 export const JiaoyimaoDetailUrlSchema = z.string().refine((value) => {
@@ -172,7 +183,11 @@ export const BrowserFilterProofSchema = z.strictObject({
   gameLabel: SafeFilterLabelSchema,
   platformLabel: SafeFilterLabelSchema,
   categoryLabel: SafeFilterLabelSchema,
-  activeFilterLabels: z.array(SafeFilterLabelSchema).length(0),
+  activeFilterLabels: z.tuple([
+    z.literal("1900-4000"),
+    z.literal("骇爪-维什戴尔"),
+    z.literal("露娜-黑·天际线")
+  ]),
   observedAt: IsoDateTimeSchema
 });
 

@@ -71,12 +71,12 @@ const EMPTY_STATES: Record<
   eligible: {
     title: "全部合格视图暂无记录",
     description:
-      "当前快照中没有同时证明 QQ 官服且价格不超过 ¥6,000 的账号。M7 不是入池门槛。"
+      "当前快照中没有同时证明 QQ 官服、价格在 ¥1,900–¥4,000，且拥有骇爪-维什戴尔与露娜-黑天际线的账号。M7 不是入池门槛。"
   },
   needs_verification: {
     title: "待人工核验视图暂无记录",
     description:
-      "当前没有因价格、登录平台或区服证据不足而需要人工补充核验的记录。"
+      "当前没有因价格、登录平台、区服或两款指定红皮证据不足而需要人工补充核验的记录。"
   },
   rejected: {
     title: "已淘汰视图暂无记录",
@@ -1035,8 +1035,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
               <strong>全账号统一评分 · M7 仅作品质标签</strong>
             </div>
             <div className="mission-rule">
-              <small>BUDGET CAP</small>
-              <strong>¥6,000 以内</strong>
+              <small>PRICE RANGE</small>
+              <strong>¥1,900–¥4,000</strong>
+            </div>
+            <div className="mission-rule">
+              <small>REQUIRED RED SKINS</small>
+              <strong>骇爪-维什戴尔 · 露娜-黑天际线</strong>
             </div>
             <div className="mission-locked">
               <span aria-hidden="true">⌁</span>

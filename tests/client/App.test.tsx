@@ -323,7 +323,7 @@ describe("App shell", () => {
     expect(
       screen.getByText("全账号统一评分 · M7 仅作品质标签")
     ).toBeInTheDocument();
-    expect(screen.getByText("¥6,000 以内")).toBeInTheDocument();
+    expect(screen.getByText("¥1,900–¥4,000")).toBeInTheDocument();
   });
 
   it("maps every listing view to an explicit API query", async () => {
@@ -555,7 +555,7 @@ describe("App shell", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("9 页")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /PZ-CURRENT.*¥1,888/ })
+      screen.getByRole("button", { name: /PZ-CURRENT.*¥2,888/ })
     ).toBeInTheDocument();
 
     await act(async () => {
@@ -584,10 +584,10 @@ describe("App shell", () => {
     expect(screen.getByText("9 页")).toBeInTheDocument();
     expect(screen.queryByText("1 页")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /PZ-CURRENT.*¥1,888/ })
+      screen.getByRole("button", { name: /PZ-CURRENT.*¥2,888/ })
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /JYM-STALE.*¥1,888/ })
+      screen.queryByRole("button", { name: /JYM-STALE.*¥2,888/ })
     ).not.toBeInTheDocument();
   });
 
@@ -640,7 +640,7 @@ describe("App shell", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /PZ-LATEST.*¥1,888/ })
+      screen.getByRole("button", { name: /PZ-LATEST.*¥2,888/ })
     ).toBeInTheDocument();
   });
 
@@ -667,12 +667,12 @@ describe("App shell", () => {
     render(<App api={api} />);
     await user.click(
       await screen.findByRole("button", {
-        name: /DETAIL-A.*¥1,888/
+        name: /DETAIL-A.*¥2,888/
       })
     );
     await user.click(
       screen.getByRole("button", {
-        name: /DETAIL-B.*¥1,888/
+        name: /DETAIL-B.*¥2,888/
       })
     );
 
@@ -756,12 +756,12 @@ describe("App shell", () => {
     render(<App api={api} />);
     await user.click(
       await screen.findByRole("button", {
-        name: /STALE-DETAIL.*¥1,888/
+        name: /STALE-DETAIL.*¥2,888/
       })
     );
     await user.click(
       screen.getByRole("button", {
-        name: /CURRENT-DETAIL.*¥1,888/
+        name: /CURRENT-DETAIL.*¥2,888/
       })
     );
     const detail = screen.getByRole("complementary", {
@@ -811,7 +811,7 @@ describe("App shell", () => {
     render(<App api={api} />);
     await user.click(
       await screen.findByRole("button", {
-        name: /LEAVING-VIEW.*¥1,888/
+        name: /LEAVING-VIEW.*¥2,888/
       })
     );
     await user.click(
@@ -819,7 +819,7 @@ describe("App shell", () => {
     );
     expect(
       await screen.findByRole("button", {
-        name: /ELIGIBLE-VIEW.*¥1,888/
+        name: /ELIGIBLE-VIEW.*¥2,888/
       })
     ).toBeInTheDocument();
     expect(screen.getByText("选择左侧候选")).toBeInTheDocument();
@@ -1019,7 +1019,7 @@ describe("App shell", () => {
     expect(screen.getByText("螃蟹 10")).toBeInTheDocument();
 
     const row = screen.getByRole("button", {
-      name: /JYM-EVIDENCE.*¥1,888/
+      name: /JYM-EVIDENCE.*¥2,888/
     });
     expect(within(row).getByText("M7 · 极品S")).toBeInTheDocument();
     expect(within(row).getByText("3 角色红皮")).toBeInTheDocument();
@@ -1096,10 +1096,10 @@ describe("App shell", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("高级筛选显示 1 / 2")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /JIAOYIMAO-0.*¥1,888/ })
+      screen.queryByRole("button", { name: /JIAOYIMAO-0.*¥2,888/ })
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /PANZHI-0.*¥1,888/ })
+      screen.getByRole("button", { name: /PANZHI-0.*¥2,888/ })
     ).toBeInTheDocument();
     expect(api.getListings).toHaveBeenCalledTimes(1);
   });
@@ -1216,7 +1216,7 @@ describe("App shell", () => {
     render(<App api={api} />);
     expect(
       await screen.findByRole("button", {
-        name: /JYM-FILTER.*¥1,888/
+        name: /JYM-FILTER.*¥2,888/
       })
     ).toBeInTheDocument();
     await user.click(
@@ -1239,7 +1239,7 @@ describe("App shell", () => {
     );
 
     expect(
-      screen.getByRole("button", { name: /JYM-FILTER.*¥1,888/ })
+      screen.getByRole("button", { name: /JYM-FILTER.*¥2,888/ })
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "筛选后无结果" })
@@ -1491,7 +1491,7 @@ describe("App shell", () => {
     );
     expect(
       await screen.findByText(
-        "当前快照中没有同时证明 QQ 官服且价格不超过 ¥6,000 的账号。M7 不是入池门槛。"
+        "当前快照中没有同时证明 QQ 官服、价格在 ¥1,900–¥4,000，且拥有骇爪-维什戴尔与露娜-黑天际线的账号。M7 不是入池门槛。"
       )
     ).toBeInTheDocument();
 

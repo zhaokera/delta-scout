@@ -1,6 +1,10 @@
 import { load } from "cheerio";
 import { z } from "zod";
 import { toEvidenceRecords } from "../../../domain/evidence.js";
+import {
+  CANDIDATE_PRICE_MAX_CNY,
+  CANDIDATE_PRICE_MIN_CNY
+} from "../../../domain/priceRange.js";
 import type {
   ListingDetail,
   SourceAdapter,
@@ -18,6 +22,18 @@ const LIST_API_URL =
   "https://api-pc.pxb7.com/api/search/product/v2/selectSearchPageList";
 const BROAD_SEARCH_QUERY = "三角洲行动" as const;
 
+// PXB's public product metadata identifies both required operator skins under
+// the same "干员皮肤" attribute. The public frontend encodes “全部满足” as
+// filterType=1/isAll=true, so these two item IDs have AND semantics.
+export const PXB_REQUIRED_OPERATOR_SKIN_FILTER = {
+  attrId: "1037114",
+  attrType: 1,
+  filterType: 1,
+  attrValList: ["174203185348623", "161525538259004"],
+  categoryId: "103714",
+  isAll: true
+} as const;
+
 const ProductSchema = z
   .object({
     productId: z.string().regex(/^\d+$/),
@@ -27,6 +43,8 @@ const ProductSchema = z
     price: z.number().finite().nonnegative(),
     showTitle: z.string().min(1),
     attrNameList: z.array(z.string()).optional(),
+    important: z.array(z.string()).optional(),
+    importantHighlights: z.array(z.string()).optional(),
     productUniqueNo: z.string().min(1),
     guarantee: z.number().finite()
   })
@@ -56,6 +74,32 @@ const SearchBodySchema = z.object({
   bizProd: z.literal(1),
   type: z.literal("4"),
   posType: z.literal(1),
+  filterDTOList: z.tuple([
+    z.strictObject({
+      attrId: z.literal("price"),
+      attrType: z.literal(3),
+      attrValList: z.tuple([
+        z.literal(CANDIDATE_PRICE_MIN_CNY),
+        z.literal(CANDIDATE_PRICE_MAX_CNY)
+      ])
+    }),
+    z.strictObject({
+      attrId: z.literal(PXB_REQUIRED_OPERATOR_SKIN_FILTER.attrId),
+      attrType: z.literal(PXB_REQUIRED_OPERATOR_SKIN_FILTER.attrType),
+      filterType: z.literal(
+        PXB_REQUIRED_OPERATOR_SKIN_FILTER.filterType
+      ),
+      attrValList: z.tuple([
+        z.literal(PXB_REQUIRED_OPERATOR_SKIN_FILTER.attrValList[0]),
+        z.literal(PXB_REQUIRED_OPERATOR_SKIN_FILTER.attrValList[1])
+      ]),
+      categoryId: z.literal(
+        PXB_REQUIRED_OPERATOR_SKIN_FILTER.categoryId
+      ),
+      isAll: z.literal(PXB_REQUIRED_OPERATOR_SKIN_FILTER.isAll)
+    })
+  ]),
+  combineFilterList: z.tuple([]),
   pageToken: z.string().min(1).optional()
 });
 
@@ -90,6 +134,23 @@ function makeListRequest(
         bizProd: 1,
         type: "4",
         posType: 1,
+        filterDTOList: [
+          {
+            attrId: "price",
+            attrType: 3,
+            attrValList: [
+              CANDIDATE_PRICE_MIN_CNY,
+              CANDIDATE_PRICE_MAX_CNY
+            ]
+          },
+          {
+            ...PXB_REQUIRED_OPERATOR_SKIN_FILTER,
+            attrValList: [
+              ...PXB_REQUIRED_OPERATOR_SKIN_FILTER.attrValList
+            ]
+          }
+        ],
+        combineFilterList: [],
         ...(pageToken ? { pageToken } : {})
       })
     }
@@ -135,6 +196,8 @@ function embeddedDetail(product: Product): ListingDetail {
   const evidence = toEvidenceRecords([
     ...new Set([
       ...(product.attrNameList ?? []),
+      ...(product.important ?? []),
+      ...(product.importantHighlights ?? []),
       ...titleEvidence.map(({ text }) => text)
     ])
   ]);
@@ -270,14 +333,15 @@ export const pxb7Adapter: SourceAdapter = {
       return null;
     }
 
+    if (response.data.list.length === 0) return null;
+
     const pageToken = response.data.properties.pageToken?.trim();
-    if (pageToken && pageToken !== currentBody.pageToken) {
-      return makeListRequest(
-        currentBody.pageIndex + 1,
-        pageToken
-      );
-    }
-    return null;
+    if (!pageToken) return null;
+
+    // The live PXB endpoint can keep the same server-issued pageToken for
+    // several pages while pageIndex advances. Treating an unchanged token as
+    // the end would silently truncate the scan after page 2.
+    return makeListRequest(currentBody.pageIndex + 1, pageToken);
   },
 
   detailRequest(summary) {

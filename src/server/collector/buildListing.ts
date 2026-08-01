@@ -5,6 +5,7 @@ import {
   parseM7,
   parseM7RareFinishes,
   parseRedSkins,
+  parseRequiredRedSkins,
   toEvidenceRecords
 } from "../../domain/evidence.js";
 import type {
@@ -12,6 +13,7 @@ import type {
   LoginPlatform,
   Service
 } from "../../domain/listing.js";
+import { requiresCandidateDetail } from "../../domain/priceRange.js";
 import { listingKey } from "../../domain/url.js";
 import type { ListingDetail, ListingSummary } from "./types.js";
 
@@ -23,7 +25,10 @@ export interface CollectedListingInput {
 }
 
 function inferLoginPlatform(text: string): LoginPlatform {
-  if (/(?:^|[\s，,、/-])QQ(?:官服)?(?:$|[\s，,、/-])/i.test(text)) {
+  if (
+    /QQ双端|安卓QQ|苹果QQ|三角洲行动[-—\s]*QQ/i.test(text) ||
+    /(?:^|[\s，,、/-])QQ(?:官服)?(?:$|[\s，,、/-])/i.test(text)
+  ) {
     return "qq";
   }
   if (/微信|WX/i.test(text)) return "wechat";
@@ -31,9 +36,37 @@ function inferLoginPlatform(text: string): LoginPlatform {
 }
 
 function inferService(text: string): Service {
-  if (/QQ官服|官方服|官服/.test(text)) return "official";
+  if (
+    /QQ官服|官方服|官服|QQ双端|安卓QQ|苹果QQ|三角洲行动[-—\s]*QQ/.test(
+      text
+    )
+  ) return "official";
   if (/渠道服|非官服/.test(text)) return "non_official";
   return "unknown";
+}
+
+function inferRealName(text: string): {
+  status: Listing["realNameStatus"];
+  secondAvailable: boolean | null;
+} {
+  if (/不可二次实名/.test(text)) {
+    return { status: "already_second", secondAvailable: false };
+  }
+  if (/可二次实名/.test(text)) {
+    return { status: "second_available", secondAvailable: true };
+  }
+  if (/原实名/.test(text)) {
+    return { status: "original", secondAvailable: null };
+  }
+  return { status: "unknown", secondAvailable: null };
+}
+
+function inferRecoveryCoverage(text: string): boolean | null {
+  if (/不支持.{0,8}包赔|无包赔/.test(text)) return false;
+  if (/支持.{0,8}包赔|人脸包赔|找回包赔|永久包赔/.test(text)) {
+    return true;
+  }
+  return null;
 }
 
 function parseTotalAssetsM(text: string): number | null {
@@ -69,7 +102,7 @@ function parseHafCoins(text: string): number | null {
 export function shouldFetchListingDetail(
   summary: ListingSummary
 ): boolean {
-  return summary.priceCny === null || summary.priceCny <= 6_000;
+  return requiresCandidateDetail(summary.priceCny);
 }
 
 export function buildListing(
@@ -90,6 +123,7 @@ export function buildListing(
   const combinedText = evidence.map(({ text }) => text).join("\n");
   const m7 = parseM7(evidence);
   const redSkins = parseRedSkins(evidence);
+  const requiredRedSkins = parseRequiredRedSkins(evidence);
   const julang = parseJulang(evidence);
   const rareM7 = parseM7RareFinishes(evidence);
   const loginPlatform = detail
@@ -98,6 +132,14 @@ export function buildListing(
   const service = detail
     ? detail.service
     : inferService(combinedText);
+  const inferredRealName = inferRealName(combinedText);
+  const realNameStatus =
+    detail?.realNameStatus ?? inferredRealName.status;
+  const secondRealNameAvailable =
+    detail?.secondRealNameAvailable ??
+    inferredRealName.secondAvailable;
+  const recoveryCoverage =
+    detail?.recoveryCoverage ?? inferRecoveryCoverage(combinedText);
 
   const base: Listing = {
     key: listingKey(
@@ -130,12 +172,13 @@ export function buildListing(
           ? null
           : 0,
     redSkinUnnamed: redSkins.unnamed,
+    requiredRedSkins: requiredRedSkins.names,
+    requiredRedSkinStatus: requiredRedSkins.status,
     julangStatus: julang.status,
     julangQuality: julang.quality ?? null,
-    realNameStatus: detail?.realNameStatus ?? "unknown",
-    secondRealNameAvailable:
-      detail?.secondRealNameAvailable ?? null,
-    recoveryCoverage: detail?.recoveryCoverage ?? null,
+    realNameStatus,
+    secondRealNameAvailable,
+    recoveryCoverage,
     verificationAt: detail?.verificationAt ?? null,
     banNotes: detail?.banNotes ?? [],
     parseWarnings: warnings,
@@ -151,11 +194,18 @@ export function buildListing(
   const classified = classifyListing({
     loginPlatform,
     service,
-    priceCny: summary.priceCny
+    priceCny: summary.priceCny,
+    requiredRedSkinStatus: requiredRedSkins.status
   });
+  const criticalDetailMissing =
+    detail === null &&
+    (loginPlatform === "unknown" ||
+      service === "unknown" ||
+      secondRealNameAvailable === null ||
+      recoveryCoverage === null);
   const eligibility =
     shouldFetchListingDetail(summary) &&
-    (!detailAttempted || detail === null) &&
+    (criticalDetailMissing || (detailAttempted && detail === null)) &&
     classified === "eligible"
       ? "needs_verification"
       : classified;

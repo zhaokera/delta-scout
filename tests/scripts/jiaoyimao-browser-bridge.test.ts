@@ -7,15 +7,20 @@ import { describe, expect, it, vi } from "vitest";
 import {
   claimJiaoyimaoBrowserJob
 } from "../../scripts/jiaoyimao-browser-bridge.mjs";
+import {
+  APPROVED_JIAOYIMAO_REFERER
+} from "../../src/server/collector/mtop.js";
 
 const jobId = "job-123";
 const claimCode = "claim-secret";
 const bridgeToken = "bridge-secret";
-const filterUrl =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/";
-const qqFilterUrl =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/" +
-  "o1687157900084320/?searchCondition=%7B%7D&enforcePlat=2&newPage=true";
+const filterUrl = APPROVED_JIAOYIMAO_REFERER;
+const qqFilterUrl = (() => {
+  const url = new URL(filterUrl);
+  url.pathname =
+    "/jg2007840/f8845003-c8845004/o1687157900084320/";
+  return url.toString();
+})();
 const observedAt = "2026-07-30T10:00:00.000Z";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -117,7 +122,11 @@ function filterProof() {
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    activeFilterLabels: [],
+    activeFilterLabels: [
+      "1900-4000",
+      "骇爪-维什戴尔",
+      "露娜-黑·天际线"
+    ],
     observedAt
   };
 }
@@ -1430,7 +1439,9 @@ describe("Jiaoyimao browser refresh runbook", () => {
     expect(runbook).toContain("jiaoyimao-browser-bridge.mjs");
     expect(runbook).toContain("复用");
     expect(runbook).toContain("三角洲全账号目录");
-    expect(runbook).toContain("空的 `activeFilterLabels`");
+    expect(runbook).toContain(
+      '`activeFilterLabels: ["1900-4000", "骇爪-维什戴尔", "露娜-黑·天际线"]`'
+    );
     expect(runbook).toMatch(/登录.*CAPTCHA|CAPTCHA.*登录/);
     expect(runbook).toContain("getWork");
     expect(runbook).toContain("nextActionAt");

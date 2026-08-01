@@ -16,10 +16,12 @@ import type {
   BrowserLoadEvent
 } from "../../src/server/browserRefresh/contracts.js";
 import { makeListing } from "../domain/listingFactory.js";
+import {
+  APPROVED_JIAOYIMAO_REFERER
+} from "../../src/server/collector/mtop.js";
 
 const now = new Date("2026-07-30T10:00:00.000Z");
-const filterUrl =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/";
+const filterUrl = APPROVED_JIAOYIMAO_REFERER;
 
 function proof(at = now): BrowserFilterProof {
   return {
@@ -27,7 +29,11 @@ function proof(at = now): BrowserFilterProof {
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    activeFilterLabels: [],
+    activeFilterLabels: [
+      "1900-4000",
+      "骇爪-维什戴尔",
+      "露娜-黑·天际线"
+    ],
     observedAt: at.toISOString()
   };
 }
@@ -46,7 +52,7 @@ function listBatch(
           `https://www.jiaoyimao.com/jg2007840/${sourceListingId}.html`,
         title: `商品 ${sourceListingId}`,
         rawText: "商品卡片可见文本",
-        priceCny: 4300
+        priceCny: 2888
       }
     ]
   };

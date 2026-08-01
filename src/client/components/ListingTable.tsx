@@ -222,6 +222,11 @@ export function ListingTable({
                         疑似跨平台同号 · 推荐池仅保留最高分
                       </span>
                     ) : null}
+                    {listing.requiredRedSkinStatus === "complete" ? (
+                      <span className="required-skin-badge">
+                        双指定红皮已验证
+                      </span>
+                    ) : null}
                   </span>
                   <b>{money(listing.priceCny)}</b>
                 </span>

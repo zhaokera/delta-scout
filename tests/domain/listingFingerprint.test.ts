@@ -4,7 +4,10 @@ import { makeListing, makeScore } from "./listingFactory";
 
 describe("listingMaterialHash", () => {
   it("preserves the legacy hash when rare-finish tags are empty", () => {
-    expect(listingMaterialHash(makeListing({ m7RareFinishes: [] }))).toBe(
+    expect(listingMaterialHash(makeListing({
+      priceCny: 1888,
+      m7RareFinishes: []
+    }))).toBe(
       "fef2ebb33aa433ca201c16d8381a9cef9fc734767981458b483acf93e79abe52"
     );
   });

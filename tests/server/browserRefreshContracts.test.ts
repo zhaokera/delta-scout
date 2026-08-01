@@ -12,14 +12,13 @@ import {
   BrowserPauseSchema,
   BrowserRefreshJobStateSchema
 } from "../../src/server/browserRefresh/contracts.js";
+import { APPROVED_JIAOYIMAO_REFERER } from "../../src/server/collector/mtop.js";
 
 const now = "2026-07-30T12:42:09.000Z";
-const filterUrl =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/" +
-  "?searchCondition=%7B%7D";
+const filterUrl = APPROVED_JIAOYIMAO_REFERER;
 const qqFilterUrl =
   "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/" +
-  "o1687157900084320/?searchCondition=%7B%7D&enforcePlat=2&newPage=true";
+  `o1687157900084320/${new URL(filterUrl).search}`;
 
 function listItem(overrides: Record<string, unknown> = {}) {
   return {
@@ -57,7 +56,11 @@ function filterProof(overrides: Record<string, unknown> = {}) {
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    activeFilterLabels: [],
+    activeFilterLabels: [
+      "1900-4000",
+      "骇爪-维什戴尔",
+      "露娜-黑·天际线"
+    ],
     observedAt: now,
     ...overrides
   };
@@ -463,7 +466,11 @@ describe("safe visible text", () => {
       gameLabel: prompt,
       platformLabel: prompt,
       categoryLabel: prompt,
-      activeFilterLabels: []
+      activeFilterLabels: [
+        "1900-4000",
+        "骇爪-维什戴尔",
+        "露娜-黑·天际线"
+      ]
     })).success).toBe(true);
     expect(BrowserPauseSchema.safeParse({
       reason: "captcha_required",
@@ -503,7 +510,11 @@ describe("safe visible text", () => {
       gameLabel: comparison,
       platformLabel: comparison,
       categoryLabel: comparison,
-      activeFilterLabels: []
+      activeFilterLabels: [
+        "1900-4000",
+        "骇爪-维什戴尔",
+        "露娜-黑·天际线"
+      ]
     })).success).toBe(true);
     expect(BrowserPauseSchema.safeParse({
       reason: "captcha_required",
@@ -511,7 +522,7 @@ describe("safe visible text", () => {
     }).success).toBe(true);
   });
 
-  it("rejects every active item filter in a broad-catalog proof", () => {
+  it("rejects an undeclared active item filter", () => {
     expect(BrowserFilterProofSchema.safeParse(filterProof({
       activeFilterLabels: ["M7 棱镜攻势 极品S"]
     })).success).toBe(false);

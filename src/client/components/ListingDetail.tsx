@@ -336,6 +336,18 @@ export function ListingDetail({
 
       <section className="detail-grid">
         <div>
+          <span>指定红皮硬条件</span>
+          <strong>
+            {listing.requiredRedSkinStatus === "complete"
+              ? listing.requiredRedSkins.join(" · ")
+              : listing.requiredRedSkinStatus === "missing"
+                ? "明确缺少指定红皮"
+                : listing.requiredRedSkins.length > 0
+                  ? `${listing.requiredRedSkins.join(" · ")} · 仍缺证据`
+                  : "待人工核验"}
+          </strong>
+        </div>
+        <div>
           <span>角色红皮</span>
           <strong>
             {listing.redSkins.length

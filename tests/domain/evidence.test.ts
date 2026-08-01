@@ -3,6 +3,7 @@ import {
   parseM7,
   parseM7RareFinishes,
   parseRedSkins,
+  parseRequiredRedSkins,
   toEvidenceRecords
 } from "../../src/domain/evidence";
 import type { EvidenceRecord } from "../../src/domain/evidence";
@@ -356,6 +357,77 @@ describe("character red-skin evidence", () => {
 
     expect(result.names).toEqual(["乌鲁鲁"]);
     expect(result.unnamed).toBe(false);
+  });
+});
+
+describe("required red-skin evidence", () => {
+  it("proves both required skins despite marketplace separators", () => {
+    const result = parseRequiredRedSkins(toEvidenceRecords([
+      "骇爪-维什戴尔 / 露娜-黑·天际线"
+    ]));
+
+    expect(result).toMatchObject({
+      names: ["骇爪-维什戴尔", "露娜-黑天际线"],
+      status: "complete"
+    });
+  });
+
+  it("keeps one proven skin pending instead of admitting the account", () => {
+    expect(parseRequiredRedSkins(toEvidenceRecords([
+      "骇爪-维什戴尔"
+    ])).status).toBe("partial");
+  });
+
+  it("rejects an explicitly absent required skin", () => {
+    const result = parseRequiredRedSkins(toEvidenceRecords([
+      "骇爪-维什戴尔，没有露娜-黑天际线"
+    ]));
+
+    expect(result.status).toBe("missing");
+    expect(result.names).toEqual(["骇爪-维什戴尔"]);
+  });
+
+  it("does not confuse 骇爪-水墨云图 with 骇爪-维什戴尔", () => {
+    expect(parseRequiredRedSkins(toEvidenceRecords([
+      "骇爪-水墨云图 露娜-黑天际线"
+    ]))).toMatchObject({
+      names: ["露娜-黑天际线"],
+      status: "partial"
+    });
+  });
+
+  it("does not confuse same-named weapon skins with operator skins", () => {
+    expect(parseRequiredRedSkins(toEvidenceRecords([
+      "R93狙击步枪-维什戴尔 PSG-1射手步枪-黑-天际线"
+    ]))).toMatchObject({
+      names: [],
+      status: "unknown"
+    });
+  });
+
+  it("requires each skin to be paired with the correct operator", () => {
+    expect(parseRequiredRedSkins(toEvidenceRecords([
+      "R93狙击步枪-维什戴尔 露娜-黑·天际线"
+    ]))).toMatchObject({
+      names: ["露娜-黑天际线"],
+      status: "partial"
+    });
+  });
+
+  it("recognizes an explicitly missing skin between operator and skin names", () => {
+    expect(parseRequiredRedSkins(toEvidenceRecords([
+      "骇爪-维什戴尔，露娜没有黑天际线"
+    ]))).toMatchObject({
+      names: ["骇爪-维什戴尔"],
+      status: "missing"
+    });
+  });
+
+  it("does not admit conflicting positive and negative evidence", () => {
+    expect(parseRequiredRedSkins(toEvidenceRecords([
+      "骇爪-维什戴尔 露娜-黑天际线",
+      "复核备注：不带骇爪-维什戴尔"
+    ])).status).toBe("missing");
   });
 });
 

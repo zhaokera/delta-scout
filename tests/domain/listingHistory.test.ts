@@ -18,7 +18,7 @@ describe("listing history snapshots", () => {
     );
 
     expect(snapshot).toEqual({
-      priceCny: 1888,
+      priceCny: 2888,
       eligibility: "eligible",
       m7PrismStatus: "peak",
       m7PrismQuality: "A",

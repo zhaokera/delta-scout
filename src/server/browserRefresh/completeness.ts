@@ -5,6 +5,7 @@ import {
   type BrowserListItem,
   type BrowserLoadEvent
 } from "./contracts.js";
+import { requiresCandidateDetail } from "../../domain/priceRange.js";
 
 export type FilterProofResult =
   | { kind: "ok" }
@@ -56,7 +57,10 @@ export function validateFilterProof(
     normalized(proof.gameLabel) === normalized("三角洲行动") &&
     normalized(proof.platformLabel) === "QQ" &&
     normalized(proof.categoryLabel) === normalized("账号") &&
-    proof.activeFilterLabels.length === 0;
+    proof.activeFilterLabels.length === 3 &&
+    proof.activeFilterLabels[0] === "1900-4000" &&
+    proof.activeFilterLabels[1] === "骇爪-维什戴尔" &&
+    proof.activeFilterLabels[2] === "露娜-黑·天际线";
   return valid
     ? { kind: "ok" }
     : { kind: "invalid", reason: "filter_mismatch" };
@@ -171,7 +175,7 @@ export function detailRequiredIds(
   items: readonly BrowserListItem[]
 ): string[] {
   return items
-    .filter((item) => item.priceCny === null || item.priceCny <= 6_000)
+    .filter((item) => requiresCandidateDetail(item.priceCny))
     .map((item) => item.sourceListingId);
 }
 

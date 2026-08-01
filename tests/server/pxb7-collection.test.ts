@@ -2,7 +2,10 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { CollectionCoordinator } from "../../src/server/collector/coordinator.js";
-import { pxb7Adapter } from "../../src/server/collector/adapters/pxb7.js";
+import {
+  PXB_REQUIRED_OPERATOR_SKIN_FILTER,
+  pxb7Adapter
+} from "../../src/server/collector/adapters/pxb7.js";
 import type {
   FetchResult,
   PageFetcher,
@@ -55,14 +58,34 @@ class PxbFixtureFetcher implements PageFetcher {
   }
 }
 
-describe("PXB7 broad account collection", () => {
-  it("pages one broad query and scores every account under the hard conditions", async () => {
+describe("PXB7 native price-filtered account collection", () => {
+  it("pages the native 1900-4000 query and locally rejects fixture outliers", async () => {
+    const nativeFilteredPages = await Promise.all(
+      [1, 2, 3].map(async (pageIndex) => {
+        const response = JSON.parse(
+          await fixture(`pxb7-list-page-${pageIndex}.json`)
+        ) as {
+          data: {
+            list: Array<{ showTitle: string }>;
+            properties: { pageToken?: string };
+          };
+        };
+        for (const product of response.data.list) {
+          product.showTitle +=
+            "\n【干员皮肤】骇爪-维什戴尔，露娜-黑天际线";
+        }
+        if (pageIndex === 2) {
+          response.data.properties.pageToken = "fixture-page-2";
+        }
+        return JSON.stringify(response);
+      })
+    );
     const fetcher = new PxbFixtureFetcher(
       await fixture("pxb7-home.html"),
       new Map([
-        [1, await fixture("pxb7-list-page-1.json")],
-        [2, await fixture("pxb7-list-page-2.json")],
-        [3, await fixture("pxb7-list-page-3.json")]
+        [1, nativeFilteredPages[0]],
+        [2, nativeFilteredPages[1]],
+        [3, nativeFilteredPages[2]]
       ])
     );
     const repository = new ListingRepository(createDatabase(":memory:"));
@@ -84,34 +107,62 @@ describe("PXB7 broad account collection", () => {
     expect(
       listRequests.map(({ options }) => {
         const body = JSON.parse(options?.body ?? "{}");
-        return [body.query, body.pageIndex];
+        return [
+          body.query,
+          body.pageIndex,
+          body.filterDTOList,
+          body.combineFilterList
+        ];
       })
     ).toEqual([1, 2, 3].map((pageIndex) => [
       "三角洲行动",
-      pageIndex
+      pageIndex,
+      [
+        { attrId: "price", attrType: 3, attrValList: [1900, 4000] },
+        PXB_REQUIRED_OPERATOR_SKIN_FILTER
+      ],
+      []
     ]));
     expect(listings).toHaveLength(48);
     expect(new Set(listings.map(({ key }) => key))).toHaveLength(48);
-    expect(eligible).toHaveLength(36);
+    expect(eligible).toHaveLength(12);
+    expect(
+      listings.some(
+        ({ priceCny }) =>
+          priceCny !== null &&
+          (priceCny < 1_900 || priceCny > 4_000)
+      )
+    ).toBe(true);
+    expect(
+      listings
+        .filter(
+          ({ priceCny }) =>
+            priceCny !== null &&
+            (priceCny < 1_900 || priceCny > 4_000)
+        )
+        .every(({ eligibility }) => eligibility === "rejected")
+    ).toBe(true);
     expect(
       eligible.every(
         (listing) =>
           listing.source === "pxb7" &&
           listing.loginPlatform === "qq" &&
           listing.service === "official" &&
+          listing.requiredRedSkinStatus === "complete" &&
           listing.priceCny !== null &&
-          listing.priceCny <= 6_000 &&
+          listing.priceCny >= 1_900 &&
+          listing.priceCny <= 4_000 &&
           listing.url ===
             `https://www.pxb7.com/product/${listing.sourceListingId}/1`
       )
     ).toBe(true);
     expect(eligible[0]).toMatchObject({
-      m7PrismQuality: "A",
-      redSkins: ["威龙"],
+      m7PrismQuality: "S",
+      redSkins: ["露娜", "骇爪"],
       julangStatus: "owned",
-      julangQuality: "极品",
-      totalAssetsM: 268,
-      hafCoins: 28_880_000,
+      julangQuality: "优品",
+      totalAssetsM: 190,
+      hafCoins: 18_000_000,
       secondRealNameAvailable: true
     });
     expect(fetcher.detailRequests).toHaveLength(0);

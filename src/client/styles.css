@@ -678,7 +678,7 @@ button {
   margin-top: 24px;
   min-height: 88px;
   display: grid;
-  grid-template-columns: 1.1fr repeat(3, minmax(160px, 1fr)) auto;
+  grid-template-columns: 1.1fr repeat(4, minmax(160px, 1fr)) auto;
   background: var(--panel);
   border: 1px solid var(--line-bright);
   border-left: 3px solid var(--acid);
@@ -1409,6 +1409,15 @@ input[type="search"] {
   color: var(--amber);
   border: 1px solid rgba(255, 189, 74, 0.4);
   background: rgba(255, 189, 74, 0.055);
+  font: 750 9px/1.2 var(--mono);
+}
+
+.required-skin-badge {
+  width: fit-content;
+  padding: 4px 6px;
+  color: var(--acid);
+  border: 1px solid rgba(159, 255, 91, 0.42);
+  background: rgba(159, 255, 91, 0.06);
   font: 750 9px/1.2 var(--mono);
 }
 

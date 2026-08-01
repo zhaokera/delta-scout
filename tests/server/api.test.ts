@@ -29,6 +29,9 @@ import {
 import { RefreshTracker } from "../../src/server/refreshTracker.js";
 import { ListingRepository } from "../../src/server/repository.js";
 import { makeListing, makeScore } from "../domain/listingFactory.js";
+import {
+  APPROVED_JIAOYIMAO_REFERER
+} from "../../src/server/collector/mtop.js";
 
 function setup() {
   const database = createDatabase(":memory:");
@@ -54,6 +57,7 @@ function setup() {
     repository,
     coordinator,
     tracker,
+    admission,
     app: createApp({
       repository,
       coordinator,
@@ -145,8 +149,7 @@ function seedCandidateUniverse(repository: ListingRepository): void {
 }
 
 const browserBaseTime = new Date("2026-07-30T10:00:00.000Z");
-const browserFilterUrl =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/";
+const browserFilterUrl = APPROVED_JIAOYIMAO_REFERER;
 
 function browserProof(
   overrides: Partial<BrowserFilterProof> = {}
@@ -156,7 +159,11 @@ function browserProof(
     gameLabel: "三角洲行动",
     platformLabel: "QQ",
     categoryLabel: "账号",
-    activeFilterLabels: [],
+    activeFilterLabels: [
+      "1900-4000",
+      "骇爪-维什戴尔",
+      "露娜-黑·天际线"
+    ],
     observedAt: browserBaseTime.toISOString(),
     ...overrides
   };
@@ -996,7 +1003,7 @@ describe("listing API", () => {
     expect(ineligible.status).toBe(409);
     expect(ineligible.body).toEqual({
       error: "listing_not_eligible",
-      message: "该账号不满足 QQ 官服与预算条件，不能人工淘汰"
+      message: "该账号不满足 QQ 官服与 ¥1,900–¥4,000 价格条件，不能人工淘汰"
     });
 
     const firstRestore = await request(app).delete(eligiblePath);
@@ -1242,7 +1249,7 @@ describe("listing API", () => {
       observations: [
         expect.objectContaining({
           availability: "active",
-          priceCny: 1888
+          priceCny: 2888
         })
       ]
     });
@@ -2069,7 +2076,7 @@ describe("browser refresh API", () => {
     const list = await request(f.app)
       .post(`/api/browser-refresh/${job.id}/list-batches`)
       .set(auth)
-      .send(browserBatch([["101", 5_000]]));
+      .send(browserBatch([["101", 3_000]]));
     expect(list.status).toBe(200);
     expect(list.body).toMatchObject({
       acceptedCount: 1,
@@ -2588,7 +2595,7 @@ describe("browser refresh API", () => {
     await request(f.app)
       .post(`/api/browser-refresh/${job.id}/list-batches`)
       .set("Authorization", bearer(job.token))
-      .send(browserBatch([["901", 5_000]]))
+      .send(browserBatch([["901", 3_000]]))
       .expect(200);
 
     const cancelled = await request(f.app)
@@ -2684,4 +2691,158 @@ describe("browser refresh API", () => {
       expect(f.admission.snapshot()).toEqual({ activeKind: "none" });
     }
   );
+});
+
+describe("Panzhi browser-native filter snapshot API", () => {
+  function panzhiSnapshot() {
+    return {
+      filterProof: {
+        currentUrl: "https://www.pzds.com/goodsList/391/6",
+        gameLabel: "三角洲行动",
+        minPriceInput: "1900",
+        maxPriceInput: "4000",
+        operatorSkinFilter: {
+          fieldId: "22858",
+          fieldLabel: "特战干员外观",
+          fieldType: "CHECKBOX",
+          mappingField: "22858",
+          searchType: "ALL",
+          searchTypeLabel: "全部都要有",
+          selectedOptions: [
+            {
+              optionId: "1038173",
+              label: "骇爪-维什戴尔",
+              metadataCode: "SA200018"
+            },
+            {
+              optionId: "1035794",
+              label: "露娜-黑天际线",
+              metadataCode: "SA200003"
+            }
+          ]
+        },
+        observedAt: "2026-08-01T08:00:00.000Z"
+      },
+      loadActionCount: 4,
+      observedUniqueCount: 2,
+      stopReason: "no_growth_twice",
+      items: [
+        {
+          sourceListingId: "SA2INRANGE",
+          url: "https://www.pzds.com/goodsDetails/SA2INRANGE/6",
+          title: "盼之区间内商品",
+          rawText:
+            "总资产365M 哈夫币478w M7棱镜攻势(极品B) " +
+            "骇爪-维什戴尔 露娜-黑天际线 " +
+            "QQ可二次实名 找回包赔 ¥ 2888",
+          priceCny: 2888
+        },
+        {
+          sourceListingId: "SA2PINNED",
+          url: "https://www.pzds.com/goodsDetails/SA2PINNED/6",
+          title: "原生筛选页置顶越界商品",
+          rawText: "QQ不可二次实名 ¥ 50000",
+          priceCny: 50000
+        }
+      ]
+    };
+  }
+
+  it("publishes only in-range cards and preserves other platform scores", async () => {
+    const f = setup();
+    f.repository.replaceSourceSnapshot(
+      "pxb7",
+      [listingFor("pxb7", 88, { score: makeScore(72) })],
+      "success",
+      browserBaseTime,
+      { pagesScanned: 3, stopReason: "end_of_pages" }
+    );
+
+    const response = await request(f.app)
+      .post("/api/sources/panzhi/browser-snapshot")
+      .send(panzhiSnapshot())
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      source: "panzhi",
+      state: "success",
+      scanRunId: expect.any(Number),
+      observedItemCount: 2,
+      publishedItemCount: 1,
+      droppedByPrice: 1
+    });
+    expect(
+      f.repository.getListings().filter(({ source }) => source === "panzhi")
+    ).toEqual([
+      expect.objectContaining({
+        sourceListingId: "SA2INRANGE",
+        priceCny: 2888,
+        loginPlatform: "qq",
+        service: "official",
+        eligibility: "eligible"
+      })
+    ]);
+    expect(
+      f.repository.getListings().find(({ source }) => source === "pxb7")
+        ?.score
+    ).not.toBeNull();
+    expect(f.repository.getScanHistory(1)[0]).toMatchObject({
+      scope: "single_source",
+      requestedSource: "panzhi",
+      sources: [
+        expect.objectContaining({
+          source: "panzhi",
+          observedItemCount: 1,
+          published: true
+        })
+      ]
+    });
+    expect(f.admission.snapshot()).toEqual({ activeKind: "none" });
+  });
+
+  it("rejects a snapshot without the exact native 1900-4000 proof", async () => {
+    const f = setup();
+    const payload = panzhiSnapshot();
+    payload.filterProof.minPriceInput = "1000";
+
+    await request(f.app)
+      .post("/api/sources/panzhi/browser-snapshot")
+      .send(payload)
+      .expect(400, {
+        error: "invalid_panzhi_browser_snapshot",
+        message: "盼之浏览器快照或原生价格筛选证明无效"
+      });
+    expect(
+      f.repository.getListings().filter(({ source }) => source === "panzhi")
+    ).toHaveLength(0);
+  });
+
+  it("publishes observed cards as partial when a captcha stops loading", async () => {
+    const f = setup();
+    const payload = panzhiSnapshot();
+    payload.stopReason = "captcha_required";
+
+    const response = await request(f.app)
+      .post("/api/sources/panzhi/browser-snapshot")
+      .send(payload)
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      source: "panzhi",
+      state: "partial",
+      observedItemCount: 2,
+      publishedItemCount: 1,
+      droppedByPrice: 1
+    });
+    expect(
+      f.repository.getSourceStatuses().find(
+        ({ source }) => source === "panzhi"
+      )
+    ).toMatchObject({
+      state: "partial",
+      itemCount: 1,
+      stopReason: "captcha_required",
+      error: "captcha_required"
+    });
+  });
 });

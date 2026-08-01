@@ -61,6 +61,33 @@ const KNOWN_RED_CHARACTER_SKINS = [
   { character: "乌鲁鲁", characterAliases: ["乌鲁鲁"], skinAliases: ["狂怒"] }
 ] as const;
 
+export const REQUIRED_RED_SKIN_LABELS = [
+  "骇爪-维什戴尔",
+  "露娜-黑天际线"
+] as const;
+
+export type RequiredRedSkinLabel =
+  (typeof REQUIRED_RED_SKIN_LABELS)[number];
+
+export type RequiredRedSkinStatus =
+  | "complete"
+  | "partial"
+  | "missing"
+  | "unknown";
+
+const REQUIRED_RED_SKIN_TARGETS = [
+  {
+    label: REQUIRED_RED_SKIN_LABELS[0],
+    characterAliases: ["骇爪", "麦晓雯"],
+    skinAliases: ["维什戴尔"]
+  },
+  {
+    label: REQUIRED_RED_SKIN_LABELS[1],
+    characterAliases: ["露娜"],
+    skinAliases: ["黑天际线"]
+  }
+] as const;
+
 function compactSkinName(value: string): string {
   return value.replace(/[\s·•・._—–-]/g, "");
 }
@@ -511,6 +538,93 @@ export function parseRedSkins(
     unnamed: explicitEvidence.length > 0 && names.length === 0,
     evidence
   };
+}
+
+function requiredSkinMentions(
+  text: string,
+  characterAliases: readonly string[],
+  skinAliases: readonly string[]
+): { positive: boolean; negative: boolean } {
+  const compact = compactSkinName(text).replace(
+    /[【】（）()[\]：:，,、/|]/g,
+    ""
+  );
+  let positive = false;
+  let negative = false;
+  const negativeWords = ["未拥有", "没有", "缺少", "未有", "不含", "不带", "无"];
+
+  for (const characterAlias of characterAliases) {
+    const character = compactSkinName(characterAlias);
+    for (const skinAlias of skinAliases) {
+      const skin = compactSkinName(skinAlias);
+      const target = `${character}${skin}`;
+      let offset = compact.indexOf(target);
+      while (offset >= 0) {
+        const prefix = compact.slice(Math.max(0, offset - 8), offset);
+        if (negativeWords.some((word) => prefix.endsWith(word))) {
+          negative = true;
+        } else {
+          positive = true;
+        }
+        offset = compact.indexOf(target, offset + target.length);
+      }
+
+      if (
+        negativeWords.some((word) =>
+          compact.includes(`${character}${word}${skin}`)
+        )
+      ) {
+        negative = true;
+      }
+    }
+  }
+
+  return { positive, negative };
+}
+
+export function parseRequiredRedSkins(
+  records: EvidenceRecord[]
+): {
+  names: RequiredRedSkinLabel[];
+  status: RequiredRedSkinStatus;
+  evidence: EvidenceRecord[];
+} {
+  const names: RequiredRedSkinLabel[] = [];
+  const evidence: EvidenceRecord[] = [];
+  let explicitlyMissing = false;
+
+  for (const target of REQUIRED_RED_SKIN_TARGETS) {
+    let targetPositive = false;
+    let targetNegative = false;
+    for (const record of records) {
+      const mentions = requiredSkinMentions(
+        record.text,
+        target.characterAliases,
+        target.skinAliases
+      );
+      if (mentions.positive || mentions.negative) {
+        evidence.push(record);
+      }
+      targetPositive ||= mentions.positive;
+      targetNegative ||= mentions.negative;
+    }
+    if (targetPositive) names.push(target.label);
+    if (targetNegative) explicitlyMissing = true;
+  }
+
+  const uniqueEvidence = evidence.filter(
+    (record, index, all) =>
+      all.findIndex(({ text }) => text === record.text) === index
+  );
+  const status: RequiredRedSkinStatus = explicitlyMissing
+    ? "missing"
+    : names.length === REQUIRED_RED_SKIN_TARGETS.length
+      ? "complete"
+      : names.length > 0
+        ? "partial"
+        : "unknown";
+
+  return { names, status, evidence: uniqueEvidence };
 }
 
 export function parseJulang(
