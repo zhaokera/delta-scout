@@ -23,10 +23,35 @@ export const APPROVED_JIAOYIMAO_SEARCH_CONDITION = {
 export const APPROVED_JIAOYIMAO_SEARCH_CONDITION_JSON = JSON.stringify(
   APPROVED_JIAOYIMAO_SEARCH_CONDITION
 );
+export const APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION = {
+  price: {
+    conditionList: ["1900,4000"],
+    statConditionList: ["1900-4000"]
+  }
+} as const;
+export const APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION_JSON = JSON.stringify(
+  APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION
+);
+export const APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION = {
+  selling_point_7322805066952352771: {
+    selectType: 1,
+    multiSearchCondition: false,
+    conditionList: ["骇爪-维什戴尔", "露娜-黑·天际线"],
+    statConditionList: ["骇爪-维什戴尔", "露娜-黑·天际线"],
+    conditionType: 3
+  }
+} as const;
+export const APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION_JSON = JSON.stringify(
+  APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION
+);
 export const APPROVED_JIAOYIMAO_REFERER =
-  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o110/" +
-  `?searchCondition=${encodeURIComponent(
-    APPROVED_JIAOYIMAO_SEARCH_CONDITION_JSON
+  "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/" +
+  "o1687157900084320/?rId=108" +
+  `&priceCondition=${encodeURIComponent(
+    APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION_JSON
+  )}` +
+  `&searchCondition=${encodeURIComponent(
+    APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION_JSON
   )}&enforcePlat=2&newPage=true`;
 
 const APPROVED_API =

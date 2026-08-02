@@ -88,8 +88,8 @@ describe("ListingDetail", () => {
             parts: {
               m7: 15,
               redSkins: 20,
-              julang: 20,
-              price: 23,
+              julang: 15,
+              price: 18,
               assets: 9,
               secondRealName: 40,
               recovery: 0,
@@ -117,16 +117,19 @@ describe("ListingDetail", () => {
     expect(screen.getByText("账号价值 86 / 100")).toBeInTheDocument();
     expect(screen.getByText("购买安全 40 / 65")).toBeInTheDocument();
     expect(screen.getByText("数据完整度 80 / 100")).toBeInTheDocument();
-    expect(screen.getByText("中风险")).toBeInTheDocument();
+    expect(screen.getByText("需关注")).toBeInTheDocument();
     expect(screen.getByText("安全证据 2 / 2")).toBeInTheDocument();
+    expect(screen.getByText("确定推荐 91.0 / 100")).toBeInTheDocument();
+    expect(screen.getByText("资产回收率")).toBeInTheDocument();
+    expect(screen.getByText("18%")).toBeInTheDocument();
     expect(
       screen.getByText("永久包赔 仅作参考 · 不参与评分")
     ).toBeInTheDocument();
     expect(screen.getByText("M7 综合价值 15 / 15")).toBeInTheDocument();
-    expect(screen.getByText("角色红皮 20 / 30")).toBeInTheDocument();
-    expect(screen.getByText("巨浪 20 / 20")).toBeInTheDocument();
-    expect(screen.getByText("价格 23 / 25")).toBeInTheDocument();
-    expect(screen.getByText("资产 9 / 10")).toBeInTheDocument();
+    expect(screen.getByText("角色红皮 20 / 25")).toBeInTheDocument();
+    expect(screen.getByText("巨浪 15 / 15")).toBeInTheDocument();
+    expect(screen.getByText("价格 18 / 20")).toBeInTheDocument();
+    expect(screen.getByText("资产 9 / 25")).toBeInTheDocument();
   });
 
   it("shows trusted M7 finish tags, source evidence, and combined value", () => {

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { CollectionCoordinator } from "../../src/server/collector/coordinator.js";
 import {
+  PXB_REQUIRED_ACCOUNT_FILTERS,
   PXB_REQUIRED_OPERATOR_SKIN_FILTER,
   pxb7Adapter
 } from "../../src/server/collector/adapters/pxb7.js";
@@ -17,6 +18,19 @@ import { ListingRepository } from "../../src/server/repository.js";
 async function fixture(name: string): Promise<string> {
   return readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
 }
+
+describe("PXB native hard filters", () => {
+  it("does not prefilter secondary real-name status", () => {
+    expect(PXB_REQUIRED_ACCOUNT_FILTERS).toEqual([
+      expect.objectContaining({ attrId: "103711" })
+    ]);
+    expect(PXB_REQUIRED_ACCOUNT_FILTERS).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ attrId: "103713" })
+      ])
+    );
+  });
+});
 
 class PxbFixtureFetcher implements PageFetcher {
   readonly requests: SourceRequest[] = [];
@@ -118,6 +132,7 @@ describe("PXB7 native price-filtered account collection", () => {
       "三角洲行动",
       pageIndex,
       [
+        ...PXB_REQUIRED_ACCOUNT_FILTERS,
         { attrId: "price", attrType: 3, attrValList: [1900, 4000] },
         PXB_REQUIRED_OPERATOR_SKIN_FILTER
       ],

@@ -321,9 +321,51 @@ describe("App shell", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("QQ 官服")).toBeInTheDocument();
     expect(
-      screen.getByText("全账号统一评分 · M7 仅作品质标签")
+      screen.getByText("全账号统一评分 · M7 非入池门槛")
     ).toBeInTheDocument();
     expect(screen.getByText("¥1,900–¥4,000")).toBeInTheDocument();
+  });
+
+  it("does not describe a partial platform snapshot as fully successful", async () => {
+    const api = makeApi({
+      sources: [
+        makeSourceStatus({
+          source: "jiaoyimao",
+          state: "partial",
+          completion: "partial",
+          stopReason: "pagination_stalled"
+        }),
+        makeSourceStatus({ source: "panzhi" }),
+        makeSourceStatus({ source: "pxb7" })
+      ],
+      getScanHistory: async () => ({
+        runs: [{
+          id: 29,
+          startedAt: "2026-08-02T02:04:32.534Z",
+          finishedAt: "2026-08-02T02:06:57.553Z",
+          state: "success" as const,
+          error: null,
+          scope: "all_sources" as const,
+          requestedSource: null,
+          sources: []
+        }]
+      })
+    });
+
+    render(<App api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 完整 · 1 部分完成/))
+        .toBeInTheDocument();
+    });
+    expect(screen.getAllByText("部分完成").length).toBeGreaterThan(0);
+  });
+
+  it("stacks fixed conditions instead of clipping them on compact screens", () => {
+    const clientStyles = readFileSync("src/client/styles.css", "utf8");
+    expect(clientStyles).toMatch(
+      /@media \(max-width: 760px\)[\s\S]*?\.mission-brief\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*1fr;[^}]*overflow:\s*visible;/
+    );
   });
 
   it("maps every listing view to an explicit API query", async () => {
@@ -915,7 +957,7 @@ describe("App shell", () => {
       name: "候选详情"
     });
     expect(within(detail).getByText("999M")).toBeInTheDocument();
-    expect(within(detail).getByText("95")).toBeInTheDocument();
+    expect(within(detail).getByText("95.0")).toBeInTheDocument();
 
     await act(async () => {
       staleDetail.resolve(
@@ -1012,7 +1054,7 @@ describe("App shell", () => {
       })
     ).toBeInTheDocument();
     expect(
-      screen.getByText("每平台最多 10 · 已排除明确高风险与疑似重复号")
+      screen.getByText("每平台最多 10 · 仅排除明确高风险账号")
     ).toBeInTheDocument();
     expect(screen.getByText("交易猫 10")).toBeInTheDocument();
     expect(screen.getByText("盼之 3")).toBeInTheDocument();
@@ -1472,7 +1514,7 @@ describe("App shell", () => {
     expect(within(row).getByText("M7 · 极品A")).toBeInTheDocument();
     expect(within(row).getByText("巨浪 · 极品")).toBeInTheDocument();
     expect(within(row).getByText("482M")).toBeInTheDocument();
-    expect(within(row).getByText("87")).toBeInTheDocument();
+    expect(within(row).getByText("87.0")).toBeInTheDocument();
 
     await userEvent.click(row);
     const detail = await screen.findByRole("complementary", {

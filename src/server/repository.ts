@@ -38,6 +38,10 @@ import {
 import { applyManualPreferenceFeedback } from "../domain/manualPreference.js";
 import { scoreEligibleListings } from "../domain/score.js";
 import { parseStoredListing } from "./storedListing.js";
+import {
+  detectRefreshEvents,
+  type StoredRefreshEvent
+} from "./refreshEvents.js";
 
 export type SourceState =
   | "idle"
@@ -217,6 +221,118 @@ export class ListingRepository {
   private savepointSequence = 0;
 
   constructor(private readonly database: DatabaseSync) {}
+
+  private insertRefreshEvents(
+    runId: number,
+    before: Listing[],
+    after: Listing[],
+    refreshedSources: ReadonlySet<SourceId>,
+    createdAt: Date,
+    removalSources: ReadonlySet<SourceId> = refreshedSources
+  ): void {
+    const events = detectRefreshEvents({
+      runId,
+      before,
+      after,
+      refreshedSources,
+      removalSources,
+      createdAt
+    });
+    const insert = this.database.prepare(`
+      INSERT OR IGNORE INTO refresh_events (
+        run_id, source, listing_key, type, severity,
+        title, message, details_json, created_at, acknowledged
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `);
+    for (const event of events) {
+      insert.run(
+        event.runId,
+        event.source,
+        event.listingKey,
+        event.type,
+        event.severity,
+        event.title,
+        event.message,
+        JSON.stringify(event.details),
+        event.createdAt
+      );
+    }
+  }
+
+  getRefreshEvents(
+    limit = 30,
+    onlyUnacknowledged = false
+  ): StoredRefreshEvent[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+    const rows = this.database.prepare(`
+      SELECT id, run_id, source, listing_key, type, severity,
+             title, message, details_json, created_at, acknowledged
+      FROM refresh_events AS event
+      WHERE NOT (
+        event.type = 'removed'
+        AND event.source IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM scan_source_results AS source_result
+          WHERE source_result.run_id = event.run_id
+            AND source_result.source = event.source
+            AND source_result.state <> 'success'
+        )
+      )
+      ${onlyUnacknowledged ? "AND event.acknowledged = 0" : ""}
+      ORDER BY event.id DESC
+      LIMIT ?
+    `).all(safeLimit) as unknown as Array<{
+      id: number;
+      run_id: number;
+      source: SourceId | null;
+      listing_key: string | null;
+      type: StoredRefreshEvent["type"];
+      severity: StoredRefreshEvent["severity"];
+      title: string;
+      message: string;
+      details_json: string;
+      created_at: string;
+      acknowledged: number;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      source: row.source,
+      listingKey: row.listing_key,
+      type: row.type,
+      severity: row.severity,
+      title: row.title,
+      message: row.message,
+      details: JSON.parse(row.details_json) as Record<string, unknown>,
+      createdAt: row.created_at,
+      acknowledged: row.acknowledged === 1
+    }));
+  }
+
+  acknowledgeRefreshEvents(ids?: number[]): number {
+    if (!ids || ids.length === 0) {
+      return Number(
+        this.database.prepare(`
+          UPDATE refresh_events
+          SET acknowledged = 1
+          WHERE acknowledged = 0
+        `).run().changes
+      );
+    }
+    const normalized = [...new Set(ids)].filter(
+      (id) => Number.isSafeInteger(id) && id > 0
+    );
+    if (normalized.length === 0) return 0;
+    const placeholders = normalized.map(() => "?").join(", ");
+    return Number(
+      this.database.prepare(`
+        UPDATE refresh_events
+        SET acknowledged = 1
+        WHERE acknowledged = 0 AND id IN (${placeholders})
+      `).run(...normalized).changes
+    );
+  }
 
   replaceSourceSnapshot(
     source: SourceId,
@@ -502,6 +618,11 @@ export class ListingRepository {
       WHERE source = ?
         AND state = 'success'
         AND published = 1
+        AND NOT EXISTS (
+          SELECT 1
+          FROM browser_refresh_jobs
+          WHERE published_run_id = scan_source_results.run_id
+        )
       ORDER BY run_id DESC
       LIMIT 1
     `);
@@ -1136,6 +1257,18 @@ export class ListingRepository {
         }
       }
 
+      this.insertRefreshEvents(
+        runId,
+        oldListings,
+        derivedListings,
+        new Set(
+          preparedUpdates
+            .filter(({ published }) => published)
+            .map(({ original }) => original.source)
+        ),
+        finishedAt,
+        successfulSources
+      );
       this.database
         .prepare(`
           UPDATE scan_runs
@@ -1179,11 +1312,13 @@ export class ListingRepository {
     try {
       return this.runTransaction(() => {
       const job = this.database.prepare(`
-        SELECT state
+        SELECT state, filter_url
         FROM browser_refresh_jobs
         WHERE id = ? AND source = 'jiaoyimao'
-      `).get(input.jobId) as { state: string } | undefined;
-      if (!job || job.state !== "committing") {
+      `).get(input.jobId) as
+        | { state: string; filter_url: string | null }
+        | undefined;
+      if (!job || job.state !== "committing" || !job.filter_url) {
         throw new Error("浏览器刷新任务不在提交状态");
       }
 
@@ -1199,61 +1334,96 @@ export class ListingRepository {
         ({ source }) => source === input.source
       );
       if (!status) throw new Error("交易猫来源状态不存在");
-      const latestComplete = this.database.prepare(`
-        SELECT observed_item_count, pages_scanned
-        FROM scan_source_results
-        WHERE source = ?
-          AND state = 'success'
-          AND published = 1
-        ORDER BY run_id DESC
+      const comparableBaseline = this.database.prepare(`
+        SELECT
+          browser_refresh_jobs.finished_at,
+          scan_source_results.observed_item_count,
+          scan_source_results.pages_scanned
+        FROM browser_refresh_jobs
+        JOIN scan_source_results
+          ON scan_source_results.run_id = browser_refresh_jobs.published_run_id
+         AND scan_source_results.source = browser_refresh_jobs.source
+        WHERE browser_refresh_jobs.id <> ?
+          AND browser_refresh_jobs.source = 'jiaoyimao'
+          AND browser_refresh_jobs.state = 'success'
+          AND browser_refresh_jobs.filter_url = ?
+          AND browser_refresh_jobs.published_run_id IS NOT NULL
+        ORDER BY browser_refresh_jobs.finished_at DESC
         LIMIT 1
-      `).get(input.source) as
-        | { observed_item_count: number; pages_scanned: number }
-        | undefined;
-      const baseline = status.anomaly.state === "suspect"
-        ? {
-            itemCount: status.anomaly.baselineItemCount,
-            pagesScanned: status.anomaly.baselinePagesScanned
+      `).get(input.jobId, job.filter_url) as
+        | {
+            finished_at: string;
+            observed_item_count: number;
+            pages_scanned: number;
           }
-        : latestComplete
-          ? {
-              itemCount: latestComplete.observed_item_count,
-              pagesScanned: latestComplete.pages_scanned
-            }
-          : status.state === "success"
-            ? {
-                itemCount: status.itemCount,
-                pagesScanned: status.pagesScanned
+        | undefined;
+      const baseline = comparableBaseline
+        ? {
+            itemCount: comparableBaseline.observed_item_count,
+            pagesScanned: comparableBaseline.pages_scanned
+          }
+        : { itemCount: 0, pagesScanned: 0 };
+      const latestComparableQuarantine = comparableBaseline
+        ? this.database.prepare(`
+            SELECT
+              browser_refresh_jobs.finished_at,
+              scan_source_results.observed_item_count,
+              scan_source_results.pages_scanned
+            FROM browser_refresh_jobs
+            JOIN scan_source_results
+              ON scan_source_results.run_id = browser_refresh_jobs.scan_run_id
+             AND scan_source_results.source = browser_refresh_jobs.source
+            WHERE browser_refresh_jobs.id <> ?
+              AND browser_refresh_jobs.source = 'jiaoyimao'
+              AND browser_refresh_jobs.state = 'quarantined'
+              AND browser_refresh_jobs.filter_url = ?
+              AND browser_refresh_jobs.finished_at > ?
+              AND browser_refresh_jobs.scan_run_id IS NOT NULL
+            ORDER BY browser_refresh_jobs.finished_at DESC
+            LIMIT 1
+          `).get(
+            input.jobId,
+            job.filter_url,
+            comparableBaseline.finished_at
+          ) as
+            | {
+                finished_at: string;
+                observed_item_count: number;
+                pages_scanned: number;
               }
-            : { itemCount: 0, pagesScanned: 0 };
-      const pending: SnapshotAnomalyGuard | null =
-        status.anomaly.state === "suspect"
-          ? {
-              baseline: {
-                itemCount: status.anomaly.baselineItemCount,
-                pagesScanned: status.anomaly.baselinePagesScanned
-              },
-              observed: {
-                itemCount: status.anomaly.observedItemCount,
-                pagesScanned: status.anomaly.observedPagesScanned
-              },
-              confirmationCount: status.anomaly.confirmationCount,
-              firstDetectedAt: status.anomaly.firstDetectedAt,
-              lastDetectedAt: status.anomaly.lastDetectedAt,
-              reason:
-                status.anomaly.reason as SnapshotAnomalyGuard["reason"]
-            }
-          : null;
-      const decision = evaluateSnapshotAnomaly({
-        complete: true,
-        baseline,
-        current: {
-          itemCount: incoming.length,
-          pagesScanned: input.pagesScanned
-        },
-        pending,
-        observedAt: timestamp
-      });
+            | undefined
+        : undefined;
+      const previousBrowserDecision = latestComparableQuarantine
+        ? evaluateSnapshotAnomaly({
+            complete: true,
+            baseline,
+            current: {
+              itemCount: latestComparableQuarantine.observed_item_count,
+              pagesScanned: latestComparableQuarantine.pages_scanned
+            },
+            pending: null,
+            observedAt: latestComparableQuarantine.finished_at
+          })
+        : null;
+      const pending = previousBrowserDecision?.kind === "quarantine"
+        ? previousBrowserDecision.nextGuard
+        : null;
+      const decision = comparableBaseline
+        ? evaluateSnapshotAnomaly({
+            complete: true,
+            baseline,
+            current: {
+              itemCount: incoming.length,
+              pagesScanned: input.pagesScanned
+            },
+            pending,
+            observedAt: timestamp
+          })
+        : {
+            kind: "accept" as const,
+            reason: "normal" as const,
+            nextGuard: null
+          };
       if (decision.kind === "not_applicable") {
         throw new Error("完整浏览器快照不能跳过异常判定");
       }
@@ -1310,27 +1480,17 @@ export class ListingRepository {
         );
         this.database.prepare(`
           UPDATE source_anomaly_guards
-          SET state = 'suspect',
-              baseline_item_count = ?,
-              baseline_pages_scanned = ?,
-              observed_item_count = ?,
-              observed_pages_scanned = ?,
-              confirmation_count = ?,
-              first_detected_at = ?,
-              last_detected_at = ?,
-              reason = ?
+          SET state = 'clear',
+              baseline_item_count = NULL,
+              baseline_pages_scanned = NULL,
+              observed_item_count = NULL,
+              observed_pages_scanned = NULL,
+              confirmation_count = 0,
+              first_detected_at = NULL,
+              last_detected_at = NULL,
+              reason = NULL
           WHERE source = ?
-        `).run(
-          decision.nextGuard.baseline.itemCount,
-          decision.nextGuard.baseline.pagesScanned,
-          decision.nextGuard.observed.itemCount,
-          decision.nextGuard.observed.pagesScanned,
-          decision.nextGuard.confirmationCount,
-          decision.nextGuard.firstDetectedAt,
-          decision.nextGuard.lastDetectedAt,
-          decision.nextGuard.reason,
-          input.source
-        );
+        `).run(input.source);
         this.database.prepare(`
           UPDATE source_status
           SET state = 'partial',
@@ -1700,6 +1860,13 @@ export class ListingRepository {
         );
       }
 
+      this.insertRefreshEvents(
+        scanRunId,
+        oldListings,
+        normalized,
+        new Set([input.source]),
+        input.attemptedAt
+      );
       this.database.prepare(`
         UPDATE scan_runs
         SET state = 'success', finished_at = ?, error = NULL
@@ -2168,16 +2335,9 @@ export class ListingRepository {
         .all() as unknown as ListingRow[];
       const reparsed = rows.map(({ payload }) => {
         const listing = parseStoredListing(payload);
-        const parsedM7 =
-          listing.m7Evidence.length > 0
-            ? parseM7(listing.m7Evidence)
-            : null;
-        const m7PrismStatus =
-          parsedM7?.status ?? listing.m7PrismStatus;
-        const m7PrismQuality =
-          parsedM7 === null
-            ? listing.m7PrismQuality
-            : (parsedM7.quality ?? null);
+        const parsedM7 = parseM7(listing.m7Evidence);
+        const m7PrismStatus = parsedM7.status;
+        const m7PrismQuality = parsedM7.quality ?? null;
         const requiredRedSkins = parseRequiredRedSkins(listing.evidence);
         return {
           ...listing,

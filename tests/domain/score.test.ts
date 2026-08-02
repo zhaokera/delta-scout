@@ -1,5 +1,8 @@
 import {
+  assetRecoveryRate,
   compareRecommendations,
+  potentialRecommendationScore,
+  preciseRecommendationScore,
   scoreEligibleListings
 } from "../../src/domain/score";
 import {
@@ -11,13 +14,14 @@ const now = new Date("2026-07-28T12:00:00+08:00");
 const tiedScore = makeScore(80);
 
 describe("scoreEligibleListings", () => {
-  it("uses neutral set-relative values for a single candidate", () => {
+  it("uses fixed price-band values for a single candidate", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 71,
+      total: 70,
+      exactTotal: 69.7,
       preferenceAdjustment: 0,
-      value: 54,
+      value: 51.66541353383458,
       safety: 65,
       dataQuality: 100,
       riskLevel: "low",
@@ -27,10 +31,10 @@ describe("scoreEligibleListings", () => {
       },
       parts: {
         m7: 10,
-        redSkins: 6,
-        julang: 20,
-        price: 12.5,
-        assets: 5.5,
+        redSkins: 5,
+        julang: 15,
+        price: 8.365413533834587,
+        assets: 13.3,
         secondRealName: 40,
         recovery: 0,
         verification: 25
@@ -41,7 +45,7 @@ describe("scoreEligibleListings", () => {
     });
   });
 
-  it("uses robust ranks for price and assets across eligible candidates", () => {
+  it("uses the locked price band and the fixed ¥2/M asset valuation", () => {
     const cheap = makeListing({
       key: "panzhi:cheap",
       sourceListingId: "cheap",
@@ -62,10 +66,58 @@ describe("scoreEligibleListings", () => {
     const cheapResult = results.find(({ key }) => key === cheap.key)!;
     const richResult = results.find(({ key }) => key === rich.key)!;
 
-    expect(cheapResult.score?.parts.price).toBe(25);
-    expect(richResult.score?.parts.price).toBe(0);
-    expect(cheapResult.score?.parts.assets).toBe(1);
-    expect(richResult.score?.parts.assets).toBe(10);
+    expect(cheapResult.score?.parts.price).toBeCloseTo(13.3333);
+    expect(richResult.score?.parts.price).toBeCloseTo(3.3333);
+    expect(cheapResult.score?.parts.assets).toBe(5);
+    expect(richResult.score?.parts.assets).toBe(25);
+    expect(assetRecoveryRate(cheapResult)).toBeCloseTo(0.2);
+    expect(assetRecoveryRate(richResult)).toBeCloseTo(0.2);
+  });
+
+  it("does not change one account's score when another platform adds volume", () => {
+    const target = makeListing({
+      key: "jiaoyimao:stable",
+      source: "jiaoyimao",
+      sourceListingId: "stable",
+      priceCny: 2_800,
+      totalAssetsM: 220
+    });
+    const [single] = scoreEligibleListings([target], now);
+    const expanded = scoreEligibleListings([
+      target,
+      ...Array.from({ length: 200 }, (_, index) =>
+        makeListing({
+          key: `pxb7:volume-${index}`,
+          source: "pxb7",
+          sourceListingId: `volume-${index}`,
+          priceCny: 1_900 + (index % 21) * 100,
+          totalAssetsM: 50 + index
+        })
+      )
+    ], now).find(({ key }) => key === target.key)!;
+
+    expect(expanded.score).toEqual(single.score);
+  });
+
+  it("does not double count Haf coins when total assets are known", () => {
+    const results = scoreEligibleListings([
+      makeListing({ key: "panzhi:low-coins", totalAssetsM: 100, hafCoins: 1 }),
+      makeListing({ key: "pxb7:high-coins", totalAssetsM: 100, hafCoins: 99_999_999 })
+    ], now);
+
+    expect(results.map(({ score }) => score?.parts.assets)).toEqual([5, 5]);
+    expect(results[0].score?.valueReasons.join(" ")).toContain(
+      "100.0M，按 ¥2/M 估值约 ¥200"
+    );
+  });
+
+  it("uses Haf coins only as a fallback and caps asset value at 500M", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({ totalAssetsM: null, hafCoins: 600_000_000 })
+    ], now);
+
+    expect(result.score?.parts.assets).toBe(25);
+    expect(result.score?.valueReasons.join(" ")).toContain("仅按哈夫币折算");
   });
 
   it.each([
@@ -182,8 +234,8 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.parts.redSkins).toBe(30);
-    expect(result.score?.parts.julang).toBe(20);
+    expect(result.score?.parts.redSkins).toBe(25);
+    expect(result.score?.parts.julang).toBe(15);
     expect(result.score?.valueReasons.join(" ")).toContain(
       "5 个已识别角色红皮"
     );
@@ -237,6 +289,20 @@ describe("scoreEligibleListings", () => {
     });
   });
 
+  it("separates missing safety evidence from a confirmed medium risk", () => {
+    const [missingVerification] = scoreEligibleListings([
+      makeListing({ verificationAt: null })
+    ], now);
+
+    expect(missingVerification.score).toMatchObject({
+      riskLevel: "unknown",
+      coverage: {
+        knownSafetySignals: 1,
+        totalSafetySignals: 2
+      }
+    });
+  });
+
   it("ignores missing recovery coverage and flags stale verification", () => {
     const [missing] = scoreEligibleListings([
       makeListing({ recoveryCoverage: null })
@@ -266,21 +332,21 @@ describe("scoreEligibleListings", () => {
       coverage: score?.coverage
     }))).toEqual([
       {
-        total: 71,
+        total: 70,
         safety: 65,
         risk: "low",
         recovery: 0,
         coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
       },
       {
-        total: 71,
+        total: 70,
         safety: 65,
         risk: "low",
         recovery: 0,
         coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
       },
       {
-        total: 71,
+        total: 70,
         safety: 65,
         risk: "low",
         recovery: 0,
@@ -304,11 +370,42 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.value).toBe(24.5);
+    expect(result.score?.value).toBeCloseTo(17.2952380952);
     expect(result.score?.safety).toBe(40);
     expect(result.score?.dataQuality).toBe(80);
     expect(result.score?.total).toBe(
-      Math.round(normalizedRecommendationScore(24.5, 40, 80))
+      Math.round(normalizedRecommendationScore(
+        result.score?.value ?? 0,
+        40,
+        80
+      ))
+    );
+  });
+
+  it("keeps unknown value out of the confirmed score but exposes its upside", () => {
+    const [unknown] = scoreEligibleListings([
+      makeListing({
+        m7PrismStatus: "absent",
+        m7PrismQuality: null,
+        julangStatus: "unknown",
+        julangQuality: null
+      })
+    ], now);
+    const [absent] = scoreEligibleListings([
+      makeListing({
+        m7PrismStatus: "absent",
+        m7PrismQuality: null,
+        julangStatus: "absent",
+        julangQuality: null
+      })
+    ], now);
+
+    expect(unknown.score?.parts.julang).toBe(0);
+    expect(potentialRecommendationScore(unknown)).toBeGreaterThan(
+      unknown.score?.total ?? 0
+    );
+    expect(potentialRecommendationScore(absent)).toBe(
+      preciseRecommendationScore(absent.score!)
     );
   });
 
@@ -324,7 +421,7 @@ describe("scoreEligibleListings", () => {
     ], now);
 
     expect(result.score?.parts.m7).toBe(0);
-    expect(result.score?.parts.redSkins).toBe(12);
+    expect(result.score?.parts.redSkins).toBe(10);
     expect(result.score?.valueReasons.join(" ")).toContain("M7 未发现");
   });
 

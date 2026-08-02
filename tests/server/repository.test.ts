@@ -17,6 +17,9 @@ import {
   makeListing,
   makeScore
 } from "../domain/listingFactory.js";
+import {
+  APPROVED_JIAOYIMAO_REFERER
+} from "../../src/server/collector/mtop.js";
 
 const scanTime = new Date("2026-07-29T10:00:00.000Z");
 
@@ -74,6 +77,18 @@ function createCommittingBrowserJob(
 ) {
   const browserRepository = new BrowserRefreshRepository(database);
   const created = browserRepository.createJob(now);
+  browserRepository.saveFilterProof(created.id, {
+    currentUrl: APPROVED_JIAOYIMAO_REFERER,
+    gameLabel: "三角洲行动",
+    platformLabel: "QQ",
+    categoryLabel: "账号",
+    activeFilterLabels: [
+      "1900-4000",
+      "骇爪-维什戴尔",
+      "露娜-黑·天际线"
+    ],
+    observedAt: now.toISOString()
+  }, now);
   browserRepository.transition(
     created.id,
     ["awaiting_codex"],
@@ -270,6 +285,48 @@ describe("ListingRepository", () => {
     });
   });
 
+  it("does not compare a first filtered browser snapshot with a public scan volume", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    repository.replaceSourceSnapshot(
+      "jiaoyimao",
+      sourceListings("jiaoyimao", 20, "public"),
+      "success",
+      scanTime,
+      { pagesScanned: 5, stopReason: "end_of_pages" }
+    );
+    const browser = createCommittingBrowserJob(database);
+
+    const result = repository.commitBrowserSourceRefresh({
+      jobId: browser.jobId,
+      source: "jiaoyimao",
+      listings: sourceListings("jiaoyimao", 2, "filtered"),
+      attemptedAt: new Date(scanTime.getTime() + 1_000),
+      pagesScanned: 1,
+      stopReason: "end_of_pages"
+    });
+
+    expect(result).toMatchObject({
+      state: "success",
+      publishedRunId: result.scanRunId
+    });
+    expect(
+      repository.getListings().filter(
+        ({ source }) => source === "jiaoyimao"
+      )
+    ).toHaveLength(2);
+    expect(
+      repository.getSourceStatuses().find(
+        ({ source }) => source === "jiaoyimao"
+      )
+    ).toMatchObject({
+      state: "success",
+      itemCount: 2,
+      pagesScanned: 1,
+      anomaly: { state: "clear" }
+    });
+  });
+
   it("browser quarantine preserves formal bytes and a matching second low result publishes", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);
@@ -280,6 +337,15 @@ describe("ListingRepository", () => {
       scanTime,
       { pagesScanned: 5, stopReason: "end_of_pages" }
     );
+    const browserBaseline = createCommittingBrowserJob(database);
+    repository.commitBrowserSourceRefresh({
+      jobId: browserBaseline.jobId,
+      source: "jiaoyimao",
+      listings: sourceListings("jiaoyimao", 20, "browser-baseline"),
+      attemptedAt: new Date(scanTime.getTime() + 500),
+      pagesScanned: 5,
+      stopReason: "end_of_pages"
+    });
     const beforePayloads = database.prepare(`
       SELECT listing_key, payload FROM listings
       WHERE source = 'jiaoyimao'
@@ -327,11 +393,11 @@ describe("ListingRepository", () => {
     ).toMatchObject({
       state: "partial",
       lastAttemptAt: firstAttempt.toISOString(),
-      lastSuccessAt: scanTime.toISOString(),
+      lastSuccessAt: new Date(scanTime.getTime() + 500).toISOString(),
       itemCount: 20,
       pagesScanned: 5,
       stopReason: "anomaly_guard",
-      anomaly: { state: "suspect" }
+      anomaly: { state: "clear" }
     });
     expect(first.browserRepository.getJobRecord(
       first.jobId,
@@ -577,6 +643,7 @@ describe("ListingRepository", () => {
     ));
     const databasePath = join(directory, "snapshot.sqlite");
     const initialFinishedAt = new Date(scanTime.getTime() + 1_000);
+    const browserBaselineAt = new Date(scanTime.getTime() + 1_500);
     const quarantineAt = new Date(scanTime.getTime() + 2_000);
     try {
       const database = createDatabase(databasePath);
@@ -596,6 +663,18 @@ describe("ListingRepository", () => {
         ],
         initialFinishedAt
       );
+      const browserBaseline = createCommittingBrowserJob(
+        database,
+        browserBaselineAt
+      );
+      repository.commitBrowserSourceRefresh({
+        jobId: browserBaseline.jobId,
+        source: "jiaoyimao",
+        listings: sourceListings("jiaoyimao", 20, "browser-baseline"),
+        attemptedAt: browserBaselineAt,
+        pagesScanned: 5,
+        stopReason: "end_of_pages"
+      });
       const { jobId } = createCommittingBrowserJob(
         database,
         quarantineAt
@@ -614,7 +693,7 @@ describe("ListingRepository", () => {
           id: quarantined.scanRunId,
           state: "partial"
         }),
-        lastSnapshotAt: initialFinishedAt.toISOString()
+        lastSnapshotAt: browserBaselineAt.toISOString()
       });
       database.close();
 
@@ -627,7 +706,7 @@ describe("ListingRepository", () => {
             id: quarantined.scanRunId,
             state: "partial"
           }),
-          lastSnapshotAt: initialFinishedAt.toISOString()
+          lastSnapshotAt: browserBaselineAt.toISOString()
         });
       } finally {
         reopened.close();
@@ -2041,6 +2120,38 @@ describe("ListingRepository", () => {
         "SELECT COUNT(*) AS count FROM manual_listing_reviews"
       ).get()
     ).toEqual({ count: 2 });
+  });
+
+  it("migrates evidence-free legacy M7 absence to unknown on startup recompute", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const legacyUnknown = makeListing({
+      key: "panzhi:legacy-unknown",
+      sourceListingId: "legacy-unknown",
+      m7PrismStatus: "absent",
+      m7PrismQuality: null,
+      m7Evidence: []
+    });
+    const explicitAbsence = makeListing({
+      key: "panzhi:explicit-absence",
+      sourceListingId: "explicit-absence",
+      m7PrismStatus: "absent",
+      m7PrismQuality: null,
+      m7Evidence: [{ text: "M7 无棱镜攻势", truncated: false }]
+    });
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      [legacyUnknown, explicitAbsence],
+      "success",
+      scanTime
+    );
+
+    repository.recomputeDerivedListings(scanTime);
+
+    expect(repository.getListing(legacyUnknown.key)?.m7PrismStatus)
+      .toBe("unknown");
+    expect(repository.getListing(explicitAbsence.key)?.m7PrismStatus)
+      .toBe("absent");
   });
 
   it("uses active manual feedback for a capped ranking adjustment and removes it on restore", () => {

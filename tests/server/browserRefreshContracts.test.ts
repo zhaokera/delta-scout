@@ -187,7 +187,10 @@ describe("Jiaoyimao URL and scalar validation", () => {
     ],
     [
       "a dot segment",
-      filterUrl.replace("/o110/", "/ignored/../o110/")
+      filterUrl.replace(
+        "/o1687157900084320/",
+        "/ignored/../o1687157900084320/"
+      )
     ],
     ["an empty query delimiter", `${filterUrl.split("?")[0]}?`],
     ["an empty hash delimiter", `${filterUrl}#`]

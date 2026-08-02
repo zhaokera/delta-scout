@@ -3,10 +3,8 @@ import { ZodError } from "zod";
 import {
   buildListing
 } from "../collector/buildListing.js";
-import type { Listing } from "../../domain/listing.js";
-import { requiresCandidateDetail } from "../../domain/priceRange.js";
+import { listingDetailFromListing } from "../collector/detailReuse.js";
 import type {
-  ListingDetail,
   ListingSummary
 } from "../collector/types.js";
 import type {
@@ -40,6 +38,7 @@ import {
   type DetailProgressView
 } from "./repository.js";
 import { parseJiaoyimaoVisibleDetail } from "./visibleDetail.js";
+import { requiresBrowserListItemDetail } from "./detailRequirement.js";
 
 export type BrowserRefreshCommand =
   | "claim"
@@ -150,21 +149,6 @@ export interface JiaoyimaoBrowserTaskServiceOptions {
 
 interface PlannedOutcome {
   transition: BrowserRefreshOutcomeTransition;
-}
-
-function reusableListingDetail(listing: Listing): ListingDetail {
-  return {
-    evidence: listing.evidence,
-    loginPlatform: listing.loginPlatform,
-    service: listing.service,
-    totalAssetsM: listing.totalAssetsM,
-    hafCoins: listing.hafCoins,
-    realNameStatus: listing.realNameStatus,
-    secondRealNameAvailable: listing.secondRealNameAvailable,
-    recoveryCoverage: listing.recoveryCoverage,
-    verificationAt: listing.verificationAt,
-    banNotes: listing.banNotes
-  };
 }
 
 const AUTHORIZED_BROWSER_REFRESH = Symbol(
@@ -782,7 +766,7 @@ export class JiaoyimaoBrowserTaskService {
             rawText: item.rawText,
             priceCny: item.priceCny
           };
-          const requiresDetail = requiresCandidateDetail(item.priceCny);
+          const requiresDetail = requiresBrowserListItemDetail(item);
           const stagedDetail = details.get(item.sourceListingId);
           const reusableDetail = reusableDetails.get(item.sourceListingId);
           if (requiresDetail && !stagedDetail && !reusableDetail) {
@@ -814,7 +798,7 @@ export class JiaoyimaoBrowserTaskService {
                 parsedDetail?.kind === "ok"
                   ? parsedDetail.detail
                   : reusableDetail
-                    ? reusableListingDetail(reusableDetail)
+                    ? listingDetailFromListing(reusableDetail)
                     : null,
               detailAttempted: requiresDetail,
               warnings: []

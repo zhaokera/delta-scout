@@ -1760,6 +1760,11 @@ describe("listing API", () => {
     const created = browserRepository.createJob(
       new Date("2026-07-30T10:00:00.000Z")
     );
+    browserRepository.saveFilterProof(
+      created.id,
+      browserProof(),
+      new Date("2026-07-30T10:00:00.000Z")
+    );
     browserRepository.transition(
       created.id,
       ["awaiting_codex"],
@@ -2626,6 +2631,34 @@ describe("browser refresh API", () => {
           browserBaseTime,
           { pagesScanned: 5, stopReason: "end_of_pages" }
         );
+        const baselineTime = new Date(
+          browserBaseTime.getTime() - 1_000
+        );
+        const baselineJob = f.browserRepository.createJob(baselineTime);
+        f.browserRepository.saveFilterProof(
+          baselineJob.id,
+          browserProof({ observedAt: baselineTime.toISOString() }),
+          baselineTime
+        );
+        f.browserRepository.transition(
+          baselineJob.id,
+          ["awaiting_codex"],
+          "committing",
+          { stage: "committing" },
+          baselineTime
+        );
+        f.repository.commitBrowserSourceRefresh({
+          jobId: baselineJob.id,
+          source: "jiaoyimao",
+          listings: Array.from({ length: baselineCount }, (_, index) =>
+            listingFor("jiaoyimao", index + 1, {
+              score: makeScore(50)
+            })
+          ),
+          attemptedAt: baselineTime,
+          pagesScanned: 5,
+          stopReason: "end_of_pages"
+        });
       }
       const job = await createAndClaimBrowserJob(f);
       const auth = { Authorization: bearer(job.token) };

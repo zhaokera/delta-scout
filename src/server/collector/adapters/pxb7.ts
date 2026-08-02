@@ -22,6 +22,19 @@ const LIST_API_URL =
   "https://api-pc.pxb7.com/api/search/product/v2/selectSearchPageList";
 const BROAD_SEARCH_QUERY = "三角洲行动" as const;
 
+// Keep only the public "账号" category filter here. Secondary real-name status
+// is a scored safety signal, not one of the cross-platform hard requirements.
+// Applying PXB's "可二次实名" filter at collection time would silently give
+// this source a narrower (and safer) population than Jiaoyimao and Panzhi.
+export const PXB_REQUIRED_ACCOUNT_FILTERS = [
+  {
+    attrId: "103711",
+    attrType: 1,
+    attrValList: ["103711"],
+    optionType: 1
+  }
+] as const;
+
 // PXB's public product metadata identifies both required operator skins under
 // the same "干员皮肤" attribute. The public frontend encodes “全部满足” as
 // filterType=1/isAll=true, so these two item IDs have AND semantics.
@@ -75,6 +88,14 @@ const SearchBodySchema = z.object({
   type: z.literal("4"),
   posType: z.literal(1),
   filterDTOList: z.tuple([
+    z.strictObject({
+      attrId: z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[0].attrId),
+      attrType: z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[0].attrType),
+      attrValList: z.tuple([
+        z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[0].attrValList[0])
+      ]),
+      optionType: z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[0].optionType)
+    }),
     z.strictObject({
       attrId: z.literal("price"),
       attrType: z.literal(3),
@@ -135,6 +156,10 @@ function makeListRequest(
         type: "4",
         posType: 1,
         filterDTOList: [
+          ...PXB_REQUIRED_ACCOUNT_FILTERS.map((filter) => ({
+            ...filter,
+            attrValList: [...filter.attrValList]
+          })),
           {
             attrId: "price",
             attrType: 3,

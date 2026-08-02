@@ -1010,7 +1010,7 @@ describe("CollectionCoordinator", () => {
     );
 
     expect(listing).toMatchObject({
-      m7PrismStatus: "absent",
+      m7PrismStatus: "unknown",
       m7PrismQuality: null,
       eligibility: "eligible",
       parseWarnings: []
@@ -1036,7 +1036,7 @@ describe("CollectionCoordinator", () => {
 
       expect(fetcher.calls.map(({ url }) => url)).toContain(detailUrl);
       expect(listing).toMatchObject({
-        m7PrismStatus: "absent",
+        m7PrismStatus: "unknown",
         m7PrismQuality: null,
         eligibility: "needs_verification",
         parseWarnings: [warning]
@@ -1181,7 +1181,7 @@ describe("CollectionCoordinator", () => {
     }).refreshAll();
 
     expect(repository.getListings()[0]).toMatchObject({
-      m7PrismStatus: "absent",
+      m7PrismStatus: "unknown",
       m7PrismQuality: null,
       eligibility: "eligible"
     });
@@ -1679,8 +1679,8 @@ describe("CollectionCoordinator", () => {
       repository.getListings().find(({ source }) => source === "panzhi")
         ?.score?.parts
     ).toMatchObject({
-      price: 12.5,
-      assets: 5.5
+      price: 6.107426717645696,
+      assets: 13.4
     });
   });
 
@@ -1914,7 +1914,7 @@ describe("CollectionCoordinator", () => {
     });
   });
 
-  it("uses one normalization set for fresh listings from different sources", async () => {
+  it("uses one fixed price band for fresh listings from different sources", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const cheap = summaryForSource("panzhi", 1, {
       priceCny: 2_000,
@@ -1970,9 +1970,9 @@ describe("CollectionCoordinator", () => {
 
     const listings = repository.getListings();
     expect(listings.find(({ source }) => source === "panzhi")?.score?.parts)
-      .toMatchObject({ price: 25, assets: 1 });
+      .toMatchObject({ price: 11.19047619047619, assets: 5 });
     expect(listings.find(({ source }) => source === "pxb7")?.score?.parts)
-      .toMatchObject({ price: 0, assets: 10 });
+      .toMatchObject({ price: 7.142857142857142, assets: 25 });
   });
 
   it("stops at an injected page safety limit deterministically", async () => {
@@ -2186,7 +2186,7 @@ describe("CollectionCoordinator", () => {
         .find(({ sourceListingId }) => sourceListingId === "S5")
     ).toMatchObject({
       eligibility: "needs_verification",
-      m7PrismStatus: "absent",
+      m7PrismStatus: "unknown",
       parseWarnings: ["达到详情采集上限，待人工核验"]
     });
     expect(sourceStatus(repository)).toMatchObject({

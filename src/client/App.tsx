@@ -20,6 +20,9 @@ import {
   type ListingHistoryView,
   type ListingView,
   type PoolMode,
+  type RefreshEventView,
+  type RefreshMode,
+  type RefreshScheduleView,
   type RefreshStatusView,
   type ScanHistoryResponse,
   type ScoutApi,
@@ -43,6 +46,10 @@ import { PoolModeToggle } from "./components/PoolModeToggle";
 import { JiaoyimaoBrowserRefreshPanel } from
   "./components/JiaoyimaoBrowserRefreshPanel";
 import { RefreshProgress } from "./components/RefreshProgress";
+import { RefreshAutomationPanel } from
+  "./components/RefreshAutomationPanel";
+import { RankingDiagnostics } from
+  "./components/RankingDiagnostics";
 import { SourceStrip } from "./components/SourceStrip";
 import { useJiaoyimaoBrowserRefresh } from
   "./useJiaoyimaoBrowserRefresh";
@@ -106,6 +113,10 @@ function useMediaQuery(query: string): boolean {
 
 export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [sources, setSources] = useState<SourceStatusView[]>([]);
+  const [refreshSchedules, setRefreshSchedules] =
+    useState<RefreshScheduleView[]>([]);
+  const [refreshEvents, setRefreshEvents] =
+    useState<RefreshEventView[]>([]);
   const [listings, setListings] =
     useState<ReviewedListingSummary[]>([]);
   const [view, setView] = useState<ListingView>("pool");
@@ -166,6 +177,20 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   );
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const closeComparison = useCallback(() => setCompareOpen(false), []);
+
+  const loadAutomation = useCallback(async () => {
+    const [scheduleResult, eventsResult] = await Promise.allSettled([
+      api.getRefreshSchedule?.() ?? Promise.resolve([]),
+      api.getRefreshEvents?.(30, true) ?? Promise.resolve([])
+    ]);
+    if (!mounted.current) return;
+    if (scheduleResult.status === "fulfilled") {
+      setRefreshSchedules(scheduleResult.value);
+    }
+    if (eventsResult.status === "fulfilled") {
+      setRefreshEvents(eventsResult.value);
+    }
+  }, [api]);
 
   const load = useCallback(
     async (
@@ -450,8 +475,9 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         : new Error("发布数据刷新未完整完成");
     }
 
+    await loadAutomation();
     setError(null);
-  }, [api]);
+  }, [api, loadAutomation]);
 
   const browserRefresh = useJiaoyimaoBrowserRefresh(
     api,
@@ -508,6 +534,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           preserveOnError: true,
           refreshSelection: true
         });
+        await loadAutomation();
         broadcastRef.current?.postMessage({
           type: "refresh-state-changed",
           runId: status.runId
@@ -542,6 +569,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   useEffect(() => {
     mounted.current = true;
     void load("pool", "balanced");
+    void loadAutomation();
     let disposed = false;
 
     async function synchronizeStatus(initial = false) {
@@ -576,6 +604,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             preserveOnError: true,
             refreshSelection: true
           });
+          await loadAutomation();
         }
       } catch {
         // The active refresh poll owns visible transport warnings.
@@ -636,7 +665,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       broadcastRef.current?.close();
       broadcastRef.current = null;
     };
-  }, [api, load]);
+  }, [api, load, loadAutomation]);
 
   useEffect(() => {
     if (!narrowLayout) setDrawerOpen(false);
@@ -941,6 +970,70 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     }
   }
 
+  async function refreshSource(source: SourceId, mode: RefreshMode) {
+    if (
+      !api.startSourceRefresh ||
+      refreshInFlight.current ||
+      browserRefresh.blocksAllSourceRefresh
+    ) {
+      return;
+    }
+    setError(null);
+    setTransportWarning(null);
+    try {
+      const started = await api.startSourceRefresh(source, mode);
+      if (!mounted.current) return;
+      if ("kind" in started) {
+        await loadAutomation();
+        return;
+      }
+      const status = await api.getRefreshStatus();
+      if (!mounted.current) return;
+      knownRunIdRef.current = started.runId;
+      resumePolling(status);
+      broadcastRef.current?.postMessage({
+        type: "refresh-state-changed",
+        runId: started.runId
+      });
+    } catch (cause) {
+      if (!mounted.current) return;
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "单平台刷新启动失败"
+      );
+      await loadAutomation();
+    }
+  }
+
+  async function acknowledgeRefreshEvents() {
+    if (!api.acknowledgeRefreshEvents) return;
+    try {
+      await api.acknowledgeRefreshEvents(
+        refreshEvents.map(({ id }) => id)
+      );
+      if (mounted.current) setRefreshEvents([]);
+    } catch (cause) {
+      if (mounted.current) {
+        setTransportWarning(
+          cause instanceof Error ? cause.message : "提醒状态保存失败"
+        );
+      }
+    }
+  }
+
+  const completeSourceCount = sources.filter(
+    ({ state }) => state === "success"
+  ).length;
+  const partialSourceCount = sources.filter(
+    ({ state }) => state === "partial"
+  ).length;
+  const trustedSourceCount = completeSourceCount + partialSourceCount;
+  const sourceSnapshotSummary =
+    partialSourceCount > 0
+      ? `${completeSourceCount} 完整 · ${partialSourceCount} 部分完成`
+      : `${trustedSourceCount} / 3 平台有可信快照`;
+
   return (
     <main className="app-shell">
       <header className="masthead">
@@ -985,7 +1078,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           <span className="operations-panel__summary-status">
             {sources.length === 0
               ? "正在读取平台状态"
-              : `${sources.filter(({ state }) => state === "success" || state === "partial").length} / 3 平台有可信快照`}
+              : sourceSnapshotSummary}
             {scanHistory?.runs[0]
               ? ` · 最近扫描 #${scanHistory.runs[0].id}`
               : ""}
@@ -1006,7 +1099,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             >
               <span>最近扫描</span>
               <strong>#{scanHistory.runs[0].id}</strong>
-              <small>{scanHistory.runs[0].state.toUpperCase()}</small>
+              <small>
+                {scanHistory.runs[0].state === "success" &&
+                partialSourceCount > 0
+                  ? "有部分数据"
+                  : scanHistory.runs[0].state.toUpperCase()}
+              </small>
             </section>
           ) : null}
 
@@ -1032,7 +1130,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             </div>
             <div className="mission-rule">
               <small>EVALUATION</small>
-              <strong>全账号统一评分 · M7 仅作品质标签</strong>
+              <strong>全账号统一评分 · M7 非入池门槛</strong>
             </div>
             <div className="mission-rule">
               <small>PRICE RANGE</small>
@@ -1058,6 +1156,22 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             }
             onJiaoyimaoRefresh={() => {
               void browserRefresh.start();
+            }}
+          />
+
+          <RefreshAutomationPanel
+            schedules={refreshSchedules}
+            events={refreshEvents}
+            busy={
+              refreshing ||
+              browserRefresh.busy ||
+              browserRefresh.blocksAllSourceRefresh
+            }
+            onRefresh={(source, mode) => {
+              void refreshSource(source, mode);
+            }}
+            onAcknowledge={() => {
+              void acknowledgeRefreshEvents();
             }}
           />
         </div>
@@ -1136,6 +1250,10 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         >
           {reviewNotice}
         </section>
+      ) : null}
+
+      {view === "pool" && poolMode === "global" && !loading ? (
+        <RankingDiagnostics listings={listings} />
       ) : null}
 
       <div className="workspace">

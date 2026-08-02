@@ -1,41 +1,46 @@
 import type { Listing, Score } from "./listing.js";
-import { buildMidrankPercentiles } from "./percentile.js";
 import {
+  CANDIDATE_PRICE_MAX_CNY,
+  CANDIDATE_PRICE_MIN_CNY
+} from "./priceRange.js";
+import {
+  ASSET_FULL_SCORE_VALUE_CNY,
+  ASSET_RECOVERY_FULL_SCORE_RATE,
+  ASSET_RECOVERY_SCORE_MAX,
+  ASSET_VALUE_CNY_PER_M,
   M7_PEAK_QUALITY_POINTS,
   M7_PREMIUM_S_POINTS,
   M7_RARE_FINISH_POINTS,
   normalizedRecommendationScore,
+  PRICE_AFFORDABILITY_SCORE_MAX,
   SAFETY_SCORE_MAX,
   VALUE_SCORE_MAX
 } from "./scoreAllocation.js";
 
-interface NormalizationStats {
-  prices: Map<number, number>;
-  totalAssets: Map<number, number>;
-  hafCoins: Map<number, number>;
-}
+type AssetValuationInput = Pick<
+  Listing,
+  "totalAssetsM" | "hafCoins" | "priceCny"
+>;
 
-function buildNormalizationStats(
-  candidates: Listing[]
-): NormalizationStats {
-  return {
-    prices: buildMidrankPercentiles(
-      candidates.map(({ priceCny }) => priceCny)
-    ),
-    totalAssets: buildMidrankPercentiles(
-      candidates.map(({ totalAssetsM }) => totalAssetsM)
-    ),
-    hafCoins: buildMidrankPercentiles(
-      candidates.map(({ hafCoins }) => hafCoins)
-    )
-  };
-}
+type PotentialScoreInput = Pick<
+  Listing,
+  "m7PrismStatus" | "m7PrismQuality" | "julangStatus"
+> & {
+  score: Pick<
+    Score,
+    "total" | "preferenceAdjustment" | "value" | "safety" | "dataQuality"
+  > | null;
+};
 
-function percentile(
-  value: number | null,
-  percentiles: Map<number, number>
-): number {
-  return value === null ? 0 : (percentiles.get(value) ?? 0);
+type RecommendationScoreInput = Pick<Score, "total" | "exactTotal">;
+
+function priceAffordabilityPoints(priceCny: number | null): number {
+  if (priceCny === null) return 0;
+  const range = CANDIDATE_PRICE_MAX_CNY - CANDIDATE_PRICE_MIN_CNY;
+  const normalized =
+    (CANDIDATE_PRICE_MAX_CNY - priceCny) / range;
+  const bounded = normalized < 0 ? 0 : normalized > 1 ? 1 : normalized;
+  return bounded * PRICE_AFFORDABILITY_SCORE_MAX;
 }
 
 const M7_RARE_FINISH_LABELS = {
@@ -105,10 +110,10 @@ function riskLevel(
   ) {
     return "high";
   }
-  if (knownSafetySignals === 0) return "unknown";
+  if (knownSafetySignals < 2 || verificationAge === null) {
+    return "unknown";
+  }
   if (
-    knownSafetySignals < 2 ||
-    verificationAge === null ||
     verificationAge > 30 ||
     safety < SAFETY_SCORE_MAX.total
   ) {
@@ -126,22 +131,98 @@ function booleanSafetyReason(
   return value === true ? positive : value === false ? negative : unknown;
 }
 
+function assetValue(listing: AssetValuationInput): {
+  sourceM: number | null;
+  estimatedCny: number;
+  points: number;
+  usedHafCoinFallback: boolean;
+} {
+  const usedHafCoinFallback =
+    listing.totalAssetsM === null && listing.hafCoins !== null;
+  const sourceM = listing.totalAssetsM ?? (
+    listing.hafCoins === null ? null : listing.hafCoins / 1_000_000
+  );
+  const estimatedCny = (sourceM ?? 0) * ASSET_VALUE_CNY_PER_M;
+  const uncappedPoints =
+    estimatedCny / ASSET_FULL_SCORE_VALUE_CNY * VALUE_SCORE_MAX.assets;
+  return {
+    sourceM,
+    estimatedCny,
+    points: uncappedPoints > VALUE_SCORE_MAX.assets
+      ? VALUE_SCORE_MAX.assets
+      : uncappedPoints,
+    usedHafCoinFallback
+  };
+}
+
+export function assetRecoveryRate(
+  listing: AssetValuationInput
+): number | null {
+  if (listing.priceCny === null || listing.priceCny <= 0) return null;
+  return assetValue(listing).estimatedCny / listing.priceCny;
+}
+
+function potentialValueUpside(listing: PotentialScoreInput): number {
+  const m7Potential =
+    listing.m7PrismStatus === "unknown" ||
+    listing.m7PrismStatus === "conflicting" ||
+    ((listing.m7PrismStatus === "premium" ||
+      listing.m7PrismStatus === "peak") &&
+      listing.m7PrismQuality === null)
+      ? VALUE_SCORE_MAX.m7
+      : 0;
+  const julangPotential =
+    listing.julangStatus === "unknown" ? VALUE_SCORE_MAX.julang : 0;
+  return m7Potential + julangPotential;
+}
+
+export function potentialRecommendationScore(
+  listing: PotentialScoreInput
+): number | null {
+  if (listing.score === null) return null;
+  const uncappedPotentialValue =
+    listing.score.value + potentialValueUpside(listing);
+  const potentialValue = uncappedPotentialValue > 100
+    ? 100
+    : uncappedPotentialValue;
+  const potentialTotal = normalizedRecommendationScore(
+    potentialValue,
+    listing.score.safety,
+    listing.score.dataQuality
+  );
+  const adjustedTotal = potentialTotal + listing.score.preferenceAdjustment;
+  const boundedTotal = adjustedTotal < 0
+    ? 0
+    : adjustedTotal > 100
+      ? 100
+      : adjustedTotal;
+  return Math.round(boundedTotal * 10) / 10;
+}
+
+export function preciseRecommendationScore(
+  score: RecommendationScoreInput
+): number {
+  return score.exactTotal ?? score.total;
+}
+
 function scoreOne(
   listing: Listing,
-  stats: NormalizationStats,
   now: Date
 ): Score {
-  const price =
-    listing.priceCny === null
-      ? 0
-      : (1 - percentile(listing.priceCny, stats.prices)) *
-        VALUE_SCORE_MAX.price;
-  const hasAssets =
-    listing.totalAssetsM !== null || listing.hafCoins !== null;
-  const assets =
-    percentile(listing.totalAssetsM, stats.totalAssets) * 6 +
-    percentile(listing.hafCoins, stats.hafCoins) * 3 +
-    (hasAssets ? 1 : 0);
+  const priceAffordability = priceAffordabilityPoints(
+    listing.priceCny
+  );
+  const assetValueResult = assetValue(listing);
+  const recoveryRate = assetRecoveryRate(listing);
+  const uncappedRecoveryPoints = recoveryRate === null
+    ? 0
+    : recoveryRate / ASSET_RECOVERY_FULL_SCORE_RATE *
+      ASSET_RECOVERY_SCORE_MAX;
+  const recoveryPoints = uncappedRecoveryPoints > ASSET_RECOVERY_SCORE_MAX
+    ? ASSET_RECOVERY_SCORE_MAX
+    : uncappedRecoveryPoints;
+  const price = priceAffordability + recoveryPoints;
+  const assets = assetValueResult.points;
   const m7Quality =
     listing.m7PrismQuality === null
       ? 0
@@ -178,9 +259,13 @@ function scoreOne(
     knownSafetySignals,
     safetyPartValues.verificationAge
   );
-  const total = Math.round(
-    normalizedRecommendationScore(value, safety, dataQuality)
+  const normalizedTotal = normalizedRecommendationScore(
+    value,
+    safety,
+    dataQuality
   );
+  const exactTotal = Math.round(normalizedTotal * 10) / 10;
+  const total = Math.round(normalizedTotal);
   const julangReason =
     listing.julangStatus === "owned"
       ? "巨浪已拥有"
@@ -200,8 +285,10 @@ function scoreOne(
       : `M7 稀有模板未发现，价值 0.0/${M7_RARE_FINISH_POINTS}`,
     `${listing.redSkins.length} 个已识别角色红皮，价值 ${redSkins.toFixed(1)}/${VALUE_SCORE_MAX.redSkins}`,
     `${julangReason}，价值 ${julang.toFixed(1)}/${VALUE_SCORE_MAX.julang}`,
-    `价格合理性 ${price.toFixed(1)}/${VALUE_SCORE_MAX.price}`,
-    `可核验资产 ${assets.toFixed(1)}/${VALUE_SCORE_MAX.assets}`
+    `价格位置 ${priceAffordability.toFixed(1)}/${PRICE_AFFORDABILITY_SCORE_MAX}；资产回收率 ${recoveryRate === null ? "待核验" : `${(recoveryRate * 100).toFixed(0)}%`}，性价比 ${recoveryPoints.toFixed(1)}/${ASSET_RECOVERY_SCORE_MAX}；价格综合 ${price.toFixed(1)}/${VALUE_SCORE_MAX.price}`,
+    assetValueResult.sourceM === null
+      ? `总资产待核验，资产价值 0.0/${VALUE_SCORE_MAX.assets}`
+      : `${assetValueResult.usedHafCoinFallback ? "仅按哈夫币折算" : "总资产"} ${assetValueResult.sourceM.toFixed(1)}M，按 ¥${ASSET_VALUE_CNY_PER_M}/M 估值约 ¥${assetValueResult.estimatedCny.toFixed(0)}，资产价值 ${assets.toFixed(1)}/${VALUE_SCORE_MAX.assets}`
   ];
   const safetyReasons = [
     booleanSafetyReason(
@@ -224,6 +311,7 @@ function scoreOne(
 
   return {
     total,
+    exactTotal,
     preferenceAdjustment: 0,
     value,
     safety,
@@ -249,7 +337,10 @@ function scoreOne(
       `账号价值 ${value.toFixed(1)}/100`,
       `购买安全 ${safety.toFixed(1)}/${SAFETY_SCORE_MAX.total}`,
       `数据完整度 ${dataQuality.toFixed(1)}/100`,
-      `综合分按价值 55% + 安全 35% + 数据 10% 计算后归一化到 100；永久包赔不计分`
+      `综合分按价值 55% + 安全 35% + 数据 10% 计算后归一化到 100；永久包赔不计分`,
+      potentialValueUpside(listing) > 0
+        ? `待核验价值潜力 +${potentialValueUpside(listing).toFixed(1)}，不直接计入确定分`
+        : "当前未识别额外待核验价值潜力"
     ]
   };
 }
@@ -258,6 +349,14 @@ export function compareRecommendations(left: Listing, right: Listing): number {
   const totalDifference =
     (right.score?.total ?? -1) - (left.score?.total ?? -1);
   if (totalDifference !== 0) return totalDifference;
+  const preciseDifference =
+    (right.score === null ? -1 : preciseRecommendationScore(right.score)) -
+    (left.score === null ? -1 : preciseRecommendationScore(left.score));
+  if (preciseDifference !== 0) return preciseDifference;
+  const potentialDifference =
+    (potentialRecommendationScore(right) ?? -1) -
+    (potentialRecommendationScore(left) ?? -1);
+  if (potentialDifference !== 0) return potentialDifference;
   if (right.confidence !== left.confidence) {
     return right.confidence - left.confidence;
   }
@@ -276,11 +375,10 @@ export function scoreEligibleListings(
   const candidates = listings.filter(
     ({ eligibility }) => eligibility === "eligible"
   );
-  const stats = buildNormalizationStats(candidates);
   return candidates
     .map((listing) => ({
       ...listing,
-      score: scoreOne(listing, stats, now)
+      score: scoreOne(listing, now)
     }))
     .sort(compareRecommendations);
 }

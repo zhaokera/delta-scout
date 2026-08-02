@@ -185,6 +185,52 @@ export interface ListingHistoryView {
   }>;
 }
 
+export type RefreshMode = "quick" | "deep";
+
+export interface RefreshScheduleView {
+  source: SourceId;
+  enabled: boolean;
+  quickIntervalMinutes: number;
+  deepIntervalMinutes: number;
+  nextQuickAt: string;
+  nextDeepAt: string;
+  lastStartedAt: string | null;
+  lastFinishedAt: string | null;
+  lastMode: RefreshMode | null;
+  lastState:
+    | "idle"
+    | "running"
+    | "success"
+    | "partial"
+    | "blocked"
+    | "failed"
+    | "attention_required";
+  consecutiveFailures: number;
+  backoffUntil: string | null;
+  lastError: string | null;
+  attentionRequired: boolean;
+}
+
+export interface RefreshEventView {
+  id: number;
+  runId: number;
+  source: SourceId | null;
+  listingKey: string | null;
+  type:
+    | "new_top10"
+    | "price_drop"
+    | "asset_recovery_up"
+    | "valuable_m7"
+    | "removed"
+    | "safety_changed";
+  severity: "info" | "opportunity" | "warning";
+  title: string;
+  message: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+  acknowledged: boolean;
+}
+
 export interface ScoutApi {
   getSources(mode?: PoolMode): Promise<SourceStatusView[]>;
   getListings(
@@ -198,7 +244,23 @@ export interface ScoutApi {
     input: ManualExclusionInput
   ): Promise<ReviewedListing>;
   restoreListing(key: string): Promise<ReviewedListing>;
-  startRefresh(): Promise<{ runId: number; state: "running" }>;
+  startRefresh(mode?: RefreshMode): Promise<{
+    runId: number;
+    state: "running";
+  }>;
+  startSourceRefresh?(
+    source: SourceId,
+    mode?: RefreshMode
+  ): Promise<
+    | { runId: number; state: "running"; source: SourceId; mode: RefreshMode }
+    | { kind: "attention_required"; source: "panzhi" }
+  >;
+  getRefreshSchedule?(): Promise<RefreshScheduleView[]>;
+  getRefreshEvents?(
+    limit?: number,
+    unreadOnly?: boolean
+  ): Promise<RefreshEventView[]>;
+  acknowledgeRefreshEvents?(ids?: number[]): Promise<number>;
   getRefreshStatus(signal?: AbortSignal): Promise<RefreshStatusView>;
   getScanHistory(limit?: number): Promise<ScanHistoryResponse>;
   getCurrentJiaoyimaoBrowserRefresh(signal?: AbortSignal):
@@ -517,10 +579,43 @@ export const httpScoutApi: ScoutApi = {
       }/manual-exclusion`,
       { method: "DELETE" }
     ),
-  startRefresh: () =>
+  startRefresh: (mode = "quick") =>
     requestJson<{ runId: number; state: "running" }>("/api/refresh", {
-      method: "POST"
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode })
     }),
+  startSourceRefresh: (source, mode = "quick") =>
+    requestJson<
+      | {
+          runId: number;
+          state: "running";
+          source: SourceId;
+          mode: RefreshMode;
+        }
+      | { kind: "attention_required"; source: "panzhi" }
+    >(`/api/refresh/source/${source}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode })
+    }),
+  getRefreshSchedule: () =>
+    requestJson<{ schedules: RefreshScheduleView[] }>(
+      "/api/refresh-schedule"
+    ).then(({ schedules }) => schedules),
+  getRefreshEvents: (limit = 30, unreadOnly = false) =>
+    requestJson<{ events: RefreshEventView[] }>(
+      `/api/refresh-events?limit=${limit}&unread=${unreadOnly}`
+    ).then(({ events }) => events),
+  acknowledgeRefreshEvents: (ids) =>
+    requestJson<{ acknowledged: number }>(
+      "/api/refresh-events/acknowledge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ids ? { ids } : {})
+      }
+    ).then(({ acknowledged }) => acknowledged),
   getRefreshStatus: (signal) =>
     requestJson<RefreshStatusView>(
       "/api/refresh-status",

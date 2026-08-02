@@ -178,6 +178,31 @@ describe("browser refresh completeness", () => {
     expect(detailRequiredIds(items)).toEqual(["3", "4", "1"]);
   });
 
+  it("skips detail navigation when a list card proves all critical fields", () => {
+    const complete = {
+      ...staged("complete", 3_000),
+      rawText: [
+        "总资产 545.2M",
+        "骇爪-维什戴尔",
+        "露娜-黑·天际线",
+        "安卓QQ",
+        "可二次实名",
+        "赠永久包赔"
+      ].join("\n")
+    };
+    const missingAssets = {
+      ...complete,
+      sourceListingId: "missing-assets",
+      url:
+        "https://www.jiaoyimao.com/jg2007840/missing-assets.html",
+      rawText: complete.rawText.replace("总资产 545.2M\n", "")
+    };
+
+    expect(detailRequiredIds([complete, missingAssets])).toEqual([
+      "missing-assets"
+    ]);
+  });
+
   it("requires valid proof, natural end, and every required detail", () => {
     const items = [staged("1", 3_000), staged("2", 5_000)];
     const events = [

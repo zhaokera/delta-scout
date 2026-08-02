@@ -28,6 +28,7 @@ interface PublicPageFetcherOptions {
   sleep?: (milliseconds: number) => Promise<void>;
   timeoutMs?: number;
   minimumIntervalMs?: number;
+  minimumIntervalMsBySource?: Partial<Record<SourceId, number>>;
   maximumBytes?: number;
 }
 
@@ -63,6 +64,9 @@ export class PublicPageFetcher implements PageFetcher {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly timeoutMs: number;
   private readonly minimumIntervalMs: number;
+  private readonly minimumIntervalMsBySource: Partial<
+    Record<SourceId, number>
+  >;
   private readonly maximumBytes: number;
   private readonly lastAttemptBySource = new Map<SourceId, number>();
   private jiaoyimaoSourceState: JiaoyimaoSourceState | null = null;
@@ -77,6 +81,8 @@ export class PublicPageFetcher implements PageFetcher {
         new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.minimumIntervalMs = options.minimumIntervalMs ?? 2_000;
+    this.minimumIntervalMsBySource =
+      options.minimumIntervalMsBySource ?? {};
     this.maximumBytes = options.maximumBytes ?? 2 * 1024 * 1024;
   }
 
@@ -107,10 +113,12 @@ export class PublicPageFetcher implements PageFetcher {
   }
 
   private async throttle(source: SourceId): Promise<void> {
+    const interval =
+      this.minimumIntervalMsBySource[source] ?? this.minimumIntervalMs;
     const lastAttempt = this.lastAttemptBySource.get(source);
     if (lastAttempt !== undefined) {
       const remaining =
-        this.minimumIntervalMs - (this.now() - lastAttempt);
+        interval - (this.now() - lastAttempt);
       if (remaining > 0) await this.sleep(remaining);
     }
     this.lastAttemptBySource.set(source, this.now());

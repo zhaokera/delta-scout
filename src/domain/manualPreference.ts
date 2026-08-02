@@ -121,6 +121,8 @@ export function applyManualPreferenceFeedback(
     if (listing.score === null) return listing;
     const score = listing.score;
     const cleanTotal = score.total - score.preferenceAdjustment;
+    const cleanExactTotal =
+      (score.exactTotal ?? score.total) - score.preferenceAdjustment;
     const cleanReasons = score.reasons.filter(
       (reason) => !reason.startsWith(FEEDBACK_REASON_PREFIX)
     );
@@ -130,6 +132,7 @@ export function applyManualPreferenceFeedback(
         score: {
           ...score,
           total: cleanTotal,
+          exactTotal: cleanExactTotal,
           preferenceAdjustment: 0,
           reasons: cleanReasons
         }
@@ -169,6 +172,7 @@ export function applyManualPreferenceFeedback(
         score: {
           ...score,
           total: cleanTotal,
+          exactTotal: cleanExactTotal,
           preferenceAdjustment: 0,
           reasons: cleanReasons
         }
@@ -180,6 +184,7 @@ export function applyManualPreferenceFeedback(
       score: {
         ...score,
         total: Math.max(0, cleanTotal - totalPenalty),
+        exactTotal: Math.max(0, cleanExactTotal - totalPenalty),
         preferenceAdjustment: -totalPenalty,
         reasons: [
           ...cleanReasons,

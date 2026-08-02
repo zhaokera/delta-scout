@@ -25,14 +25,14 @@ describe("M7 棱镜攻势 evidence", () => {
       [
         "M7棱镜(极品C)/ASVal悬赏令(优品C)，M250电玩(优品A)"
       ],
-      "absent"
+      "unknown"
     ],
     [
       ["M7棱镜(极品C)/M7棱镜(优品A)"],
-      "absent"
+      "unknown"
     ],
     [["M7 无棱镜攻势"], "absent"],
-    [["其它收藏"], "absent"]
+    [["其它收藏"], "unknown"]
   ] as const)("maps %j to %s without crossing records", (lines, expected) => {
     const result = parseM7(toEvidenceRecords([...lines]));
 
@@ -133,7 +133,7 @@ describe("M7 棱镜攻势 evidence", () => {
     "极品|Ax1腾龙优品|Bx1M7战...势S2",
     `极品|Bx1${"其它枪械".repeat(50)}M7战...势S2`
   ])("does not infer a truncated peak outside one bounded peak group: %s", (text) => {
-    expect(parseM7(toEvidenceRecords([text])).status).toBe("absent");
+    expect(parseM7(toEvidenceRecords([text])).status).toBe("unknown");
   });
 
   it.each([
@@ -224,8 +224,8 @@ describe("M7 棱镜攻势 evidence", () => {
   });
 
   it.each([
-    ["XM7战斗步枪-棱镜攻势S2(极品A)", "absent"],
-    ["非M7战斗步枪-棱镜攻势S2(极品A)", "absent"]
+    ["XM7战斗步枪-棱镜攻势S2(极品A)", "unknown"],
+    ["非M7战斗步枪-棱镜攻势S2(极品A)", "unknown"]
   ] as const)("does not positively match a prefixed target: %s", (text, status) => {
     expect(parseM7(toEvidenceRecords([text])).status).toBe(status);
   });

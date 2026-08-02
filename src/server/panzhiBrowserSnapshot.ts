@@ -201,6 +201,17 @@ function detailFromVisibleCard(rawText: string): ListingDetail {
   };
 }
 
+function normalizePanzhiVisibleCardText(rawText: string): string {
+  // Panzhi cards abbreviate the target skin as `M7棱镜(优品B)` while their
+  // detail page uses the full `M7棱镜攻势` name. Keep this normalization
+  // scoped to verified Panzhi cards so the shared evidence parser can retain
+  // its stricter false-positive protection for other sources.
+  return rawText.replace(
+    /M7\s*棱镜(?=\s*[（(]?\s*(?:极品|优品))/gi,
+    "M7棱镜攻势"
+  );
+}
+
 export function buildPanzhiBrowserListings(
   snapshot: PanzhiBrowserSnapshot,
   capturedAt: Date
@@ -213,21 +224,22 @@ export function buildPanzhiBrowserListings(
   );
   return {
     droppedByPrice: snapshot.items.length - inRangeItems.length,
-    listings: inRangeItems.map((item) => buildListing(
-      {
+    listings: inRangeItems.map((item) => {
+      const normalizedRawText = normalizePanzhiVisibleCardText(item.rawText);
+      return buildListing({
         summary: {
           source: "panzhi",
           sourceListingId: item.sourceListingId,
           url: item.url,
           title: item.title,
-          rawText: item.rawText,
+          rawText: normalizedRawText,
           priceCny: item.priceCny
         },
-        detail: detailFromVisibleCard(item.rawText),
+        detail: detailFromVisibleCard(normalizedRawText),
         detailAttempted: true,
         warnings: []
       },
-      capturedAt
-    ))
+      capturedAt);
+    })
   };
 }

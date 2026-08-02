@@ -312,6 +312,30 @@ describe("PublicPageFetcher", () => {
     expect(sleeps).toEqual([1_500]);
   });
 
+  it("allows a conservative faster cadence for PXB only", async () => {
+    let now = 1_000;
+    const sleeps: number[] = [];
+    const fetcher = new PublicPageFetcher({
+      fetchFn: async () => new Response("<p>ok</p>"),
+      now: () => now,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        now += milliseconds;
+      },
+      minimumIntervalMsBySource: { pxb7: 600 }
+    });
+
+    await fetcher.fetchPage({ url: "https://example.com/one" }, "pxb7");
+    now += 100;
+    await fetcher.fetchPage({ url: "https://example.com/two" }, "pxb7");
+    now += 100;
+    await fetcher.fetchPage({ url: "https://example.com/three" }, "panzhi");
+    now += 100;
+    await fetcher.fetchPage({ url: "https://example.com/four" }, "panzhi");
+
+    expect(sleeps).toEqual([500, 1_900]);
+  });
+
   it("rejects responses larger than two megabytes", async () => {
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({

@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { ReviewedListingSummary } from "../../domain/listingSummary";
 import { manualPreferenceAdjustment } from "../../domain/manualPreference";
+import {
+  assetRecoveryRate,
+  potentialRecommendationScore,
+  preciseRecommendationScore
+} from "../../domain/score";
 
 const SOURCE_LABELS = {
   jiaoyimao: "交易猫",
@@ -10,9 +15,9 @@ const SOURCE_LABELS = {
 
 const RISK_LABELS = {
   low: "低风险",
-  medium: "中风险",
+  medium: "需关注",
   high: "高风险",
-  unknown: "待核验"
+  unknown: "安全证据不足"
 } as const;
 
 const RARE_FINISH_LABELS = {
@@ -112,7 +117,13 @@ export function CandidateCompareDialog({
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const bestScore = useMemo(
-    () => Math.max(...listings.map((listing) => listing.score?.total ?? -1)),
+    () => Math.max(
+      ...listings.map((listing) =>
+        listing.score === null
+          ? -1
+          : preciseRecommendationScore(listing.score)
+      )
+    ),
     [listings]
   );
   const bestPrice = useMemo(() => {
@@ -180,8 +191,13 @@ export function CandidateCompareDialog({
 
         <div className="compare-dialog__grid">
           {listings.map((listing) => {
-            const score = listing.score?.total ?? null;
-            const isBestScore = score !== null && score === bestScore;
+            const preciseScore = listing.score === null
+              ? null
+              : preciseRecommendationScore(listing.score);
+            const potentialScore = potentialRecommendationScore(listing);
+            const recoveryRate = assetRecoveryRate(listing);
+            const isBestScore =
+              preciseScore !== null && preciseScore === bestScore;
             const isBestPrice =
               listing.priceCny !== null && listing.priceCny === bestPrice;
             return (
@@ -208,8 +224,12 @@ export function CandidateCompareDialog({
                   </div>
                   <div>
                     <small>推荐分</small>
-                    <strong>{score ?? "—"}</strong>
+                    <strong>{preciseScore?.toFixed(1) ?? "—"}</strong>
                     {isBestScore ? <em>最高分</em> : null}
+                    {preciseScore !== null && potentialScore !== null &&
+                    potentialScore > preciseScore ? (
+                      <span>潜力上限 {potentialScore.toFixed(1)}</span>
+                    ) : null}
                     {listing.score &&
                     manualPreferenceAdjustment(listing.score) < 0 ? (
                       <span className="preference-adjustment">
@@ -270,6 +290,14 @@ export function CandidateCompareDialog({
                     </dd>
                   </div>
                   <div>
+                    <dt>资产回收率</dt>
+                    <dd>
+                      {recoveryRate === null
+                        ? "待核验"
+                        : `${Math.round(recoveryRate * 100)}%`}
+                    </dd>
+                  </div>
+                  <div>
                     <dt>二次实名</dt>
                     <dd>
                       {yesNoUnknown(
@@ -293,7 +321,7 @@ export function CandidateCompareDialog({
                     <dt>风险 / 证据</dt>
                     <dd>
                       {listing.score
-                        ? `${RISK_LABELS[listing.score.riskLevel]} · ${listing.score.coverage.knownSafetySignals}/3`
+                        ? `${RISK_LABELS[listing.score.riskLevel]} · ${listing.score.coverage.knownSafetySignals}/${listing.score.coverage.totalSafetySignals}`
                         : "待评分"}
                     </dd>
                   </div>

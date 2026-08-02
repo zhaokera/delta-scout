@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { APPROVED_JIAOYIMAO_SEARCH_CONDITION_JSON } from "../collector/mtop.js";
+import {
+  APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION_JSON,
+  APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION_JSON
+} from "../collector/mtop.js";
 
 export const BROWSER_REFRESH_SOURCE = "jiaoyimao" as const;
 
@@ -20,7 +23,6 @@ export const BROWSER_REFRESH_LIMITS = {
 
 const APPROVED_ORIGIN = "https://www.jiaoyimao.com";
 const APPROVED_FILTER_PATHS = new Set([
-  "/jg2007840/f8845003-c8845004/o110/",
   "/jg2007840/f8845003-c8845004/o1687157900084320/"
 ]);
 const DETAIL_PATH_PATTERN = /^\/jg2007840\/(\d+)\.html$/;
@@ -110,22 +112,35 @@ export const JiaoyimaoFilterUrlSchema = z.string().refine((value) => {
   if (url === null || !APPROVED_FILTER_PATHS.has(url.pathname)) {
     return false;
   }
-  const allowed = new Set(["searchCondition", "enforcePlat", "newPage"]);
+  const allowed = new Set([
+    "rId",
+    "priceCondition",
+    "searchCondition",
+    "enforcePlat",
+    "newPage"
+  ]);
   const seen = new Set<string>();
   for (const [key, entryValue] of url.searchParams) {
     if (seen.has(key) || !allowed.has(key)) return false;
     seen.add(key);
     if (
-      key === "searchCondition" &&
-      entryValue !== APPROVED_JIAOYIMAO_SEARCH_CONDITION_JSON
+      key === "priceCondition" &&
+      entryValue !== APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION_JSON
     ) {
       return false;
     }
+    if (
+      key === "searchCondition" &&
+      entryValue !== APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION_JSON
+    ) return false;
+    if (key === "rId" && entryValue !== "108") return false;
     if (key === "enforcePlat" && entryValue !== "2") return false;
     if (key === "newPage" && entryValue !== "true") return false;
   }
   return (
-    seen.size === 3 &&
+    seen.size === 5 &&
+    seen.has("rId") &&
+    seen.has("priceCondition") &&
     seen.has("searchCondition") &&
     seen.has("enforcePlat") &&
     seen.has("newPage")

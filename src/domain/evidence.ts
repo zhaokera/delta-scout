@@ -118,7 +118,7 @@ export function parseM7(
   );
 
   if (relevant.length === 0) {
-    return { status: "absent", evidence: [], quality: undefined };
+    return { status: "unknown", evidence: [], quality: undefined };
   }
 
   const standardMatches = relevant

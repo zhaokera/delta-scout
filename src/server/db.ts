@@ -142,6 +142,66 @@ export function createDatabase(path: string): DatabaseSync {
       last_detected_at TEXT,
       reason TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS refresh_schedule (
+      source TEXT PRIMARY KEY
+        CHECK(source IN ('jiaoyimao', 'panzhi', 'pxb7')),
+      enabled INTEGER NOT NULL DEFAULT 1
+        CHECK(enabled IN (0, 1)),
+      quick_interval_minutes INTEGER NOT NULL
+        CHECK(quick_interval_minutes >= 5),
+      deep_interval_minutes INTEGER NOT NULL
+        CHECK(deep_interval_minutes >= 60),
+      next_quick_at TEXT NOT NULL,
+      next_deep_at TEXT NOT NULL,
+      last_started_at TEXT,
+      last_finished_at TEXT,
+      last_mode TEXT
+        CHECK(last_mode IS NULL OR last_mode IN ('quick', 'deep')),
+      last_state TEXT NOT NULL DEFAULT 'idle'
+        CHECK(last_state IN (
+          'idle', 'running', 'success', 'partial', 'blocked',
+          'failed', 'attention_required'
+        )),
+      consecutive_failures INTEGER NOT NULL DEFAULT 0
+        CHECK(consecutive_failures >= 0),
+      backoff_until TEXT,
+      last_error TEXT,
+      attention_required INTEGER NOT NULL DEFAULT 0
+        CHECK(attention_required IN (0, 1)),
+      observed_source_success_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS refresh_schedule_due_idx
+      ON refresh_schedule (enabled, next_quick_at, next_deep_at);
+
+    CREATE TABLE IF NOT EXISTS refresh_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id INTEGER NOT NULL,
+      source TEXT
+        CHECK(source IS NULL OR source IN (
+          'jiaoyimao', 'panzhi', 'pxb7'
+        )),
+      listing_key TEXT,
+      type TEXT NOT NULL
+        CHECK(type IN (
+          'new_top10', 'price_drop', 'asset_recovery_up',
+          'valuable_m7', 'removed', 'safety_changed'
+        )),
+      severity TEXT NOT NULL
+        CHECK(severity IN ('info', 'opportunity', 'warning')),
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      acknowledged INTEGER NOT NULL DEFAULT 0
+        CHECK(acknowledged IN (0, 1)),
+      FOREIGN KEY (run_id) REFERENCES scan_runs(id) ON DELETE CASCADE,
+      UNIQUE(run_id, type, listing_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS refresh_events_recent_idx
+      ON refresh_events (acknowledged, id DESC);
   `);
 
   const columns = new Set(

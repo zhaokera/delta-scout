@@ -9,6 +9,11 @@ import {
 } from "../../domain/listingSummary";
 import { manualPreferenceAdjustment } from "../../domain/manualPreference";
 import {
+  assetRecoveryRate,
+  potentialRecommendationScore,
+  preciseRecommendationScore
+} from "../../domain/score";
+import {
   SAFETY_SCORE_MAX,
   VALUE_SCORE_MAX
 } from "../../domain/scoreAllocation";
@@ -75,9 +80,9 @@ function stabilityLabel(listing: Listing): string {
 
 const RISK_LABELS = {
   low: "低风险",
-  medium: "中风险",
+  medium: "需关注",
   high: "高风险",
-  unknown: "风险待核验"
+  unknown: "安全证据不足"
 } as const;
 
 export function ListingDetail({
@@ -140,7 +145,11 @@ export function ListingDetail({
             </button>
           ) : null}
           <div className="detail-score">
-            <strong>{listing.score?.total ?? "—"}</strong>
+            <strong>
+              {listing.score === null
+                ? "—"
+                : preciseRecommendationScore(listing.score).toFixed(1)}
+            </strong>
             <span>推荐分</span>
           </div>
         </header>
@@ -188,6 +197,11 @@ export function ListingDetail({
   const preferenceAdjustment = listing.score === null
     ? 0
     : manualPreferenceAdjustment(listing.score);
+  const recoveryRate = assetRecoveryRate(listing);
+  const potentialScore = potentialRecommendationScore(listing);
+  const preciseScore = listing.score === null
+    ? null
+    : preciseRecommendationScore(listing.score);
   const latestMovement =
     prices.length >= 2 ? prices[0].priceCny - prices[1].priceCny : null;
   const movementLabel =
@@ -232,7 +246,7 @@ export function ListingDetail({
           </button>
         ) : null}
         <div className="detail-score">
-          <strong>{listing.score?.total ?? "—"}</strong>
+          <strong>{preciseScore?.toFixed(1) ?? "—"}</strong>
           <span>推荐分</span>
           {preferenceAdjustment < 0 ? (
             <em className="preference-adjustment">
@@ -375,6 +389,14 @@ export function ListingDetail({
           </strong>
         </div>
         <div>
+          <span>资产回收率</span>
+          <strong>
+            {recoveryRate === null
+              ? "待人工核验"
+              : `${Math.round(recoveryRate * 100)}%`}
+          </strong>
+        </div>
+        <div>
           <span>哈夫币</span>
           <strong>
             {known(listing.hafCoins, (value) =>
@@ -432,6 +454,13 @@ export function ListingDetail({
         <section className="score-breakdown">
           <span>评分依据</span>
           <div className="score-summary">
+            <p>确定推荐 {preciseScore?.toFixed(1)} / 100</p>
+            {potentialScore !== null &&
+            preciseScore !== null && potentialScore > preciseScore ? (
+              <p className="score-potential">
+                待核验潜力 {potentialScore.toFixed(1)} / 100
+              </p>
+            ) : null}
             <p>账号价值 {scorePart(listing.score.value)} / 100</p>
             <p>
               购买安全 {scorePart(listing.score.safety)} / {SAFETY_SCORE_MAX.total}

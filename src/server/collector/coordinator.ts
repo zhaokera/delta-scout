@@ -22,6 +22,12 @@ import {
   shouldFetchListingDetail,
   type CollectedListingInput
 } from "./buildListing.js";
+import {
+  canReuseListingDetail,
+  listingDetailFromListing
+} from "./detailReuse.js";
+
+export type RefreshMode = "quick" | "deep";
 
 interface CollectionLimits {
   maxPages: number;
@@ -261,9 +267,11 @@ export class CollectionCoordinator {
     };
   }
 
-  private async refreshSource(
+  private async collectSource(
     adapter: SourceAdapter,
     refreshStartedAt: Date,
+    mode: RefreshMode,
+    previousById: ReadonlyMap<string, Listing>,
     onProgress?: ProgressListener
   ): Promise<RefreshSourceResult> {
     if (adapter.requiresBrowserSnapshot) {
@@ -437,10 +445,25 @@ export class CollectionCoordinator {
           seenAliases.add(alias);
         }
         newItemCount += 1;
+        const previous = item.sourceListingId === null
+          ? undefined
+          : previousById.get(item.sourceListingId);
+        const reusableDetail =
+          mode === "quick" &&
+          item.embeddedDetail === undefined &&
+          previous &&
+          canReuseListingDetail(
+            previous,
+            item,
+            refreshStartedAt
+          )
+            ? listingDetailFromListing(previous)
+            : null;
         const record: CollectedSummary = {
           summary: item,
-          detail: item.embeddedDetail ?? null,
-          detailAttempted: item.embeddedDetail !== undefined,
+          detail: item.embeddedDetail ?? reusableDetail,
+          detailAttempted:
+            item.embeddedDetail !== undefined || reusableDetail !== null,
           warnings: []
         };
         collected.push(record);
@@ -464,6 +487,7 @@ export class CollectionCoordinator {
         const item = record.summary;
         if (
           item.embeddedDetail === undefined &&
+          record.detail === null &&
           shouldFetchListingDetail(item)
         ) {
           if (detailCircuitOpen) {
@@ -646,18 +670,25 @@ export class CollectionCoordinator {
   async refreshAll(): Promise<void>;
   async refreshAll(
     runId: number,
-    onProgress?: ProgressListener
+    onProgress?: ProgressListener,
+    mode?: RefreshMode
   ): Promise<ScanState>;
   async refreshAll(
     runId?: number,
-    onProgress?: ProgressListener
+    onProgress?: ProgressListener,
+    mode: RefreshMode = "deep"
   ): Promise<void | ScanState> {
     if (this.refreshInProgress) {
       throw new Error("refresh_already_running");
     }
     this.refreshInProgress = true;
     try {
-      const state = await this.performRefreshAll(runId, onProgress);
+      const state = await this.performRefreshAdapters(
+        this.adapters,
+        runId,
+        onProgress,
+        mode
+      );
       if (runId === undefined) return;
       return state;
     } catch (error) {
@@ -674,13 +705,48 @@ export class CollectionCoordinator {
     }
   }
 
-  private async performRefreshAll(
-    runId?: number,
+  async refreshSource(
+    source: SourceId,
+    runId: number,
+    mode: RefreshMode = "quick",
     onProgress?: ProgressListener
+  ): Promise<ScanState> {
+    if (this.refreshInProgress) {
+      throw new Error("refresh_already_running");
+    }
+    const adapter = this.adapters.find(
+      (candidate) => candidate.source === source
+    );
+    if (!adapter) throw new Error(`unknown_source:${source}`);
+    this.refreshInProgress = true;
+    try {
+      return await this.performRefreshAdapters(
+        [adapter],
+        runId,
+        onProgress,
+        mode
+      );
+    } catch (error) {
+      this.repository.failScan(
+        runId,
+        errorMessage(error, "刷新失败"),
+        this.now()
+      );
+      throw error;
+    } finally {
+      this.refreshInProgress = false;
+    }
+  }
+
+  private async performRefreshAdapters(
+    adapters: SourceAdapter[],
+    runId?: number,
+    onProgress?: ProgressListener,
+    mode: RefreshMode = "deep"
   ): Promise<ScanState> {
     const refreshStartedAt = this.now();
     const retainedListings = this.repository.getListings();
-    const sourceResults = await Promise.all(this.adapters.map(async (
+    const sourceResults = await Promise.all(adapters.map(async (
       adapter
     ) => {
       let result: RefreshSourceResult;
@@ -696,9 +762,20 @@ export class CollectionCoordinator {
       });
       try {
         await this.fetcher.beginSource?.(adapter.source);
-        result = await this.refreshSource(
+        const previousById = new Map(
+          retainedListings
+            .filter(
+              (listing) =>
+                listing.source === adapter.source &&
+                listing.sourceListingId !== null
+            )
+            .map((listing) => [listing.sourceListingId!, listing] as const)
+        );
+        result = await this.collectSource(
           adapter,
           refreshStartedAt,
+          mode,
+          previousById,
           (event) => {
             if (event.type === "detail_progress") {
               sourceDetails = event.details;

@@ -16,6 +16,10 @@ import {
 } from "./refreshAdmission.js";
 import { ListingRepository } from "./repository.js";
 import { RefreshTracker } from "./refreshTracker.js";
+import {
+  RefreshScheduleRepository,
+  RefreshScheduler
+} from "./refreshScheduler.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4310", 10);
 const host = "127.0.0.1";
@@ -44,7 +48,12 @@ const browserService = new JiaoyimaoBrowserTaskService(
 );
 const coordinator = new CollectionCoordinator({
   adapters: sourceAdapters,
-  fetcher: new PublicPageFetcher(),
+  fetcher: new PublicPageFetcher({
+    // PXB exposes the complete filtered payload in its list API, so a
+    // conservative 600 ms cadence avoids the previous 2 s/page bottleneck
+    // without adding parallel requests. JYM keeps the slower cadence.
+    minimumIntervalMsBySource: { pxb7: 600 }
+  }),
   repository,
   limitsBySource: {
     jiaoyimao: {
@@ -59,6 +68,17 @@ const coordinator = new CollectionCoordinator({
     }
   }
 });
+const scheduleRepository = new RefreshScheduleRepository(
+  database,
+  startupTime
+);
+const scheduler = new RefreshScheduler(
+  scheduleRepository,
+  repository,
+  coordinator,
+  tracker,
+  admission
+);
 
 createApp({
   repository,
@@ -66,12 +86,14 @@ createApp({
   tracker,
   admission,
   browserRepository,
-  browserService
+  browserService,
+  scheduler
 }).listen(port, host, () => {
   console.log(
     `Delta Account Scout API listening on http://${host}:${port}`
   );
 });
+scheduler.start();
 
 const maintenance = setInterval(() => {
   try {

@@ -46,6 +46,7 @@ export const EvidenceRecordSchema = z.object({
 
 export const ScoreSchema = z.object({
   total: z.number().int().min(0).max(100),
+  exactTotal: z.number().min(0).max(100).optional(),
   preferenceAdjustment: z.number().int().min(-8).max(0).default(0),
   value: z.number().min(0).max(100),
   safety: z.number().min(0).max(100),

@@ -2,6 +2,11 @@ import type { SourceId } from "../../domain/listing";
 import { MANUAL_REVIEW_REASON_LABELS } from "../../domain/manualReview";
 import type { ReviewedListingSummary } from "../../domain/listingSummary";
 import { manualPreferenceAdjustment } from "../../domain/manualPreference";
+import {
+  assetRecoveryRate,
+  potentialRecommendationScore,
+  preciseRecommendationScore
+} from "../../domain/score";
 import type { ListingView, PoolMode } from "../api";
 import type { SortKey } from "./FilterBar";
 
@@ -13,9 +18,9 @@ const SOURCE_LABELS = {
 
 const RISK_LABELS = {
   low: "低风险",
-  medium: "中风险",
+  medium: "需关注",
   high: "高风险",
-  unknown: "风险待核验"
+  unknown: "安全证据不足"
 } as const;
 
 const M7_RARE_FINISH_LABELS = {
@@ -147,8 +152,8 @@ export function ListingTable({
           {view === "pool" ? (
             <p className="listing-panel__dek">
               {poolMode === "global"
-                ? "不设平台配额 · 已排除明确高风险与疑似重复号"
-                : "每平台最多 10 · 已排除明确高风险与疑似重复号"}
+                ? "不设平台配额 · 仅排除明确高风险账号"
+                : "每平台最多 10 · 仅排除明确高风险账号"}
             </p>
           ) : (
             <p className="listing-panel__dek">
@@ -187,6 +192,11 @@ export function ListingTable({
           const compared = comparisonKeys.has(listing.key);
           const compareDisabled =
             !compared && comparisonLimitReached;
+          const recoveryRate = assetRecoveryRate(listing);
+          const potentialScore = potentialRecommendationScore(listing);
+          const preciseScore = listing.score === null
+            ? null
+            : preciseRecommendationScore(listing.score);
           return (
             <div
               className={`listing-row${selectedKey === listing.key ? " is-selected" : ""}${compared ? " is-compared" : ""}`}
@@ -197,7 +207,7 @@ export function ListingTable({
               <button
                 className="listing-row__open"
                 type="button"
-                aria-label={`${listing.sourceListingId ?? ""} ${listing.title} ${money(listing.priceCny)}`.trim()}
+                aria-label={`${SOURCE_LABELS[listing.source]}账号 ${listing.sourceListingId ?? "未知编号"}，${money(listing.priceCny)}，推荐分 ${preciseScore?.toFixed(1) ?? "待评分"}`}
                 onClick={() => onSelect(listing)}
               >
                 <span className="listing-row__identity">
@@ -242,6 +252,11 @@ export function ListingTable({
                       : `${listing.redSkinCount} 角色红皮`}
                   </span>
                   <span>{m7Label(listing)}</span>
+                  {recoveryRate !== null ? (
+                    <span className="asset-recovery-badge">
+                      资产回收率 {Math.round(recoveryRate * 100)}%
+                    </span>
+                  ) : null}
                   {listing.m7RareFinishes.length > 0 ? (
                     <span
                       className="m7-finish-tags"
@@ -287,15 +302,27 @@ export function ListingTable({
                         : "无包赔"}
                   </span>
                   <span>解析置信度 {listing.confidence}%</span>
+                  {listing.score ? (
+                    <span>
+                      安全证据 {listing.score.coverage.knownSafetySignals} /{" "}
+                      {listing.score.coverage.totalSafetySignals}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="listing-row__score">
-                  <strong>{listing.score?.total ?? "—"}</strong>
+                  <strong>{preciseScore?.toFixed(1) ?? "—"}</strong>
                   <small>/ 100</small>
                   {listing.score ? (
                     <span>
-                      价值 {Math.round(listing.score.value)} ·{" "}
+                      确定价值 {Math.round(listing.score.value)} ·{" "}
                       {RISK_LABELS[listing.score.riskLevel]}
                     </span>
+                  ) : null}
+                  {listing.score && potentialScore !== null &&
+                  preciseScore !== null && potentialScore > preciseScore ? (
+                    <em className="potential-score">
+                      待核验潜力 {potentialScore.toFixed(1)}
+                    </em>
                   ) : null}
                   {listing.score &&
                   manualPreferenceAdjustment(listing.score) < 0 ? (

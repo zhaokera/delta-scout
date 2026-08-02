@@ -120,10 +120,10 @@ describe("ListingSchema", () => {
           },
           parts: {
             m7: 15,
-            redSkins: 30,
-            julang: 20,
-            price: 25,
-            assets: 5,
+            redSkins: 25,
+            julang: 15,
+            price: 20,
+            assets: 20,
             secondRealName: 40,
             recovery: 0,
             verification: 15
@@ -138,10 +138,10 @@ describe("ListingSchema", () => {
 
   it.each([
     ["m7", 16],
-    ["redSkins", 31],
-    ["julang", 21],
-    ["price", 26],
-    ["assets", 11]
+    ["redSkins", 26],
+    ["julang", 16],
+    ["price", 21],
+    ["assets", 26]
   ] as const)("rejects %s above its value allocation", (part, value) => {
     const score = {
       total: 70,
@@ -155,10 +155,10 @@ describe("ListingSchema", () => {
       },
       parts: {
         m7: 15,
-        redSkins: 30,
-        julang: 20,
-        price: 25,
-        assets: 10,
+        redSkins: 25,
+        julang: 15,
+        price: 20,
+        assets: 25,
         secondRealName: 40,
         recovery: 0,
         verification: 15,

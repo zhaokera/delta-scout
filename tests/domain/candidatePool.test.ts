@@ -123,7 +123,7 @@ describe("selectBalancedCandidatePool", () => {
     ]);
   });
 
-  it("keeps only the strongest cross-platform possible duplicate", () => {
+  it("keeps every cross-platform listing even when it may be the same account", () => {
     const strongest = scoredListing("jiaoyimao", 1, {
       score: makeScore(95),
       possibleDuplicateKeys: ["panzhi:2"]
@@ -140,7 +140,7 @@ describe("selectBalancedCandidatePool", () => {
       selectBalancedCandidatePool([duplicate, unique, strongest]).map(
         ({ key }) => key
       )
-    ).toEqual(["jiaoyimao:1", "pxb7:3"]);
+    ).toEqual(["jiaoyimao:1", "panzhi:2", "pxb7:3"]);
   });
 });
 
@@ -180,7 +180,7 @@ describe("selectGlobalCandidatePool", () => {
     expect(new Set(result.map(({ key }) => key)).size).toBe(30);
   });
 
-  it("applies safety and duplicate gates to the global pool", () => {
+  it("applies the safety gate without suppressing cross-platform listings", () => {
     const highRisk = scoredListing("jiaoyimao", 1, {
       score: { ...makeScore(100), riskLevel: "high" }
     });
@@ -197,6 +197,6 @@ describe("selectGlobalCandidatePool", () => {
       selectGlobalCandidatePool([highRisk, duplicate, strongest]).map(
         ({ key }) => key
       )
-    ).toEqual(["panzhi:2"]);
+    ).toEqual(["panzhi:2", "pxb7:3"]);
   });
 });

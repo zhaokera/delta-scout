@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { jiaoyimaoAdapter } from "../../src/server/collector/adapters/jiaoyimao.js";
 import { panzhiAdapter } from "../../src/server/collector/adapters/panzhi.js";
 import {
+  PXB_REQUIRED_ACCOUNT_FILTERS,
   PXB_REQUIRED_OPERATOR_SKIN_FILTER,
   pxb7Adapter
 } from "../../src/server/collector/adapters/pxb7.js";
@@ -13,6 +14,8 @@ import {
   shouldFetchListingDetail
 } from "../../src/server/collector/buildListing.js";
 import {
+  APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION,
+  APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION,
   APPROVED_JIAOYIMAO_MTOP_ENDPOINT,
   APPROVED_JIAOYIMAO_SEARCH_CONDITION,
   isApprovedJiaoyimaoMtopRequest
@@ -428,8 +431,10 @@ describe("jiaoyimao adapter", () => {
 
   it("uses the native price and two-skin AND filters without M7 or real-name filters", () => {
     const entry = new URL(jiaoyimaoAdapter.entryUrl);
+    expect(JSON.parse(entry.searchParams.get("priceCondition") ?? ""))
+      .toEqual(APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION);
     expect(JSON.parse(entry.searchParams.get("searchCondition") ?? ""))
-      .toEqual(APPROVED_JIAOYIMAO_SEARCH_CONDITION);
+      .toEqual(APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION);
   });
 
   it("normalizes premium S from a visible Jiaoyimao card without calling it peak", () => {
@@ -912,7 +917,7 @@ describe("pxb7 adapter", () => {
       bizProd: 1,
       type: "4",
       posType: 1,
-      filterDTOList: [{
+      filterDTOList: [...PXB_REQUIRED_ACCOUNT_FILTERS, {
         attrId: "price",
         attrType: 3,
         attrValList: [1900, 4000]
@@ -1000,7 +1005,7 @@ describe("pxb7 adapter", () => {
       bizProd: 1,
       type: "4",
       posType: 1,
-      filterDTOList: [{
+      filterDTOList: [...PXB_REQUIRED_ACCOUNT_FILTERS, {
         attrId: "price",
         attrType: 3,
         attrValList: [1900, 4000]
@@ -1036,7 +1041,7 @@ describe("pxb7 adapter", () => {
       bizProd: 1,
       type: "4",
       posType: 1,
-      filterDTOList: [{
+      filterDTOList: [...PXB_REQUIRED_ACCOUNT_FILTERS, {
         attrId: "price",
         attrType: 3,
         attrValList: [1900, 4000]

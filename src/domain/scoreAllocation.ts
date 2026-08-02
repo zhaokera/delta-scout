@@ -1,10 +1,17 @@
 export const VALUE_SCORE_MAX = {
   m7: 15,
-  redSkins: 30,
-  julang: 20,
-  price: 25,
-  assets: 10
+  redSkins: 25,
+  julang: 15,
+  price: 20,
+  assets: 25
 } as const;
+
+export const ASSET_VALUE_CNY_PER_M = 2;
+export const ASSET_FULL_SCORE_VALUE_CNY = 1_000;
+
+export const PRICE_AFFORDABILITY_SCORE_MAX = 10;
+export const ASSET_RECOVERY_SCORE_MAX = 10;
+export const ASSET_RECOVERY_FULL_SCORE_RATE = 0.6;
 
 export const M7_PEAK_QUALITY_POINTS = {
   S: 12,

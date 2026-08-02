@@ -5,7 +5,7 @@ import {
   type BrowserListItem,
   type BrowserLoadEvent
 } from "./contracts.js";
-import { requiresCandidateDetail } from "../../domain/priceRange.js";
+import { requiresBrowserListItemDetail } from "./detailRequirement.js";
 
 export type FilterProofResult =
   | { kind: "ok" }
@@ -175,7 +175,7 @@ export function detailRequiredIds(
   items: readonly BrowserListItem[]
 ): string[] {
   return items
-    .filter((item) => requiresCandidateDetail(item.priceCny))
+    .filter(requiresBrowserListItemDetail)
     .map((item) => item.sourceListingId);
 }
 

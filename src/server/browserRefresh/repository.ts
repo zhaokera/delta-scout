@@ -10,10 +10,13 @@ import { z } from "zod";
 import type { Listing } from "../../domain/listing.js";
 import {
   CANDIDATE_PRICE_MAX_CNY,
-  CANDIDATE_PRICE_MIN_CNY,
-  requiresCandidateDetail
+  CANDIDATE_PRICE_MIN_CNY
 } from "../../domain/priceRange.js";
 import { parseStoredListing } from "../storedListing.js";
+import {
+  canReuseListingDetail,
+  TOP_CANDIDATE_DETAIL_MAX_AGE_MS
+} from "../collector/detailReuse.js";
 import {
   BROWSER_REFRESH_LIMITS,
   BrowserDetailBatchSchema,
@@ -30,10 +33,10 @@ import {
   type BrowserRefreshJobState
 } from "./contracts.js";
 import type { JiaoyimaoVisibleSections } from "./visibleDetail.js";
+import { requiresBrowserListItemDetail } from "./detailRequirement.js";
 
 const JOB_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const TERMINAL_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1_000;
-const REUSABLE_DETAIL_MAX_AGE_MS = 6 * 60 * 60 * 1_000;
 const MAX_BATCH_SEQUENCE = BROWSER_REFRESH_LIMITS.maxUniqueItems;
 const MAX_COOLDOWN_ATTEMPTS = 4;
 const TERMINAL_STATES: readonly BrowserRefreshJobState[] = [
@@ -143,36 +146,16 @@ export interface StagedBrowserDetail {
   observedAt: string;
 }
 
-function compactVisibleText(value: string): string {
-  return value.replace(/\s+/gu, " ").trim();
-}
-
 function canReuseDetail(
   listing: Listing,
   item: BrowserListItem,
   now: Date
 ): boolean {
-  const capturedAt = Date.parse(listing.capturedAt);
-  const age = now.getTime() - capturedAt;
-  const cardText = compactVisibleText(item.rawText);
-  const storedText = compactVisibleText(listing.originalDescription);
-  return (
-    listing.source === "jiaoyimao" &&
-    listing.sourceListingId === item.sourceListingId &&
-    age >= 0 &&
-    age <= REUSABLE_DETAIL_MAX_AGE_MS &&
-    compactVisibleText(listing.title) === compactVisibleText(item.title) &&
-    cardText.length >= 4 &&
-    storedText.includes(cardText) &&
-    listing.parseWarnings.length === 0 &&
-    listing.loginPlatform === "qq" &&
-    listing.service === "official" &&
-    (listing.m7PrismStatus === "peak" ||
-      listing.m7PrismStatus === "premium") &&
-    listing.secondRealNameAvailable !== null &&
-    listing.recoveryCoverage !== null &&
-    listing.verificationAt !== null &&
-    listing.evidence.length > 0
+  return canReuseListingDetail(
+    listing,
+    { source: "jiaoyimao", ...item },
+    now,
+    TOP_CANDIDATE_DETAIL_MAX_AGE_MS
   );
 }
 
@@ -796,7 +779,7 @@ export class BrowserRefreshRepository {
       ? new Date(job.claimed_at)
       : now;
     const requiredItems = this.getListItems(id, now).filter(
-      (item) => requiresCandidateDetail(item.priceCny)
+      requiresBrowserListItemDetail
     );
     if (requiredItems.length === 0) return new Map();
     const listingKeys = requiredItems.map(
@@ -834,33 +817,16 @@ export class BrowserRefreshRepository {
   ): RequiredDetailWork | null {
     this.expireJobs(now);
     this.requireRow(id);
-    const rows = this.database.prepare(`
-      SELECT li.source_listing_id, li.url
-      FROM browser_refresh_list_items li
-      LEFT JOIN browser_refresh_details d
-        ON d.job_id = li.job_id
-        AND d.source_listing_id = li.source_listing_id
-      WHERE li.job_id = ?
-        AND (
-          li.price_cny IS NULL OR
-          li.price_cny BETWEEN ? AND ?
-        )
-        AND d.source_listing_id IS NULL
-      ORDER BY li.rowid
-    `).all(
-      id,
-      CANDIDATE_PRICE_MIN_CNY,
-      CANDIDATE_PRICE_MAX_CNY
-    ) as Array<{
-      source_listing_id: string;
-      url: string;
-    }>;
+    const completed = this.getCompletedDetailIds(id, now);
     const reusable = this.getReusableDetailListings(id, now);
-    const row = rows.find(
-      ({ source_listing_id }) => !reusable.has(source_listing_id)
+    const item = this.getListItems(id, now).find(
+      (candidate) =>
+        requiresBrowserListItemDetail(candidate) &&
+        !completed.has(candidate.sourceListingId) &&
+        !reusable.has(candidate.sourceListingId)
     );
-    return row
-      ? { sourceListingId: row.source_listing_id, url: row.url }
+    return item
+      ? { sourceListingId: item.sourceListingId, url: item.url }
       : null;
   }
 

@@ -11,6 +11,7 @@ import {
 } from "../domain/candidatePool.js";
 import {
   EligibilitySchema,
+  SourceIdSchema,
   type Listing,
   type SourceId
 } from "../domain/listing.js";
@@ -44,6 +45,7 @@ import {
   type SourceStatus
 } from "./repository.js";
 import type {
+  RefreshMode,
   RefreshProgressEvent
 } from "./collector/coordinator.js";
 import {
@@ -54,11 +56,16 @@ import {
   buildPanzhiBrowserListings,
   PanzhiBrowserSnapshotSchema
 } from "./panzhiBrowserSnapshot.js";
+import type {
+  RefreshScheduler,
+  RefreshTriggerResult
+} from "./refreshScheduler.js";
 
 interface RefreshCoordinator {
   refreshAll(
     runId: number,
-    onProgress?: (event: RefreshProgressEvent) => void
+    onProgress?: (event: RefreshProgressEvent) => void,
+    mode?: RefreshMode
   ): Promise<ScanState>;
 }
 
@@ -69,6 +76,7 @@ interface AppDependencies {
   admission: RefreshAdmissionController;
   browserRepository: BrowserRefreshRepository;
   browserService: JiaoyimaoBrowserTaskService;
+  scheduler?: Pick<RefreshScheduler, "snapshot" | "trigger">;
   now?: () => Date;
 }
 
@@ -76,6 +84,14 @@ const ListingViewSchema = z.enum(["pool", "all"]);
 const PoolModeSchema = z.enum(["balanced", "global"]);
 const HistoryLimitSchema = z.coerce.number().int().min(1).max(50);
 const EmptyBodySchema = z.strictObject({});
+const RefreshModeSchema = z.enum(["quick", "deep"]);
+const RefreshRequestSchema = z.object({
+  mode: RefreshModeSchema.optional().default("quick")
+}).passthrough();
+const RefreshEventLimitSchema = z.coerce.number().int().min(1).max(100);
+const AcknowledgeRefreshEventsSchema = z.strictObject({
+  ids: z.array(z.number().int().positive()).max(100).optional()
+});
 const ClaimBodySchema = z.strictObject({
   claimCode: z.string()
 });
@@ -428,6 +444,7 @@ export function createApp(dependencies?: AppDependencies): Express {
     admission,
     browserRepository,
     browserService,
+    scheduler,
     now = () => new Date()
   } = dependencies;
 
@@ -949,7 +966,96 @@ export function createApp(dependencies?: AppDependencies): Express {
     });
   });
 
-  app.post("/api/refresh", (_request, response) => {
+  app.get("/api/refresh-schedule", (_request, response) => {
+    response.json({ schedules: scheduler?.snapshot() ?? [] });
+  });
+
+  app.get("/api/refresh-events", (request, response) => {
+    const parsedLimit = RefreshEventLimitSchema.safeParse(
+      request.query.limit ?? 30
+    );
+    if (!parsedLimit.success) {
+      response.status(400).json({
+        error: "invalid_refresh_event_limit",
+        message: "刷新提醒数量参数无效"
+      });
+      return;
+    }
+    const onlyUnacknowledged = request.query.unread === "true";
+    response.json({
+      events: repository.getRefreshEvents(
+        parsedLimit.data,
+        onlyUnacknowledged
+      )
+    });
+  });
+
+  app.post("/api/refresh-events/acknowledge", (request, response) => {
+    const parsed = AcknowledgeRefreshEventsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({
+        error: "invalid_refresh_event_acknowledgement",
+        message: "刷新提醒确认参数无效"
+      });
+      return;
+    }
+    response.json({
+      acknowledged: repository.acknowledgeRefreshEvents(parsed.data.ids)
+    });
+  });
+
+  app.post("/api/refresh/source/:source", (request, response) => {
+    const parsedSource = SourceIdSchema.safeParse(request.params.source);
+    const parsedBody = RefreshRequestSchema.safeParse(request.body);
+    if (!parsedSource.success || !parsedBody.success || !scheduler) {
+      response.status(400).json({
+        error: "invalid_scheduled_refresh",
+        message: "单平台刷新参数无效"
+      });
+      return;
+    }
+    let result: RefreshTriggerResult;
+    try {
+      result = scheduler.trigger(parsedSource.data, parsedBody.data.mode);
+    } catch {
+      response.status(500).json({
+        error: "refresh_failed",
+        message: "单平台刷新启动失败"
+      });
+      return;
+    }
+    if (result.kind === "conflict") {
+      response.status(409).json({
+        error: "refresh_conflict",
+        message: "另一个刷新任务正在进行",
+        activeKind: result.activeKind,
+        ...(result.jobId ? { jobId: result.jobId } : {})
+      });
+      return;
+    }
+    if (result.kind === "attention_required") {
+      response.status(202).json(result);
+      return;
+    }
+    response.status(202).json({
+      runId: result.runId,
+      state: "running",
+      source: result.source,
+      mode: result.mode
+    });
+  });
+
+  app.post("/api/refresh", (request, response) => {
+    const parsedRefresh = RefreshRequestSchema.safeParse(
+      request.body ?? {}
+    );
+    if (!parsedRefresh.success) {
+      response.status(400).json({
+        error: "invalid_refresh_mode",
+        message: "刷新模式无效"
+      });
+      return;
+    }
     const startedAt = new Date();
     let acquired;
     try {
@@ -980,7 +1086,8 @@ export function createApp(dependencies?: AppDependencies): Express {
       try {
         const state = await coordinator.refreshAll(
           runId,
-          (event) => tracker.update(runId, event)
+          (event) => tracker.update(runId, event),
+          parsedRefresh.data.mode
         );
         tracker.finish(runId, state, new Date());
       } catch {

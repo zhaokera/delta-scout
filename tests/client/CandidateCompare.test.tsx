@@ -81,6 +81,8 @@ describe("candidate comparison", () => {
     expect(screen.getByText("珠光")).toBeInTheDocument();
     expect(screen.getByText("最高分")).toBeInTheDocument();
     expect(screen.getByText("最低价")).toBeInTheDocument();
+    expect(screen.getByText("需关注 · 2/2")).toBeInTheDocument();
+    expect(screen.getAllByText("资产回收率")).toHaveLength(2);
 
     await user.click(
       screen.getByRole("button", { name: "移除对比 PXB-2" })

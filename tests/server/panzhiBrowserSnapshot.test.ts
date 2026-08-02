@@ -97,6 +97,29 @@ describe("Panzhi browser native-filter snapshot", () => {
     })).stopReason).toBe("captcha_required");
   });
 
+  it("normalizes Panzhi's qualified M7 shorthand without weakening the shared parser", () => {
+    const parsed = PanzhiBrowserSnapshotSchema.parse(snapshot({
+      observedUniqueCount: 1,
+      items: [{
+        sourceListingId: "SA2SHORTHAND",
+        url: "https://www.pzds.com/goodsDetails/SA2SHORTHAND/6",
+        title: "M7优品B账号",
+        rawText:
+          "M7棱镜(优品B) 骇爪-维什戴尔 露娜-黑天际线 " +
+          "QQ可二次实名 ¥ 2500",
+        priceCny: 2500
+      }]
+    }));
+
+    expect(buildPanzhiBrowserListings(
+      parsed,
+      new Date(observedAt)
+    ).listings[0]).toMatchObject({
+      m7PrismStatus: "premium",
+      m7PrismQuality: "B"
+    });
+  });
+
   it("accepts the exact required operator skins in either selection order", () => {
     const proof = snapshot().filterProof;
     expect(PanzhiBrowserSnapshotSchema.parse(snapshot({

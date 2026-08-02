@@ -95,12 +95,13 @@ const FILTER_LABELS = [
   "骇爪-维什戴尔",
   "露娜-黑·天际线"
 ];
-const FILTER_SEARCH_CONDITION = JSON.stringify({
+const FILTER_PRICE_CONDITION = JSON.stringify({
   price: {
     conditionList: ["1900,4000"],
-    groupName: "价格范围",
     statConditionList: [FILTER_LABELS[0]]
-  },
+  }
+});
+const FILTER_SEARCH_CONDITION = JSON.stringify({
   selling_point_7322805066952352771: {
     selectType: 1,
     multiSearchCondition: false,
@@ -110,7 +111,6 @@ const FILTER_SEARCH_CONDITION = JSON.stringify({
   }
 });
 const FILTER_PATHS = new Set([
-  "/jg2007840/f8845003-c8845004/o110/",
   "/jg2007840/f8845003-c8845004/o1687157900084320/"
 ]);
 const DETAIL_PATH = /^\/jg2007840\/(\d+)\.html$/;
@@ -308,6 +308,8 @@ function validateFilterProof(value) {
   const filterUrl = parseApprovedUrl(proof.currentUrl);
   if (!FILTER_PATHS.has(filterUrl.pathname)) throw bridgeError();
   const allowedQuery = new Map([
+    ["rId", "108"],
+    ["priceCondition", FILTER_PRICE_CONDITION],
     ["searchCondition", FILTER_SEARCH_CONDITION],
     ["enforcePlat", "2"],
     ["newPage", "true"]
