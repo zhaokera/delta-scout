@@ -5,6 +5,15 @@ import {
   useRef,
   useState
 } from "react";
+import { Button, Empty, Tag } from "antd";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate
+} from "react-router-dom";
 import type { SourceId } from "../domain/listing";
 import { matchesListingFilters } from "../domain/listingFilters";
 import type {
@@ -33,9 +42,8 @@ import {
   type AdvancedFilters,
   type SortKey
 } from "./components/FilterBar";
-import { DetailDrawer } from "./components/DetailDrawer";
 import {
-  CandidateCompareDialog,
+  CandidateCompareBoard,
   CompareTray
 } from "./components/CandidateCompare";
 import { ListingDetail } from "./components/ListingDetail";
@@ -46,11 +54,21 @@ import { PoolModeToggle } from "./components/PoolModeToggle";
 import { JiaoyimaoBrowserRefreshPanel } from
   "./components/JiaoyimaoBrowserRefreshPanel";
 import { RefreshProgress } from "./components/RefreshProgress";
-import { RefreshAutomationPanel } from
-  "./components/RefreshAutomationPanel";
+import {
+  RefreshEventFeed,
+  RefreshScheduleGrid
+} from "./components/RefreshAutomationPanel";
 import { RankingDiagnostics } from
   "./components/RankingDiagnostics";
 import { SourceStrip } from "./components/SourceStrip";
+import {
+  APP_ROUTES,
+  AppFrame,
+  PageIntro,
+  type AppRoute
+} from "./components/AppFrame";
+import { ScoringRulesPage } from
+  "./components/ScoringRulesPage";
 import { useJiaoyimaoBrowserRefresh } from
   "./useJiaoyimaoBrowserRefresh";
 
@@ -92,26 +110,22 @@ const EMPTY_STATES: Record<
   }
 };
 
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() =>
-    typeof window.matchMedia === "function"
-      ? window.matchMedia(query).matches
-      : false
+export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
+  return (
+    <BrowserRouter>
+      <ScoutApp api={api} />
+    </BrowserRouter>
   );
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const mediaQuery = window.matchMedia(query);
-    const update = () => setMatches(mediaQuery.matches);
-    update();
-    mediaQuery.addEventListener?.("change", update);
-    return () => mediaQuery.removeEventListener?.("change", update);
-  }, [query]);
-
-  return matches;
 }
 
-export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
+function ScoutApp({ api }: { api: ScoutApi }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const initialView = useRef<ListingView>(
+    location.pathname === APP_ROUTES.exclusions
+      ? "rejected"
+      : "pool"
+  ).current;
   const [sources, setSources] = useState<SourceStatusView[]>([]);
   const [refreshSchedules, setRefreshSchedules] =
     useState<RefreshScheduleView[]>([]);
@@ -119,7 +133,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     useState<RefreshEventView[]>([]);
   const [listings, setListings] =
     useState<ReviewedListingSummary[]>([]);
-  const [view, setView] = useState<ListingView>("pool");
+  const [view, setView] = useState<ListingView>(initialView);
   const [poolMode, setPoolMode] = useState<PoolMode>("balanced");
   const [sort, setSort] = useState<SortKey>("score");
   const [filters, setFilters] =
@@ -127,7 +141,6 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selected, setSelected] =
     useState<ReviewedListing | ReviewedListingSummary | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [listingHistory, setListingHistory] =
@@ -144,7 +157,6 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     useState<string | null>(null);
   const [comparison, setComparison] =
     useState<ReviewedListingSummary[]>([]);
-  const [compareOpen, setCompareOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshStatus, setRefreshStatus] =
     useState<RefreshStatusView | null>(null);
@@ -168,15 +180,8 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
   const knownSnapshotAtRef = useRef<string | null>(null);
   const selectedKeyRef = useRef<string | null>(null);
   const mounted = useRef(false);
-  const activeView = useRef<ListingView>(view);
+  const activeView = useRef<ListingView>(initialView);
   const activePoolMode = useRef<PoolMode>(poolMode);
-  const narrowLayout = useMediaQuery("(max-width: 1100px)");
-  const compactLayout = useMediaQuery("(max-width: 760px)");
-  const [operationsOpen, setOperationsOpen] = useState(
-    () => !compactLayout
-  );
-  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-  const closeComparison = useCallback(() => setCompareOpen(false), []);
 
   const loadAutomation = useCallback(async () => {
     const [scheduleResult, eventsResult] = await Promise.allSettled([
@@ -246,7 +251,6 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
           setListingHistory(null);
           setHistoryError(null);
           setHistoryLoading(false);
-          setDrawerOpen(false);
           if (options.refreshSelection) {
             setSelectionNotice("该账号已不在最新在售快照");
           }
@@ -568,7 +572,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
 
   useEffect(() => {
     mounted.current = true;
-    void load("pool", "balanced");
+    void load(initialView, "balanced");
     void loadAutomation();
     let disposed = false;
 
@@ -665,41 +669,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       broadcastRef.current?.close();
       broadcastRef.current = null;
     };
-  }, [api, load, loadAutomation]);
-
-  useEffect(() => {
-    if (!narrowLayout) setDrawerOpen(false);
-  }, [narrowLayout]);
-
-  useEffect(() => {
-    if (!compactLayout) setOperationsOpen(true);
-  }, [compactLayout]);
-
-  useEffect(() => {
-    const browserNeedsAttention =
-      browserRefresh.job !== null &&
-      !["success", "quarantined", "failed", "cancelled", "expired"]
-        .includes(browserRefresh.job.state);
-    if (
-      refreshing ||
-      refreshStatus?.state === "running" ||
-      browserNeedsAttention ||
-      browserRefresh.error !== null
-    ) {
-      setOperationsOpen(true);
-    }
-  }, [
-    browserRefresh.error,
-    browserRefresh.job,
-    refreshStatus?.state,
-    refreshing
-  ]);
-
-  useEffect(() => {
-    if (compareOpen && comparison.length < 2) {
-      setCompareOpen(false);
-    }
-  }, [compareOpen, comparison.length]);
+  }, [api, initialView, load, loadAutomation]);
 
   const visibleListings = useMemo(
     () =>
@@ -754,8 +724,7 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
 
   function openComparison(): void {
     if (comparison.length < 2) return;
-    setDrawerOpen(false);
-    setCompareOpen(true);
+    navigate(APP_ROUTES.compare);
   }
 
   function clearSelectionAfterReview(): void {
@@ -767,7 +736,6 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     setHistoryError(null);
     setSelectionNotice(null);
     setDetailLoading(false);
-    setDrawerOpen(false);
   }
 
   function openManualExclusion(listing: ReviewedListing): void {
@@ -775,16 +743,12 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     setReviewTarget(listing);
     setReviewError(null);
     setReviewNotice(null);
-    if (narrowLayout) setDrawerOpen(false);
   }
 
   function closeManualExclusion(): void {
     if (reviewPending) return;
     setReviewTarget(null);
     setReviewError(null);
-    if (narrowLayout && selectedKeyRef.current !== null) {
-      setDrawerOpen(true);
-    }
   }
 
   async function excludeReviewedListing(
@@ -875,7 +839,6 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     setSelectionNotice(null);
     setListingHistory(null);
     setHistoryError(null);
-    if (narrowLayout) setDrawerOpen(true);
     setDetailLoading(true);
     setHistoryLoading(true);
     const [detailResult, historyResult] = await Promise.allSettled([
@@ -1022,6 +985,55 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
     }
   }
 
+  function changePoolMode(nextMode: PoolMode): void {
+    if (nextMode === poolMode) return;
+    loadSequence.current += 1;
+    detailSequence.current += 1;
+    activePoolMode.current = nextMode;
+    setPoolMode(nextMode);
+    setListings([]);
+    setSelected(null);
+    selectedKeyRef.current = null;
+    setListingHistory(null);
+    setHistoryError(null);
+    setHistoryLoading(false);
+    setSelectionNotice(null);
+    setDetailLoading(false);
+    setError(null);
+    setLoading(true);
+    void load(activeView.current, nextMode);
+  }
+
+  function changeListingView(nextView: ListingView): void {
+    if (nextView === view) return;
+    loadSequence.current += 1;
+    detailSequence.current += 1;
+    activeView.current = nextView;
+    setView(nextView);
+    setListings([]);
+    setSelected(null);
+    selectedKeyRef.current = null;
+    setListingHistory(null);
+    setHistoryError(null);
+    setHistoryLoading(false);
+    setSelectionNotice(null);
+    setDetailLoading(false);
+    setError(null);
+    setLoading(true);
+    void load(nextView, activePoolMode.current);
+  }
+
+  function navigateSection(route: AppRoute): void {
+    if (route === APP_ROUTES.exclusions) {
+      setFilters(DEFAULT_FILTERS);
+      changeListingView("rejected");
+    } else if (route === APP_ROUTES.candidates &&
+        location.pathname === APP_ROUTES.exclusions) {
+      changeListingView("pool");
+    }
+    navigate(route);
+  }
+
   const completeSourceCount = sources.filter(
     ({ state }) => state === "success"
   ).length;
@@ -1034,59 +1046,171 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
       ? `${completeSourceCount} 完整 · ${partialSourceCount} 部分完成`
       : `${trustedSourceCount} / 3 平台有可信快照`;
 
-  return (
-    <main className="app-shell">
-      <header className="masthead">
-        <div className="brand-block">
-          <p>
-            <span aria-hidden="true">△</span> DELTA ACCOUNT SCOUT
-          </p>
-          <h1>三角洲账号候选台</h1>
-        </div>
-        <div className="masthead__actions">
-          <span className="live-indicator">
-            <i aria-hidden="true" />
-            本地运行
-          </span>
-          <button
-            className="refresh-button"
-            type="button"
-            disabled={
-              refreshing || browserRefresh.blocksAllSourceRefresh
-            }
-            aria-busy={refreshing}
-            onClick={() => void refresh()}
-          >
-            <span aria-hidden="true">{refreshing ? "◌" : "↻"}</span>
-            {refreshing ? "正在刷新…" : "刷新公开数据"}
-          </button>
-        </div>
-      </header>
+  const currentRoute = Object.values(APP_ROUTES).includes(
+    location.pathname as AppRoute
+  )
+    ? location.pathname as AppRoute
+    : APP_ROUTES.candidates;
+  const unreadEventCount = refreshEvents.filter(
+    ({ acknowledged }) => !acknowledged
+  ).length;
 
-      <details
-        className="operations-panel"
-        open={operationsOpen}
-        onToggle={(event) =>
-          setOperationsOpen(event.currentTarget.open)
-        }
+  const statusNotices = (
+    <>
+      {error && listings.length > 0 ? (
+        <section className="snapshot-warning" role="alert">
+          <strong>无法读取最新快照，继续展示现有候选</strong>
+          <span>{error}</span>
+        </section>
+      ) : null}
+      {selectionNotice ? (
+        <section className="snapshot-warning" role="alert">
+          <strong>{selectionNotice}</strong>
+          <span>可在账号历史中查看最近一次可信记录。</span>
+        </section>
+      ) : null}
+      {reviewNotice ? (
+        <section
+          className="manual-review-notice"
+          role="status"
+          aria-live="polite"
+        >
+          {reviewNotice}
+        </section>
+      ) : null}
+    </>
+  );
+
+  const listingWorkspace = (
+    <div className="workspace">
+      <div
+        className="workspace__list"
+        id="listing-view-panel"
+        role="tabpanel"
+        aria-labelledby={`listing-view-tab-${view}`}
+        aria-busy={loading}
+        tabIndex={0}
       >
-        <summary>
-          <span>
-            <small>01 / DATA CONTROL</small>
-            <strong>数据、刷新与固定条件</strong>
-          </span>
-          <span className="operations-panel__summary-status">
-            {sources.length === 0
-              ? "正在读取平台状态"
-              : sourceSnapshotSummary}
-            {scanHistory?.runs[0]
-              ? ` · 最近扫描 #${scanHistory.runs[0].id}`
-              : ""}
-          </span>
-          <b>{operationsOpen ? "收起" : "展开"}</b>
-        </summary>
+        {loading ? (
+          <div className="loading-state" aria-live="polite">
+            <i aria-hidden="true" />
+            正在读取当前视图快照…
+          </div>
+        ) : error && listings.length === 0 ? (
+          <section className="error-state" role="alert">
+            <span aria-hidden="true">!</span>
+            <div>
+              <h2>数据链路异常</h2>
+              <p>{error}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                void load(activeView.current, activePoolMode.current)
+              }
+            >
+              重试
+            </button>
+          </section>
+        ) : listings.length === 0 ? (
+          <section className="empty-state" aria-label="空候选">
+            <span aria-hidden="true">Ø</span>
+            <div>
+              <h2>{emptyState.title}</h2>
+              <p>{emptyState.description}</p>
+            </div>
+            <button
+              type="button"
+              disabled={
+                refreshing || browserRefresh.blocksAllSourceRefresh
+              }
+              aria-busy={refreshing}
+              onClick={() => void refresh()}
+            >
+              {refreshing ? "正在刷新…" : "立即刷新"}
+            </button>
+          </section>
+        ) : visibleListings.length > 0 ? (
+          <ListingTable
+            listings={visibleListings}
+            selectedKey={selected?.key ?? null}
+            sort={sort}
+            view={view}
+            poolMode={poolMode}
+            totalCount={listings.length}
+            sourceContributions={sourceContributions}
+            comparisonKeys={comparisonKeys}
+            comparisonLimitReached={comparison.length >= 4}
+            onSortChange={setSort}
+            onSelect={(listing) => void selectListing(listing)}
+            onToggleComparison={toggleComparison}
+          />
+        ) : (
+          <section
+            className="empty-state empty-state--filtered"
+            aria-label="筛选后无结果"
+          >
+            <span aria-hidden="true">≠</span>
+            <div>
+              <h2>筛选后无结果</h2>
+              <p>
+                当前视图已加载 {listings.length} 条记录，但没有账号满足高级筛选。
+              </p>
+            </div>
+            <button type="button" onClick={clearFilters}>
+              清除筛选
+            </button>
+          </section>
+        )}
+      </div>
+      <ListingDetail
+        listing={selected}
+        loading={detailLoading}
+        history={listingHistory}
+        historyLoading={historyLoading}
+        historyError={historyError}
+        reviewPending={reviewPending}
+        reviewError={reviewError}
+        onExclude={openManualExclusion}
+        onRestore={(listing) => void restoreReviewedListing(listing)}
+      />
+    </div>
+  );
 
-        <div className="operations-panel__body">
+  return (
+    <AppFrame
+      route={currentRoute}
+      unreadEvents={unreadEventCount}
+      sourceSnapshotSummary={sourceSnapshotSummary}
+      refreshing={refreshing}
+      refreshDisabled={browserRefresh.blocksAllSourceRefresh}
+      onRefresh={() => void refresh()}
+      onNavigate={navigateSection}
+    >
+      {statusNotices}
+      <Routes>
+        <Route
+          path="/"
+          element={<Navigate to={APP_ROUTES.candidates} replace />}
+        />
+
+        <Route
+          path={APP_ROUTES.refresh}
+          element={(
+            <section className="page-stack refresh-center-page">
+              <PageIntro
+                index="03 / DATA CONTROL"
+                title="刷新中心"
+                description="三平台采集状态、可信浏览器接管与定时刷新统一在这里处理。"
+                meta={
+                  <Tag color={partialSourceCount > 0 ? "warning" : "success"}>
+                    {sources.length === 0
+                      ? "正在读取平台状态"
+                      : sourceSnapshotSummary}
+                  </Tag>
+                }
+              />
+              <div className="refresh-center__body">
           <RefreshProgress
             status={refreshStatus}
             transportWarning={transportWarning}
@@ -1163,217 +1287,201 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
             }}
           />
 
-          <RefreshAutomationPanel
-            schedules={refreshSchedules}
-            events={refreshEvents}
-            busy={
-              refreshing ||
-              browserRefresh.busy ||
-              browserRefresh.blocksAllSourceRefresh
-            }
-            onRefresh={(source, mode) => {
-              void refreshSource(source, mode);
-            }}
-            onAcknowledge={() => {
-              void acknowledgeRefreshEvents();
-            }}
-          />
-        </div>
-      </details>
-
-      <PoolModeToggle
-        mode={poolMode}
-        onChange={(nextMode) => {
-          if (nextMode === poolMode) return;
-          loadSequence.current += 1;
-          detailSequence.current += 1;
-          activePoolMode.current = nextMode;
-          setPoolMode(nextMode);
-          setListings([]);
-          setSelected(null);
-          selectedKeyRef.current = null;
-          setListingHistory(null);
-          setHistoryError(null);
-          setHistoryLoading(false);
-          setSelectionNotice(null);
-          setDrawerOpen(false);
-          setDetailLoading(false);
-          setError(null);
-          setLoading(true);
-          void load(activeView.current, nextMode);
-        }}
-      />
-
-      <FilterBar
-        view={view}
-        sort={sort}
-        filters={filters}
-        advancedOpen={advancedOpen}
-        onViewChange={(nextView) => {
-          if (nextView === view) return;
-          loadSequence.current += 1;
-          detailSequence.current += 1;
-          activeView.current = nextView;
-          setView(nextView);
-          setListings([]);
-          setSelected(null);
-          selectedKeyRef.current = null;
-          setListingHistory(null);
-          setHistoryError(null);
-          setHistoryLoading(false);
-          setSelectionNotice(null);
-          setDrawerOpen(false);
-          setDetailLoading(false);
-          setError(null);
-          setLoading(true);
-          void load(nextView, activePoolMode.current);
-        }}
-        onSortChange={setSort}
-        onFiltersChange={setFilters}
-        onToggleAdvanced={() => setAdvancedOpen((open) => !open)}
-        onReset={clearFilters}
-      />
-
-      {error && listings.length > 0 ? (
-        <section className="snapshot-warning" role="alert">
-          <strong>无法读取最新快照，继续展示现有候选</strong>
-          <span>{error}</span>
-        </section>
-      ) : null}
-      {selectionNotice ? (
-        <section className="snapshot-warning" role="alert">
-          <strong>{selectionNotice}</strong>
-          <span>可在账号历史中查看最近一次可信记录。</span>
-        </section>
-      ) : null}
-      {reviewNotice ? (
-        <section
-          className="manual-review-notice"
-          role="status"
-          aria-live="polite"
-        >
-          {reviewNotice}
-        </section>
-      ) : null}
-
-      {view === "pool" && poolMode === "global" && !loading ? (
-        <RankingDiagnostics listings={listings} />
-      ) : null}
-
-      <div className="workspace">
-        <div
-          className="workspace__list"
-          id="listing-view-panel"
-          role="tabpanel"
-          aria-labelledby={`listing-view-tab-${view}`}
-          aria-busy={loading}
-          tabIndex={0}
-        >
-          {loading ? (
-            <div className="loading-state" aria-live="polite">
-              <i aria-hidden="true" />
-              正在读取当前视图快照…
-            </div>
-          ) : error && listings.length === 0 ? (
-            <section className="error-state" role="alert">
-              <span aria-hidden="true">!</span>
+          <section className="refresh-automation" aria-label="三平台刷新计划">
+            <header className="refresh-automation__header">
               <div>
-                <h2>数据链路异常</h2>
-                <p>{error}</p>
+                <p>SMART REFRESH</p>
+                <h3>三平台刷新计划</h3>
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  void load(activeView.current, activePoolMode.current)
-                }
-              >
-                重试
-              </button>
-            </section>
-          ) : listings.length === 0 ? (
-            <section className="empty-state" aria-label="空候选">
-              <span aria-hidden="true">Ø</span>
-              <div>
-                <h2>{emptyState.title}</h2>
-                <p>{emptyState.description}</p>
-              </div>
-              <button
-                type="button"
-                disabled={
-                  refreshing || browserRefresh.blocksAllSourceRefresh
-                }
-                aria-busy={refreshing}
-                onClick={() => void refresh()}
-              >
-                {refreshing ? "正在刷新…" : "立即刷新"}
-              </button>
-            </section>
-          ) : visibleListings.length > 0 ? (
-            <ListingTable
-              listings={visibleListings}
-              selectedKey={selected?.key ?? null}
-              sort={sort}
-              view={view}
-              poolMode={poolMode}
-              totalCount={listings.length}
-              sourceContributions={sourceContributions}
-              comparisonKeys={comparisonKeys}
-              comparisonLimitReached={comparison.length >= 4}
-              onSortChange={setSort}
-              onSelect={(listing) => void selectListing(listing)}
-              onToggleComparison={toggleComparison}
+              <span>快刷增量核验 · 每日深刷</span>
+            </header>
+            <RefreshScheduleGrid
+              schedules={refreshSchedules}
+              busy={
+                refreshing ||
+                browserRefresh.busy ||
+                browserRefresh.blocksAllSourceRefresh
+              }
+              onRefresh={(source, mode) => {
+                void refreshSource(source, mode);
+              }}
             />
-          ) : (
-            <section
-              className="empty-state empty-state--filtered"
-              aria-label="筛选后无结果"
-            >
-              <span aria-hidden="true">≠</span>
-              <div>
-                <h2>筛选后无结果</h2>
-                <p>
-                  当前视图已加载 {listings.length} 条记录，但没有账号满足高级筛选。
-                </p>
-              </div>
-              <button type="button" onClick={clearFilters}>
-                清除筛选
-              </button>
+          </section>
+        </div>
+      </section>
+    )}
+  />
+
+        <Route
+          path={APP_ROUTES.candidates}
+          element={(
+            <section className="page-stack candidates-page">
+              <PageIntro
+                index="01 / CANDIDATE RANKING"
+                title="候选总榜"
+                description="只对通过硬条件的账号统一评分；按均衡 Top30 或跨平台总榜查看。"
+                meta={<Tag color="success">{listings.length} 个当前账号</Tag>}
+              />
+              <section
+                className="candidate-live-ops"
+                aria-label="平台快照与刷新状态"
+              >
+                <RefreshProgress
+                  status={refreshStatus}
+                  transportWarning={transportWarning}
+                />
+                {scanHistory?.runs[0] ? (
+                  <section
+                    className="scan-history-summary"
+                    aria-label="最近扫描历史"
+                  >
+                    <span>最近扫描</span>
+                    <strong>#{scanHistory.runs[0].id}</strong>
+                    <small>{scanHistory.runs[0].state.toUpperCase()}</small>
+                  </section>
+                ) : null}
+                <JiaoyimaoBrowserRefreshPanel
+                  job={browserRefresh.job}
+                  claimCode={browserRefresh.claimCode}
+                  conflict={browserRefresh.conflict}
+                  busy={browserRefresh.busy || refreshing}
+                  error={browserRefresh.error}
+                  onStart={browserRefresh.start}
+                  onCancel={browserRefresh.cancel}
+                  onKeepWaiting={browserRefresh.keepWaiting}
+                />
+                <SourceStrip
+                  statuses={sources}
+                  jiaoyimaoRefreshDisabled={
+                    browserRefresh.busy ||
+                    refreshing ||
+                    browserRefresh.conflict !== null ||
+                    browserRefresh.blocksAllSourceRefresh
+                  }
+                  onJiaoyimaoRefresh={() => void browserRefresh.start()}
+                />
+              </section>
+              <PoolModeToggle
+                mode={poolMode}
+                onChange={changePoolMode}
+              />
+              <FilterBar
+                view={view}
+                sort={sort}
+                filters={filters}
+                advancedOpen={advancedOpen}
+                onViewChange={changeListingView}
+                onSortChange={setSort}
+                onFiltersChange={setFilters}
+                onToggleAdvanced={() => setAdvancedOpen((open) => !open)}
+                onReset={clearFilters}
+              />
+              {view === "pool" && poolMode === "global" && !loading ? (
+                <RankingDiagnostics listings={listings} />
+              ) : null}
+              {listingWorkspace}
             </section>
           )}
-        </div>
-        {!narrowLayout ? (
-          <ListingDetail
-            listing={selected}
-            loading={detailLoading}
-            history={listingHistory}
-            historyLoading={historyLoading}
-            historyError={historyError}
-            reviewPending={reviewPending}
-            reviewError={reviewError}
-            onExclude={openManualExclusion}
-            onRestore={(listing) =>
-              void restoreReviewedListing(listing)
-            }
-          />
-        ) : null}
-      </div>
-
-      {narrowLayout && selected && drawerOpen ? (
-        <DetailDrawer
-          listing={selected}
-          loading={detailLoading}
-          history={listingHistory}
-          historyLoading={historyLoading}
-          historyError={historyError}
-          reviewPending={reviewPending}
-          reviewError={reviewError}
-          onExclude={openManualExclusion}
-          onRestore={(listing) =>
-            void restoreReviewedListing(listing)
-          }
-          onClose={closeDrawer}
         />
-      ) : null}
+
+        <Route
+          path={APP_ROUTES.compare}
+          element={(
+            <section className="page-stack compare-page">
+              <PageIntro
+                index="02 / DECISION MATRIX"
+                title="账号对比"
+                description="把最多 4 个账号并排核对报价、价值项、资产回收率与安全证据。"
+                meta={<Tag>{comparison.length} / 4 已选</Tag>}
+                actions={comparison.length > 0 ? (
+                  <Button onClick={() => setComparison([])}>清空对比</Button>
+                ) : null}
+              />
+              {comparison.length >= 2 ? (
+                <CandidateCompareBoard
+                  listings={comparison}
+                  onRemove={removeComparison}
+                />
+              ) : (
+                <div className="section-empty">
+                  <Empty
+                    description={
+                      comparison.length === 1
+                        ? "还需从候选总榜加入 1 个账号"
+                        : "先从候选总榜选择至少 2 个账号"
+                    }
+                  >
+                    <Button
+                      type="primary"
+                      onClick={() => navigateSection(APP_ROUTES.candidates)}
+                    >
+                      前往候选总榜
+                    </Button>
+                  </Empty>
+                </div>
+              )}
+            </section>
+          )}
+        />
+
+        <Route
+          path={APP_ROUTES.events}
+          element={(
+            <section className="page-stack events-page">
+              <PageIntro
+                index="04 / CHANGE FEED"
+                title="变化提醒"
+                description="集中查看降价、新进榜单、安全信息变化和最新快照离场事件。"
+                meta={
+                  <Tag color={unreadEventCount > 0 ? "warning" : "default"}>
+                    {unreadEventCount} 条未读
+                  </Tag>
+                }
+              />
+              <section className="refresh-automation events-page__feed">
+                <RefreshEventFeed
+                  events={refreshEvents}
+                  onAcknowledge={() => void acknowledgeRefreshEvents()}
+                />
+              </section>
+            </section>
+          )}
+        />
+
+        <Route
+          path={APP_ROUTES.rules}
+          element={(
+            <section className="page-stack">
+              <PageIntro
+                index="05 / SCORING LOGIC"
+                title="评分规则"
+                description="公开当前硬门槛、价值分配、资产估值与最终推荐分权重。"
+              />
+              <ScoringRulesPage />
+            </section>
+          )}
+        />
+
+        <Route
+          path={APP_ROUTES.exclusions}
+          element={(
+            <section className="page-stack exclusions-page">
+              <PageIntro
+                index="06 / REVIEW ARCHIVE"
+                title="淘汰记录"
+                description="查看违反硬条件或被人工淘汰的账号，保留原因并支持人工恢复。"
+                meta={<Tag color="error">{listings.length} 条记录</Tag>}
+              />
+              {listingWorkspace}
+            </section>
+          )}
+        />
+
+        <Route
+          path="*"
+          element={<Navigate to={APP_ROUTES.candidates} replace />}
+        />
+      </Routes>
 
       {reviewTarget ? (
         <ManualReviewDialog
@@ -1385,25 +1493,14 @@ export function App({ api = httpScoutApi }: { api?: ScoutApi }) {
         />
       ) : null}
 
-      <CompareTray
-        listings={comparison}
-        onRemove={removeComparison}
-        onClear={() => setComparison([])}
-        onOpen={openComparison}
-      />
-
-      {compareOpen ? (
-        <CandidateCompareDialog
+      {currentRoute === APP_ROUTES.candidates ? (
+        <CompareTray
           listings={comparison}
           onRemove={removeComparison}
-          onClose={closeComparison}
+          onClear={() => setComparison([])}
+          onOpen={openComparison}
         />
       ) : null}
-
-      <footer className="app-footer">
-        <span>仅聚合公开商品信息 · 不自动下单 · 最终购买前必须人工验号</span>
-        <span>LOCAL / READ-ONLY COLLECTOR</span>
-      </footer>
-    </main>
+    </AppFrame>
   );
 }

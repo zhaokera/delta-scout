@@ -303,6 +303,10 @@ function stubViewport(matches: boolean): () => void {
 }
 
 describe("App shell", () => {
+  beforeEach(() => {
+    window.history.replaceState({}, "", "/candidates");
+  });
+
   it("keeps the source browser-refresh touch target at least 44px tall", () => {
     const clientStyles = readFileSync(
       "src/client/styles.css",
@@ -313,18 +317,46 @@ describe("App shell", () => {
     );
   });
 
-  it("shows the fixed account requirements", () => {
+  it("shows the fixed account requirements on the rules page", async () => {
     render(<App api={makeApi()} />);
 
     expect(
       screen.getByRole("heading", { name: "三角洲账号候选台" })
     ).toBeInTheDocument();
-    expect(screen.getByText("QQ 官服")).toBeInTheDocument();
-    expect(screen.getByText("必须可二次实名")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "评分规则" }));
+    expect(screen.getByText("QQ 登录 · 官方服")).toBeInTheDocument();
+    expect(screen.getByText("必须明确可二次实名")).toBeInTheDocument();
     expect(
-      screen.getByText("全账号统一评分 · M7 非入池门槛")
+      screen.getByText(/M7、巨浪、资产与报价只用于/)
     ).toBeInTheDocument();
     expect(screen.getByText("¥1,900–¥4,000")).toBeInTheDocument();
+  });
+
+  it("navigates the six PC menu pages and loads rejected records for the archive", async () => {
+    const api = makeApi();
+    render(<App api={api} />);
+
+    const routes = [
+      ["账号对比", "/compare"],
+      ["刷新中心", "/refresh"],
+      ["变化提醒", "/events"],
+      ["评分规则", "/rules"],
+      ["淘汰记录", "/exclusions"]
+    ] as const;
+
+    for (const [label, route] of routes) {
+      fireEvent.click(screen.getByRole("menuitem", { name: label }));
+      expect(screen.getByRole("heading", { name: label }))
+        .toBeInTheDocument();
+      expect(window.location.pathname).toBe(route);
+    }
+
+    await waitFor(() => {
+      expect(api.getListings).toHaveBeenLastCalledWith(
+        "rejected",
+        "balanced"
+      );
+    });
   });
 
   it("does not describe a partial platform snapshot as fully successful", async () => {
@@ -1103,9 +1135,9 @@ describe("App shell", () => {
     expect(screen.getByText("已选 2 / 4")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "开始对比" }));
-    expect(screen.getByRole("dialog", {
-      name: "候选账号横向对比"
-    })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "账号对比" }))
+      .toBeInTheDocument();
+    expect(window.location.pathname).toBe("/compare");
     expect(screen.getByText("最低价")).toBeInTheDocument();
     expect(screen.getByText("最高分")).toBeInTheDocument();
   });
@@ -3915,9 +3947,9 @@ describe("App shell", () => {
     }
   });
 
-  it("opens a mobile detail dialog and restores focus and body overflow on close", async () => {
+  it("keeps the PC detail panel when the browser viewport is narrow", async () => {
     const restoreViewport = stubViewport(true);
-    const listing = makeListing({ sourceListingId: "MOBILE-DRAWER" });
+    const listing = makeListing({ sourceListingId: "NARROW-PC-PANEL" });
     const user = userEvent.setup();
     try {
       render(<App api={makeApi({
@@ -3927,50 +3959,14 @@ describe("App shell", () => {
 
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       const row = await screen.findByRole("button", {
-        name: /MOBILE-DRAWER/
+        name: /NARROW-PC-PANEL/
       });
       await user.click(row);
 
-      const dialog = screen.getByRole("dialog", {
-        name: "MOBILE-DRAWER"
-      });
-      expect(dialog).toHaveAttribute("aria-modal", "true");
-      expect(dialog).toHaveAttribute(
-        "aria-labelledby",
-        "candidate-detail-title"
-      );
-      expect(document.body.style.overflow).toBe("hidden");
-      const close = within(dialog).getByRole("button", {
-        name: "关闭候选详情"
-      });
-      expect(close).toHaveFocus();
-
-      await user.click(close);
-
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-      expect(document.body.style.overflow).toBe("");
-      expect(row).toHaveFocus();
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  it("closes the mobile detail dialog with Escape", async () => {
-    const restoreViewport = stubViewport(true);
-    const listing = makeListing({ sourceListingId: "ESCAPE-DRAWER" });
-    const user = userEvent.setup();
-    try {
-      render(<App api={makeApi({
-        getListings: async () => [listing]
-      })} />);
-      await user.click(
-        await screen.findByRole("button", { name: /ESCAPE-DRAWER/ })
-      );
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
-
-      await user.keyboard("{Escape}");
-
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.getByRole("complementary", {
+        name: "候选详情"
+      })).toHaveTextContent("NARROW-PC-PANEL");
       expect(document.body.style.overflow).toBe("");
     } finally {
       restoreViewport();

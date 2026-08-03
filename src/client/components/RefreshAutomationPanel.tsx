@@ -83,7 +83,6 @@ export function RefreshAutomationPanel({
   onAcknowledge: () => void;
 }) {
   if (schedules.length === 0 && events.length === 0) return null;
-  const eventFeed = buildRefreshEventFeed(events);
   return (
     <section className="refresh-automation" aria-label="自动刷新与变化提醒">
       <header className="refresh-automation__header">
@@ -94,99 +93,149 @@ export function RefreshAutomationPanel({
         <span>快刷增量核验 · 每日深刷</span>
       </header>
 
-      <div className="refresh-automation__schedules">
-        {schedules.map((schedule) => (
-          <article key={schedule.source}>
-            <div className="refresh-schedule__title">
-              <strong>{SOURCE_LABELS[schedule.source]}</strong>
-              <span
-                className={`refresh-schedule__state refresh-schedule__state--${schedule.lastState}`}
-              >
-                {STATE_LABELS[schedule.lastState]}
-              </span>
-            </div>
-            <dl>
-              <div>
-                <dt>快速</dt>
-                <dd>{schedule.quickIntervalMinutes} 分钟</dd>
-              </div>
-              <div>
-                <dt>完整</dt>
-                <dd>每天一次</dd>
-              </div>
-              <div>
-                <dt>下次快刷</dt>
-                <dd>{formatTime(schedule.nextQuickAt)}</dd>
-              </div>
-            </dl>
-            {schedule.backoffUntil ? (
-              <p className="refresh-schedule__warning">
-                已自动退避至 {formatTime(schedule.backoffUntil)}
-              </p>
-            ) : null}
-            {schedule.attentionRequired ? (
-              <p className="refresh-schedule__warning">
-                已到本轮刷新时间，需要登录浏览器补一次原生筛选快照
-              </p>
-            ) : null}
-            <div className="refresh-schedule__actions">
-              {schedule.source === "panzhi" ? (
-                <a
-                  href="https://www.pzds.com/goodsList/391/6"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  打开盼之 ↗
-                </a>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => onRefresh(schedule.source, "quick")}
-                  >
-                    快速刷新
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => onRefresh(schedule.source, "deep")}
-                  >
-                    完整刷新
-                  </button>
-                </>
-              )}
-            </div>
-          </article>
-        ))}
-      </div>
-
-      {events.length > 0 ? (
-        <div className="refresh-events">
-          <div className="refresh-events__heading">
-            <strong>最新变化</strong>
-            <button type="button" onClick={onAcknowledge}>
-              全部已读
-            </button>
-          </div>
-          <ul>
-            {eventFeed.slice(0, 8).map((event) => (
-              <li
-                key={event.displayKey}
-                className={`refresh-event refresh-event--${event.severity}`}
-              >
-                <span>{event.title}</span>
-                <p>{event.message}</p>
-                <time>{formatTime(event.createdAt)}</time>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : (
-        <p className="refresh-events__empty">
-          暂无降价、新进 Top10 或安全信息变化
-        </p>
-      )}
+      <RefreshScheduleGrid
+        schedules={schedules}
+        busy={busy}
+        onRefresh={onRefresh}
+      />
+      <RefreshEventFeed
+        events={events}
+        onAcknowledge={onAcknowledge}
+        limit={8}
+      />
     </section>
+  );
+}
+
+export function RefreshScheduleGrid({
+  schedules,
+  busy,
+  onRefresh
+}: {
+  schedules: RefreshScheduleView[];
+  busy: boolean;
+  onRefresh: (source: SourceId, mode: RefreshMode) => void;
+}) {
+  if (schedules.length === 0) {
+    return (
+      <p className="refresh-events__empty">
+        正在读取三平台刷新计划…
+      </p>
+    );
+  }
+
+  return (
+    <div className="refresh-automation__schedules">
+      {schedules.map((schedule) => (
+        <article key={schedule.source}>
+          <div className="refresh-schedule__title">
+            <strong>{SOURCE_LABELS[schedule.source]}</strong>
+            <span
+              className={`refresh-schedule__state refresh-schedule__state--${schedule.lastState}`}
+            >
+              {STATE_LABELS[schedule.lastState]}
+            </span>
+          </div>
+          <dl>
+            <div>
+              <dt>快速</dt>
+              <dd>{schedule.quickIntervalMinutes} 分钟</dd>
+            </div>
+            <div>
+              <dt>完整</dt>
+              <dd>每天一次</dd>
+            </div>
+            <div>
+              <dt>下次快刷</dt>
+              <dd>{formatTime(schedule.nextQuickAt)}</dd>
+            </div>
+          </dl>
+          {schedule.backoffUntil ? (
+            <p className="refresh-schedule__warning">
+              已自动退避至 {formatTime(schedule.backoffUntil)}
+            </p>
+          ) : null}
+          {schedule.attentionRequired ? (
+            <p className="refresh-schedule__warning">
+              已到本轮刷新时间，需要登录浏览器补一次原生筛选快照
+            </p>
+          ) : null}
+          <div className="refresh-schedule__actions">
+            {schedule.source === "panzhi" ? (
+              <a
+                href="https://www.pzds.com/goodsList/391/6"
+                target="_blank"
+                rel="noreferrer"
+              >
+                打开盼之 ↗
+              </a>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onRefresh(schedule.source, "quick")}
+                >
+                  快速刷新
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onRefresh(schedule.source, "deep")}
+                >
+                  完整刷新
+                </button>
+              </>
+            )}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+export function RefreshEventFeed({
+  events,
+  onAcknowledge,
+  limit
+}: {
+  events: RefreshEventView[];
+  onAcknowledge: () => void;
+  limit?: number;
+}) {
+  if (events.length === 0) {
+    return (
+      <p className="refresh-events__empty">
+        暂无降价、新进 Top10 或安全信息变化
+      </p>
+    );
+  }
+
+  const eventFeed = buildRefreshEventFeed(events);
+  const visibleEvents = limit === undefined
+    ? eventFeed
+    : eventFeed.slice(0, limit);
+
+  return (
+    <div className="refresh-events">
+      <div className="refresh-events__heading">
+        <strong>最新变化</strong>
+        <button type="button" onClick={onAcknowledge}>
+          全部已读
+        </button>
+      </div>
+      <ul>
+        {visibleEvents.map((event) => (
+          <li
+            key={event.displayKey}
+            className={`refresh-event refresh-event--${event.severity}`}
+          >
+            <span>{event.title}</span>
+            <p>{event.message}</p>
+            <time>{formatTime(event.createdAt)}</time>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

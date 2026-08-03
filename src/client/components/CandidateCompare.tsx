@@ -106,16 +106,13 @@ export function CompareTray({
   );
 }
 
-export function CandidateCompareDialog({
+export function CandidateCompareBoard({
   listings,
-  onRemove,
-  onClose
+  onRemove
 }: {
   listings: ReviewedListingSummary[];
   onRemove(key: string): void;
-  onClose(): void;
 }) {
-  const dialogRef = useRef<HTMLElement>(null);
   const bestScore = useMemo(
     () => Math.max(
       ...listings.map((listing) =>
@@ -132,6 +129,165 @@ export function CandidateCompareDialog({
     );
     return prices.length > 0 ? Math.min(...prices) : null;
   }, [listings]);
+
+  return (
+    <div className="compare-dialog__grid compare-page__grid">
+      {listings.map((listing) => {
+        const preciseScore = listing.score === null
+          ? null
+          : preciseRecommendationScore(listing.score);
+        const potentialScore = potentialRecommendationScore(listing);
+        const recoveryRate = assetRecoveryRate(listing);
+        const isBestScore =
+          preciseScore !== null && preciseScore === bestScore;
+        const isBestPrice =
+          listing.priceCny !== null && listing.priceCny === bestPrice;
+        return (
+          <article className="compare-card" key={listing.key}>
+            <header className="compare-card__header">
+              <div>
+                <span>{SOURCE_LABELS[listing.source]}</span>
+                <strong>{listingName(listing)}</strong>
+              </div>
+              <button
+                type="button"
+                aria-label={`移除对比 ${listingName(listing)}`}
+                onClick={() => onRemove(listing.key)}
+              >
+                移除
+              </button>
+            </header>
+
+            <div className="compare-card__headline">
+              <div>
+                <small>当前报价</small>
+                <strong>{money(listing.priceCny)}</strong>
+                {isBestPrice ? <em>最低价</em> : null}
+              </div>
+              <div>
+                <small>推荐分</small>
+                <strong>{preciseScore?.toFixed(1) ?? "—"}</strong>
+                {isBestScore ? <em>最高分</em> : null}
+                {preciseScore !== null && potentialScore !== null &&
+                potentialScore > preciseScore ? (
+                  <span>潜力上限 {potentialScore.toFixed(1)}</span>
+                ) : null}
+                {listing.score &&
+                manualPreferenceAdjustment(listing.score) < 0 ? (
+                  <span className="preference-adjustment">
+                    人工偏好 {manualPreferenceAdjustment(listing.score)}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            <dl className="compare-card__facts">
+              <div>
+                <dt>指定红皮</dt>
+                <dd>
+                  {listing.requiredRedSkinStatus === "complete"
+                    ? "维什戴尔 · 黑天际线"
+                    : "待核验"}
+                </dd>
+              </div>
+              <div>
+                <dt>M7 品质</dt>
+                <dd>{m7Label(listing)}</dd>
+              </div>
+              <div>
+                <dt>高价值模板</dt>
+                <dd>
+                  {listing.m7RareFinishes.length > 0
+                    ? listing.m7RareFinishes
+                        .map((finish) => RARE_FINISH_LABELS[finish])
+                        .join(" · ")
+                    : "未发现"}
+                </dd>
+              </div>
+              <div>
+                <dt>角色红皮</dt>
+                <dd>
+                  {listing.redSkinCount === null
+                    ? "待核验"
+                    : `${listing.redSkinCount} 个`}
+                </dd>
+              </div>
+              <div>
+                <dt>巨浪</dt>
+                <dd>
+                  {listing.julangStatus === "owned"
+                    ? `有 · ${listing.julangQuality ?? "品质待核验"}`
+                    : listing.julangStatus === "absent"
+                      ? "明确没有"
+                      : "待核验"}
+                </dd>
+              </div>
+              <div>
+                <dt>总资产</dt>
+                <dd>
+                  {listing.totalAssetsM === null
+                    ? "待核验"
+                    : `${listing.totalAssetsM.toLocaleString("zh-CN")}M`}
+                </dd>
+              </div>
+              <div>
+                <dt>资产回收率</dt>
+                <dd>
+                  {recoveryRate === null
+                    ? "待核验"
+                    : `${Math.round(recoveryRate * 100)}%`}
+                </dd>
+              </div>
+              <div>
+                <dt>二次实名</dt>
+                <dd>
+                  {yesNoUnknown(
+                    listing.secondRealNameAvailable,
+                    "可二次实名",
+                    "不可二次实名"
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>找回保障</dt>
+                <dd>
+                  {yesNoUnknown(
+                    listing.recoveryCoverage,
+                    "支持包赔",
+                    "无包赔"
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>风险 / 证据</dt>
+                <dd>
+                  {listing.score
+                    ? `${RISK_LABELS[listing.score.riskLevel]} · ${listing.score.coverage.knownSafetySignals}/${listing.score.coverage.totalSafetySignals}`
+                    : "待评分"}
+                </dd>
+              </div>
+            </dl>
+
+            <a href={listing.url} target="_blank" rel="noreferrer">
+              前往{SOURCE_LABELS[listing.source]}人工核验 ↗
+            </a>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+export function CandidateCompareDialog({
+  listings,
+  onRemove,
+  onClose
+}: {
+  listings: ReviewedListingSummary[];
+  onRemove(key: string): void;
+  onClose(): void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const previousActive =
@@ -189,151 +345,10 @@ export function CandidateCompareDialog({
           </button>
         </header>
 
-        <div className="compare-dialog__grid">
-          {listings.map((listing) => {
-            const preciseScore = listing.score === null
-              ? null
-              : preciseRecommendationScore(listing.score);
-            const potentialScore = potentialRecommendationScore(listing);
-            const recoveryRate = assetRecoveryRate(listing);
-            const isBestScore =
-              preciseScore !== null && preciseScore === bestScore;
-            const isBestPrice =
-              listing.priceCny !== null && listing.priceCny === bestPrice;
-            return (
-              <article className="compare-card" key={listing.key}>
-                <header className="compare-card__header">
-                  <div>
-                    <span>{SOURCE_LABELS[listing.source]}</span>
-                    <strong>{listingName(listing)}</strong>
-                  </div>
-                  <button
-                    type="button"
-                    aria-label={`移除对比 ${listingName(listing)}`}
-                    onClick={() => onRemove(listing.key)}
-                  >
-                    移除
-                  </button>
-                </header>
-
-                <div className="compare-card__headline">
-                  <div>
-                    <small>当前报价</small>
-                    <strong>{money(listing.priceCny)}</strong>
-                    {isBestPrice ? <em>最低价</em> : null}
-                  </div>
-                  <div>
-                    <small>推荐分</small>
-                    <strong>{preciseScore?.toFixed(1) ?? "—"}</strong>
-                    {isBestScore ? <em>最高分</em> : null}
-                    {preciseScore !== null && potentialScore !== null &&
-                    potentialScore > preciseScore ? (
-                      <span>潜力上限 {potentialScore.toFixed(1)}</span>
-                    ) : null}
-                    {listing.score &&
-                    manualPreferenceAdjustment(listing.score) < 0 ? (
-                      <span className="preference-adjustment">
-                        人工偏好{" "}
-                        {manualPreferenceAdjustment(listing.score)}
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-
-                <dl className="compare-card__facts">
-                  <div>
-                    <dt>指定红皮</dt>
-                    <dd>
-                      {listing.requiredRedSkinStatus === "complete"
-                        ? "维什戴尔 · 黑天际线"
-                        : "待核验"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>M7 品质</dt>
-                    <dd>{m7Label(listing)}</dd>
-                  </div>
-                  <div>
-                    <dt>高价值模板</dt>
-                    <dd>
-                      {listing.m7RareFinishes.length > 0
-                        ? listing.m7RareFinishes
-                            .map((finish) => RARE_FINISH_LABELS[finish])
-                            .join(" · ")
-                        : "未发现"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>角色红皮</dt>
-                    <dd>
-                      {listing.redSkinCount === null
-                        ? "待核验"
-                        : `${listing.redSkinCount} 个`}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>巨浪</dt>
-                    <dd>
-                      {listing.julangStatus === "owned"
-                        ? `有 · ${listing.julangQuality ?? "品质待核验"}`
-                        : listing.julangStatus === "absent"
-                          ? "明确没有"
-                          : "待核验"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>总资产</dt>
-                    <dd>
-                      {listing.totalAssetsM === null
-                        ? "待核验"
-                        : `${listing.totalAssetsM.toLocaleString("zh-CN")}M`}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>资产回收率</dt>
-                    <dd>
-                      {recoveryRate === null
-                        ? "待核验"
-                        : `${Math.round(recoveryRate * 100)}%`}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>二次实名</dt>
-                    <dd>
-                      {yesNoUnknown(
-                        listing.secondRealNameAvailable,
-                        "可二次实名",
-                        "不可二次实名"
-                      )}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>找回保障</dt>
-                    <dd>
-                      {yesNoUnknown(
-                        listing.recoveryCoverage,
-                        "支持包赔",
-                        "无包赔"
-                      )}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>风险 / 证据</dt>
-                    <dd>
-                      {listing.score
-                        ? `${RISK_LABELS[listing.score.riskLevel]} · ${listing.score.coverage.knownSafetySignals}/${listing.score.coverage.totalSafetySignals}`
-                        : "待评分"}
-                    </dd>
-                  </div>
-                </dl>
-
-                <a href={listing.url} target="_blank" rel="noreferrer">
-                  前往{SOURCE_LABELS[listing.source]}人工核验 ↗
-                </a>
-              </article>
-            );
-          })}
-        </div>
+        <CandidateCompareBoard
+          listings={listings}
+          onRemove={onRemove}
+        />
       </section>
     </div>
   );
