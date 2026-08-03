@@ -9,7 +9,8 @@ describe("classifyListing", () => {
           loginPlatform: "qq",
           service: "official",
           priceCny,
-          requiredRedSkinStatus: "complete"
+          requiredRedSkinStatus: "complete",
+          secondRealNameAvailable: true
         })
       ).toBe("eligible");
     }
@@ -21,7 +22,8 @@ describe("classifyListing", () => {
         loginPlatform: "qq",
         service: "unknown",
         priceCny: 3_999,
-        requiredRedSkinStatus: "complete"
+        requiredRedSkinStatus: "complete",
+        secondRealNameAvailable: true
       })
     ).toBe("needs_verification");
   });
@@ -39,7 +41,8 @@ describe("classifyListing", () => {
           loginPlatform,
           service,
           priceCny,
-          requiredRedSkinStatus: "complete"
+          requiredRedSkinStatus: "complete",
+          secondRealNameAvailable: true
         })
       ).toBe("rejected");
     }
@@ -52,7 +55,8 @@ describe("classifyListing", () => {
           loginPlatform: "qq",
           service: "official",
           priceCny: 3_999,
-          requiredRedSkinStatus: "complete"
+          requiredRedSkinStatus: "complete",
+          secondRealNameAvailable: true
         }),
         label
       ).toBe("eligible");
@@ -71,7 +75,8 @@ describe("classifyListing", () => {
           loginPlatform,
           service,
           priceCny,
-          requiredRedSkinStatus: "complete"
+          requiredRedSkinStatus: "complete",
+          secondRealNameAvailable: true
         })
       ).toBe("needs_verification");
     }
@@ -83,7 +88,8 @@ describe("classifyListing", () => {
         loginPlatform: "unknown",
         service: "official",
         priceCny: 1_899,
-        requiredRedSkinStatus: "unknown"
+        requiredRedSkinStatus: "unknown",
+        secondRealNameAvailable: null
       })
     ).toBe("rejected");
   });
@@ -95,7 +101,8 @@ describe("classifyListing", () => {
         loginPlatform: "qq",
         service: "official",
         priceCny: 3_999,
-        requiredRedSkinStatus
+        requiredRedSkinStatus,
+        secondRealNameAvailable: true
       })).toBe("needs_verification");
     }
   );
@@ -105,7 +112,28 @@ describe("classifyListing", () => {
       loginPlatform: "qq",
       service: "official",
       priceCny: 3_999,
-      requiredRedSkinStatus: "missing"
+      requiredRedSkinStatus: "missing",
+      secondRealNameAvailable: true
     })).toBe("rejected");
+  });
+
+  it("rejects an account that cannot be secondarily verified", () => {
+    expect(classifyListing({
+      loginPlatform: "qq",
+      service: "official",
+      priceCny: 3_999,
+      requiredRedSkinStatus: "complete",
+      secondRealNameAvailable: false
+    })).toBe("rejected");
+  });
+
+  it("keeps an unknown secondary verification state pending", () => {
+    expect(classifyListing({
+      loginPlatform: "qq",
+      service: "official",
+      priceCny: 3_999,
+      requiredRedSkinStatus: "complete",
+      secondRealNameAvailable: null
+    })).toBe("needs_verification");
   });
 });

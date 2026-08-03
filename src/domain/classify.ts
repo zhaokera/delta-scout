@@ -11,6 +11,7 @@ export interface EligibilityInput {
   service: Service;
   priceCny: number | null;
   requiredRedSkinStatus: RequiredRedSkinStatus;
+  secondRealNameAvailable: boolean | null;
 }
 
 export function classifyListing(input: EligibilityInput): Eligibility {
@@ -18,6 +19,7 @@ export function classifyListing(input: EligibilityInput): Eligibility {
     input.loginPlatform === "wechat" ||
     input.service === "non_official" ||
     input.requiredRedSkinStatus === "missing" ||
+    input.secondRealNameAvailable === false ||
     (input.priceCny !== null && !isCandidatePriceCny(input.priceCny));
 
   if (knownFailure) {
@@ -28,6 +30,7 @@ export function classifyListing(input: EligibilityInput): Eligibility {
     input.loginPlatform === "qq" &&
     input.service === "official" &&
     input.requiredRedSkinStatus === "complete" &&
+    input.secondRealNameAvailable === true &&
     input.priceCny !== null &&
     isCandidatePriceCny(input.priceCny);
 

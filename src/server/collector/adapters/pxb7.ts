@@ -22,15 +22,20 @@ const LIST_API_URL =
   "https://api-pc.pxb7.com/api/search/product/v2/selectSearchPageList";
 const BROAD_SEARCH_QUERY = "三角洲行动" as const;
 
-// Keep only the public "账号" category filter here. Secondary real-name status
-// is a scored safety signal, not one of the cross-platform hard requirements.
-// Applying PXB's "可二次实名" filter at collection time would silently give
-// this source a narrower (and safer) population than Jiaoyimao and Panzhi.
+// Secondary real-name eligibility is a declared cross-platform hard gate.
+// Keep PXB's public native filter enabled and still validate every returned
+// item locally, so a leaked or promoted card cannot bypass the requirement.
 export const PXB_REQUIRED_ACCOUNT_FILTERS = [
   {
     attrId: "103711",
     attrType: 1,
     attrValList: ["103711"],
+    optionType: 1
+  },
+  {
+    attrId: "103713",
+    attrType: 1,
+    attrValList: ["103718"],
     optionType: 1
   }
 ] as const;
@@ -95,6 +100,14 @@ const SearchBodySchema = z.object({
         z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[0].attrValList[0])
       ]),
       optionType: z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[0].optionType)
+    }),
+    z.strictObject({
+      attrId: z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[1].attrId),
+      attrType: z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[1].attrType),
+      attrValList: z.tuple([
+        z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[1].attrValList[0])
+      ]),
+      optionType: z.literal(PXB_REQUIRED_ACCOUNT_FILTERS[1].optionType)
     }),
     z.strictObject({
       attrId: z.literal("price"),

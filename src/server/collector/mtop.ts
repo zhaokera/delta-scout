@@ -12,6 +12,12 @@ export const APPROVED_JIAOYIMAO_SEARCH_CONDITION = {
     groupName: "价格范围",
     statConditionList: ["1900-4000"]
   },
+  is_second_real_name: {
+    selectType: 1,
+    conditionList: ["10071"],
+    statConditionList: ["可二次实名"],
+    conditionType: 2
+  },
   selling_point_7322805066952352771: {
     selectType: 1,
     multiSearchCondition: false,
@@ -33,6 +39,12 @@ export const APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION_JSON = JSON.stringify(
   APPROVED_JIAOYIMAO_BROWSER_PRICE_CONDITION
 );
 export const APPROVED_JIAOYIMAO_BROWSER_SEARCH_CONDITION = {
+  is_second_real_name: {
+    selectType: 1,
+    conditionList: ["10071"],
+    statConditionList: ["可二次实名"],
+    conditionType: 2
+  },
   selling_point_7322805066952352771: {
     selectType: 1,
     multiSearchCondition: false,
@@ -248,12 +260,14 @@ function isApprovedSearchCondition(value: string): boolean {
   if (
     !isRecordWithExactKeys(search, [
       "price",
+      "is_second_real_name",
       "selling_point_7322805066952352771"
     ])
   ) {
     return false;
   }
   const price = search.price;
+  const secondRealName = search.is_second_real_name;
   const operatorSkins = search.selling_point_7322805066952352771;
   return (
     isRecordWithExactKeys(price, [
@@ -268,6 +282,20 @@ function isApprovedSearchCondition(value: string): boolean {
     Array.isArray(price.statConditionList) &&
     price.statConditionList.length === 1 &&
     price.statConditionList[0] === "1900-4000" &&
+    isRecordWithExactKeys(secondRealName, [
+      "selectType",
+      "conditionList",
+      "statConditionList",
+      "conditionType"
+    ]) &&
+    secondRealName.selectType === 1 &&
+    Array.isArray(secondRealName.conditionList) &&
+    secondRealName.conditionList.length === 1 &&
+    secondRealName.conditionList[0] === "10071" &&
+    Array.isArray(secondRealName.statConditionList) &&
+    secondRealName.statConditionList.length === 1 &&
+    secondRealName.statConditionList[0] === "可二次实名" &&
+    secondRealName.conditionType === 2 &&
     isRecordWithExactKeys(operatorSkins, [
       "selectType",
       "multiSearchCondition",

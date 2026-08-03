@@ -76,7 +76,7 @@ describe("candidate price detail window", () => {
     })).toBe(expected);
   });
 
-  it("uses complete Jiaoyimao card safety tags without a detail page", () => {
+  it("rejects a Jiaoyimao card that cannot be secondarily verified", () => {
     const listing = buildListing(
       {
         summary: {
@@ -103,7 +103,7 @@ describe("candidate price detail window", () => {
       realNameStatus: "already_second",
       secondRealNameAvailable: false,
       recoveryCoverage: true,
-      eligibility: "eligible"
+      eligibility: "rejected"
     });
   });
 });

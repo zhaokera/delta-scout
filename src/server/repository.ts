@@ -2349,7 +2349,8 @@ export class ListingRepository {
             loginPlatform: listing.loginPlatform,
             service: listing.service,
             priceCny: listing.priceCny,
-            requiredRedSkinStatus: requiredRedSkins.status
+            requiredRedSkinStatus: requiredRedSkins.status,
+            secondRealNameAvailable: listing.secondRealNameAvailable
           }),
           score: null,
           possibleDuplicateKeys: []

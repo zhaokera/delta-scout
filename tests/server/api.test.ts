@@ -162,7 +162,8 @@ function browserProof(
     activeFilterLabels: [
       "1900-4000",
       "骇爪-维什戴尔",
-      "露娜-黑·天际线"
+      "露娜-黑·天际线",
+      "可二次实名"
     ],
     observedAt: browserBaseTime.toISOString(),
     ...overrides
@@ -2734,6 +2735,10 @@ describe("Panzhi browser-native filter snapshot API", () => {
         gameLabel: "三角洲行动",
         minPriceInput: "1900",
         maxPriceInput: "4000",
+        secondRealNameFilter: {
+          label: "可二次实名",
+          selected: true
+        },
         operatorSkinFilter: {
           fieldId: "22858",
           fieldLabel: "特战干员外观",

@@ -18,6 +18,10 @@ function snapshot(
       gameLabel: "三角洲行动",
       minPriceInput: "1900",
       maxPriceInput: "4000",
+      secondRealNameFilter: {
+        label: "可二次实名",
+        selected: true
+      },
       operatorSkinFilter: {
         fieldId: "22858",
         fieldLabel: "特战干员外观",
@@ -145,6 +149,18 @@ describe("Panzhi browser native-filter snapshot", () => {
       ...snapshot().filterProof,
       currentUrl:
         "https://www.pzds.com/goodsList/391/6?minPrice=1900"
+    } }],
+    ["missing secondary real-name proof", { filterProof: (() => {
+      const { secondRealNameFilter: _removed, ...proof } =
+        snapshot().filterProof;
+      return proof;
+    })() }],
+    ["unselected secondary real-name filter", { filterProof: {
+      ...snapshot().filterProof,
+      secondRealNameFilter: {
+        label: "可二次实名",
+        selected: false
+      }
     } }],
     ["wrong operator skin field", { filterProof: {
       ...snapshot().filterProof,

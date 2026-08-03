@@ -195,7 +195,8 @@ export function buildListing(
     loginPlatform,
     service,
     priceCny: summary.priceCny,
-    requiredRedSkinStatus: requiredRedSkins.status
+    requiredRedSkinStatus: requiredRedSkins.status,
+    secondRealNameAvailable
   });
   const criticalDetailMissing =
     detail === null &&

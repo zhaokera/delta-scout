@@ -93,7 +93,8 @@ const FILTER_ORIGIN = "https://www.jiaoyimao.com";
 const FILTER_LABELS = [
   "1900-4000",
   "骇爪-维什戴尔",
-  "露娜-黑·天际线"
+  "露娜-黑·天际线",
+  "可二次实名"
 ];
 const FILTER_PRICE_CONDITION = JSON.stringify({
   price: {
@@ -102,6 +103,12 @@ const FILTER_PRICE_CONDITION = JSON.stringify({
   }
 });
 const FILTER_SEARCH_CONDITION = JSON.stringify({
+  is_second_real_name: {
+    selectType: 1,
+    conditionList: ["10071"],
+    statConditionList: [FILTER_LABELS[3]],
+    conditionType: 2
+  },
   selling_point_7322805066952352771: {
     selectType: 1,
     multiSearchCondition: false,

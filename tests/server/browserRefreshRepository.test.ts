@@ -32,7 +32,8 @@ function proof(at = now): BrowserFilterProof {
     activeFilterLabels: [
       "1900-4000",
       "骇爪-维什戴尔",
-      "露娜-黑·天际线"
+      "露娜-黑·天际线",
+      "可二次实名"
     ],
     observedAt: at.toISOString()
   };

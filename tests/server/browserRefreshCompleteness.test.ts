@@ -22,7 +22,8 @@ const validProof: BrowserFilterProof = {
   activeFilterLabels: [
     "1900-4000",
     "骇爪-维什戴尔",
-    "露娜-黑·天际线"
+    "露娜-黑·天际线",
+    "可二次实名"
   ],
   observedAt
 };
@@ -76,7 +77,8 @@ describe("browser refresh completeness", () => {
       activeFilterLabels: [
         "1900-4000",
         "骇爪-维什戴尔",
-        "露娜-黑·天际线"
+        "露娜-黑·天际线",
+        "可二次实名"
       ]
     })).toEqual({ kind: "invalid", reason: "filter_mismatch" });
     expect(validateFilterProof({
@@ -92,8 +94,11 @@ describe("browser refresh completeness", () => {
     expect(validateFilterProof({
       ...validProof,
       activeFilterLabels: [
+        "1900-4000",
+        "骇爪-维什戴尔",
+        "露娜-黑·天际线",
+        "可二次实名",
         "M7 棱镜攻势 极品S",
-        "可二次实名"
       ]
     } as unknown as BrowserFilterProof)).toEqual({
       kind: "invalid",

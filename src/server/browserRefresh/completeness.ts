@@ -57,10 +57,11 @@ export function validateFilterProof(
     normalized(proof.gameLabel) === normalized("三角洲行动") &&
     normalized(proof.platformLabel) === "QQ" &&
     normalized(proof.categoryLabel) === normalized("账号") &&
-    proof.activeFilterLabels.length === 3 &&
+    proof.activeFilterLabels.length === 4 &&
     proof.activeFilterLabels[0] === "1900-4000" &&
     proof.activeFilterLabels[1] === "骇爪-维什戴尔" &&
-    proof.activeFilterLabels[2] === "露娜-黑·天际线";
+    proof.activeFilterLabels[2] === "露娜-黑·天际线" &&
+    proof.activeFilterLabels[3] === "可二次实名";
   return valid
     ? { kind: "ok" }
     : { kind: "invalid", reason: "filter_mismatch" };

@@ -230,6 +230,9 @@ async function collectJiaoyimaoMtopItem(
             goodsId?: string;
             detailUrlSeo?: string;
             sellPoints?: Array<{ desc: string }>;
+            tagMap?: {
+              featureTag?: Array<{ tagName: string }>;
+            };
           };
         }>;
       };
@@ -248,6 +251,9 @@ async function collectJiaoyimaoMtopItem(
     { desc: "露娜-黑天际线" },
     { desc: "巨浪(极品)" }
   ];
+  product.tagMap = {
+    featureTag: [{ tagName: "可二次实名" }]
+  };
   const pageContent = JSON.stringify(page);
   const entryHtml = jiaoyimaoSsrCard("1784550994519000");
   const repository = new ListingRepository(createDatabase(":memory:"));

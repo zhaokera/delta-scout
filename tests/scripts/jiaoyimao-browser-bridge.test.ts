@@ -125,7 +125,8 @@ function filterProof() {
     activeFilterLabels: [
       "1900-4000",
       "骇爪-维什戴尔",
-      "露娜-黑·天际线"
+      "露娜-黑·天际线",
+      "可二次实名"
     ],
     observedAt
   };
@@ -1440,7 +1441,7 @@ describe("Jiaoyimao browser refresh runbook", () => {
     expect(runbook).toContain("复用");
     expect(runbook).toContain("三角洲全账号目录");
     expect(runbook).toContain(
-      '`activeFilterLabels: ["1900-4000", "骇爪-维什戴尔", "露娜-黑·天际线"]`'
+      '`activeFilterLabels: ["1900-4000", "骇爪-维什戴尔", "露娜-黑·天际线", "可二次实名"]`'
     );
     expect(runbook).toMatch(/登录.*CAPTCHA|CAPTCHA.*登录/);
     expect(runbook).toContain("getWork");

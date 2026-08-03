@@ -20,15 +20,14 @@ async function fixture(name: string): Promise<string> {
 }
 
 describe("PXB native hard filters", () => {
-  it("does not prefilter secondary real-name status", () => {
+  it("uses the declared account and secondary real-name hard filters", () => {
     expect(PXB_REQUIRED_ACCOUNT_FILTERS).toEqual([
-      expect.objectContaining({ attrId: "103711" })
+      expect.objectContaining({ attrId: "103711" }),
+      expect.objectContaining({
+        attrId: "103713",
+        attrValList: ["103718"]
+      })
     ]);
-    expect(PXB_REQUIRED_ACCOUNT_FILTERS).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ attrId: "103713" })
-      ])
-    );
   });
 });
 
@@ -140,7 +139,7 @@ describe("PXB7 native price-filtered account collection", () => {
     ]));
     expect(listings).toHaveLength(48);
     expect(new Set(listings.map(({ key }) => key))).toHaveLength(48);
-    expect(eligible).toHaveLength(12);
+    expect(eligible).toHaveLength(9);
     expect(
       listings.some(
         ({ priceCny }) =>
@@ -164,6 +163,7 @@ describe("PXB7 native price-filtered account collection", () => {
           listing.loginPlatform === "qq" &&
           listing.service === "official" &&
           listing.requiredRedSkinStatus === "complete" &&
+          listing.secondRealNameAvailable === true &&
           listing.priceCny !== null &&
           listing.priceCny >= 1_900 &&
           listing.priceCny <= 4_000 &&

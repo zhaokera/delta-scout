@@ -320,6 +320,7 @@ describe("App shell", () => {
       screen.getByRole("heading", { name: "三角洲账号候选台" })
     ).toBeInTheDocument();
     expect(screen.getByText("QQ 官服")).toBeInTheDocument();
+    expect(screen.getByText("必须可二次实名")).toBeInTheDocument();
     expect(
       screen.getByText("全账号统一评分 · M7 非入池门槛")
     ).toBeInTheDocument();
@@ -1543,7 +1544,7 @@ describe("App shell", () => {
     );
     expect(
       await screen.findByText(
-        "当前快照中没有同时证明 QQ 官服、价格在 ¥1,900–¥4,000，且拥有骇爪-维什戴尔与露娜-黑天际线的账号。M7 不是入池门槛。"
+        "当前快照中没有同时证明 QQ 官服、可二次实名、价格在 ¥1,900–¥4,000，且拥有骇爪-维什戴尔与露娜-黑天际线的账号。M7 不是入池门槛。"
       )
     ).toBeInTheDocument();
 

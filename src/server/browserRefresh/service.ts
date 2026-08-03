@@ -763,7 +763,7 @@ export class JiaoyimaoBrowserTaskService {
             sourceListingId: item.sourceListingId,
             url: item.url,
             title: item.title,
-            rawText: item.rawText,
+            rawText: `${item.rawText}\n平台原生筛选：可二次实名`,
             priceCny: item.priceCny
           };
           const requiresDetail = requiresBrowserListItemDetail(item);

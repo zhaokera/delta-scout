@@ -104,6 +104,10 @@ export const PanzhiBrowserSnapshotSchema = z
       gameLabel: z.literal("三角洲行动"),
       minPriceInput: z.literal("1900"),
       maxPriceInput: z.literal("4000"),
+      secondRealNameFilter: z.strictObject({
+        label: z.literal("可二次实名"),
+        selected: z.literal(true)
+      }),
       operatorSkinFilter: z.strictObject({
         fieldId: z.literal("22858"),
         fieldLabel: z.literal("特战干员外观"),
@@ -226,16 +230,18 @@ export function buildPanzhiBrowserListings(
     droppedByPrice: snapshot.items.length - inRangeItems.length,
     listings: inRangeItems.map((item) => {
       const normalizedRawText = normalizePanzhiVisibleCardText(item.rawText);
+      const provenRawText =
+        `${normalizedRawText}\n平台原生筛选：可二次实名`;
       return buildListing({
         summary: {
           source: "panzhi",
           sourceListingId: item.sourceListingId,
           url: item.url,
           title: item.title,
-          rawText: normalizedRawText,
+          rawText: provenRawText,
           priceCny: item.priceCny
         },
-        detail: detailFromVisibleCard(normalizedRawText),
+        detail: detailFromVisibleCard(provenRawText),
         detailAttempted: true,
         warnings: []
       },

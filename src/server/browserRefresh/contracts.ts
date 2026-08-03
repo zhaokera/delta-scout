@@ -201,7 +201,8 @@ export const BrowserFilterProofSchema = z.strictObject({
   activeFilterLabels: z.tuple([
     z.literal("1900-4000"),
     z.literal("骇爪-维什戴尔"),
-    z.literal("露娜-黑·天际线")
+    z.literal("露娜-黑·天际线"),
+    z.literal("可二次实名")
   ]),
   observedAt: IsoDateTimeSchema
 });

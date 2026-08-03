@@ -59,7 +59,8 @@ function filterProof(overrides: Record<string, unknown> = {}) {
     activeFilterLabels: [
       "1900-4000",
       "骇爪-维什戴尔",
-      "露娜-黑·天际线"
+      "露娜-黑·天际线",
+      "可二次实名"
     ],
     observedAt: now,
     ...overrides
@@ -472,7 +473,8 @@ describe("safe visible text", () => {
       activeFilterLabels: [
         "1900-4000",
         "骇爪-维什戴尔",
-        "露娜-黑·天际线"
+        "露娜-黑·天际线",
+        "可二次实名"
       ]
     })).success).toBe(true);
     expect(BrowserPauseSchema.safeParse({
@@ -516,7 +518,8 @@ describe("safe visible text", () => {
       activeFilterLabels: [
         "1900-4000",
         "骇爪-维什戴尔",
-        "露娜-黑·天际线"
+        "露娜-黑·天际线",
+        "可二次实名"
       ]
     })).success).toBe(true);
     expect(BrowserPauseSchema.safeParse({
