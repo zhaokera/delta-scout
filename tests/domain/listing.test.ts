@@ -45,6 +45,31 @@ const validListing = {
   consecutiveUnchangedScans: 3
 };
 
+const currentScore = {
+  total: 70,
+  value: 80,
+  safety: 10,
+  dataQuality: 50,
+  riskLevel: "low" as const,
+  coverage: {
+    knownSafetySignals: 1,
+    totalSafetySignals: 1
+  },
+  parts: {
+    m7: 15,
+    redSkins: 25,
+    julang: 15,
+    price: 20,
+    assets: 25,
+    secondRealName: 10,
+    recovery: 0,
+    verification: 0
+  },
+  valueReasons: [],
+  safetyReasons: [],
+  reasons: []
+};
+
 describe("ListingSchema", () => {
   it("accepts a fully explicit normalized listing", () => {
     expect(ListingSchema.parse(validListing)).toEqual(validListing);
@@ -104,34 +129,11 @@ describe("ListingSchema", () => {
     });
   });
 
-  it("accepts separate value, safety, quality and risk scores", () => {
+  it("accepts the current value, safety, quality and risk score contract", () => {
     expect(
       ListingSchema.parse({
         ...validListing,
-        score: {
-          total: 70,
-          value: 80,
-          safety: 60,
-          dataQuality: 50,
-          riskLevel: "medium",
-          coverage: {
-            knownSafetySignals: 2,
-            totalSafetySignals: 2
-          },
-          parts: {
-            m7: 15,
-            redSkins: 25,
-            julang: 15,
-            price: 20,
-            assets: 20,
-            secondRealName: 40,
-            recovery: 0,
-            verification: 15
-          },
-          valueReasons: [],
-          safetyReasons: [],
-          reasons: []
-        }
+        score: currentScore
       }).score
     ).not.toBeNull();
   });
@@ -144,33 +146,60 @@ describe("ListingSchema", () => {
     ["assets", 26]
   ] as const)("rejects %s above its value allocation", (part, value) => {
     const score = {
-      total: 70,
-      value: 80,
-      safety: 60,
-      dataQuality: 50,
-      riskLevel: "medium",
-      coverage: {
-        knownSafetySignals: 2,
-        totalSafetySignals: 2
-      },
+      ...currentScore,
       parts: {
-        m7: 15,
-        redSkins: 25,
-        julang: 15,
-        price: 20,
-        assets: 25,
-        secondRealName: 40,
-        recovery: 0,
-        verification: 15,
+        ...currentScore.parts,
         [part]: value
-      },
-      valueReasons: [],
-      safetyReasons: [],
-      reasons: []
+      }
     };
 
     expect(() =>
       ListingSchema.parse({ ...validListing, score })
     ).toThrow();
+  });
+
+  it.each([
+    ["safety", { ...currentScore, safety: 11 }],
+    ["secondRealName", {
+      ...currentScore,
+      parts: { ...currentScore.parts, secondRealName: 11 }
+    }],
+    ["recovery", {
+      ...currentScore,
+      parts: { ...currentScore.parts, recovery: 1 }
+    }],
+    ["verification", {
+      ...currentScore,
+      parts: { ...currentScore.parts, verification: 1 }
+    }]
+  ] as const)("rejects %s outside the current safety allocation", (_field, score) => {
+    expect(() => ListingSchema.parse({ ...validListing, score })).toThrow();
+  });
+
+  it("requires the one-signal safety coverage contract", () => {
+    const score = {
+      ...currentScore,
+      coverage: {
+        knownSafetySignals: 0,
+        totalSafetySignals: 1
+      }
+    };
+
+    expect(ListingSchema.parse({ ...validListing, score }).score?.coverage)
+      .toEqual({ knownSafetySignals: 0, totalSafetySignals: 1 });
+    expect(() => ListingSchema.parse({
+      ...validListing,
+      score: {
+        ...score,
+        coverage: { knownSafetySignals: 2, totalSafetySignals: 1 }
+      }
+    })).toThrow();
+    expect(() => ListingSchema.parse({
+      ...validListing,
+      score: {
+        ...score,
+        coverage: { knownSafetySignals: 1, totalSafetySignals: 2 }
+      }
+    })).toThrow();
   });
 });

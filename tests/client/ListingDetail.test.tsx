@@ -75,15 +75,16 @@ describe("ListingDetail", () => {
         listing={makeReviewedListing({
           m7Evidence: [{ text: evidenceText, truncated: false }],
           score: {
-            total: 91,
+            total: 87,
+            exactTotal: 86.8,
             preferenceAdjustment: 0,
             value: 86,
-            safety: 40,
+            safety: 10,
             dataQuality: 80,
-            riskLevel: "medium",
+            riskLevel: "low",
             coverage: {
-              knownSafetySignals: 2,
-              totalSafetySignals: 2
+              knownSafetySignals: 1,
+              totalSafetySignals: 1
             },
             parts: {
               m7: 15,
@@ -91,7 +92,7 @@ describe("ListingDetail", () => {
               julang: 15,
               price: 18,
               assets: 9,
-              secondRealName: 40,
+              secondRealName: 10,
               recovery: 0,
               verification: 0
             },
@@ -115,15 +116,18 @@ describe("ListingDetail", () => {
     ).toEqual(expect.arrayContaining(["M7", "棱镜攻势", "极品", "品质:S级"]));
 
     expect(screen.getByText("账号价值 86 / 100")).toBeInTheDocument();
-    expect(screen.getByText("购买安全 40 / 65")).toBeInTheDocument();
+    expect(screen.getByText("购买安全 10 / 10")).toBeInTheDocument();
     expect(screen.getByText("数据完整度 80 / 100")).toBeInTheDocument();
-    expect(screen.getByText("需关注")).toBeInTheDocument();
-    expect(screen.getByText("安全证据 2 / 2")).toBeInTheDocument();
-    expect(screen.getByText("确定推荐 91.0 / 100")).toBeInTheDocument();
+    expect(screen.getByText("低风险")).toBeInTheDocument();
+    expect(screen.getByText("安全证据 1 / 1")).toBeInTheDocument();
+    expect(screen.getByText("确定推荐 86.8 / 100")).toBeInTheDocument();
     expect(screen.getByText("资产回收率")).toBeInTheDocument();
     expect(screen.getByText("18%")).toBeInTheDocument();
     expect(
       screen.getByText("永久包赔 仅作参考 · 不参与评分")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("验号时间 仅作参考 · 不参与评分")
     ).toBeInTheDocument();
     expect(screen.getByText("M7 综合价值 15 / 15")).toBeInTheDocument();
     expect(screen.getByText("角色红皮 20 / 25")).toBeInTheDocument();

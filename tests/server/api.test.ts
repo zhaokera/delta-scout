@@ -1128,7 +1128,7 @@ describe("listing API", () => {
               julang: 0,
               price: 15,
               assets: 8,
-              secondRealName: 20,
+              secondRealName: 10,
               recovery: 0,
               verification: 0
             }),
@@ -1145,9 +1145,9 @@ describe("listing API", () => {
               julang: 15,
               price: 18,
               assets: 8,
-              secondRealName: 40,
+              secondRealName: 10,
               recovery: 0,
-              verification: 15
+              verification: 0
             }),
             reasons: ["较高"]
           }

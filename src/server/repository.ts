@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { classifyListing } from "../domain/classify.js";
+import { calculateConfidence } from "../domain/confidence.js";
 import {
   selectBalancedCandidatePool,
   selectGlobalCandidatePool
@@ -2339,7 +2340,7 @@ export class ListingRepository {
         const m7PrismStatus = parsedM7.status;
         const m7PrismQuality = parsedM7.quality ?? null;
         const requiredRedSkins = parseRequiredRedSkins(listing.evidence);
-        return {
+        const rederived = {
           ...listing,
           m7PrismStatus,
           m7PrismQuality,
@@ -2354,6 +2355,10 @@ export class ListingRepository {
           }),
           score: null,
           possibleDuplicateKeys: []
+        };
+        return {
+          ...rederived,
+          confidence: calculateConfidence(rederived)
         };
       });
       const marked = markPossibleDuplicates(reparsed);

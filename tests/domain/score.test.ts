@@ -18,16 +18,16 @@ describe("scoreEligibleListings", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 70,
-      exactTotal: 69.7,
+      total: 61,
+      exactTotal: 61.3,
       preferenceAdjustment: 0,
       value: 51.66541353383458,
-      safety: 65,
+      safety: 10,
       dataQuality: 100,
       riskLevel: "low",
       coverage: {
-        knownSafetySignals: 2,
-        totalSafetySignals: 2
+        knownSafetySignals: 1,
+        totalSafetySignals: 1
       },
       parts: {
         m7: 10,
@@ -35,9 +35,9 @@ describe("scoreEligibleListings", () => {
         julang: 15,
         price: 8.365413533834587,
         assets: 13.3,
-        secondRealName: 40,
+        secondRealName: 10,
         recovery: 0,
-        verification: 25
+        verification: 0
       },
       valueReasons: expect.any(Array),
       safetyReasons: expect.any(Array),
@@ -256,7 +256,7 @@ describe("scoreEligibleListings", () => {
       riskLevel: "high",
       coverage: {
         knownSafetySignals: 1,
-        totalSafetySignals: 2
+        totalSafetySignals: 1
       },
       parts: {
         secondRealName: 0,
@@ -284,75 +284,140 @@ describe("scoreEligibleListings", () => {
       riskLevel: "unknown",
       coverage: {
         knownSafetySignals: 0,
-        totalSafetySignals: 2
+        totalSafetySignals: 1
       }
     });
   });
 
-  it("separates missing safety evidence from a confirmed medium risk", () => {
+  it("does not let known verification rescue unknown secondary-real-name evidence", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        secondRealNameAvailable: null,
+        verificationAt: "2026-07-27T10:00:00+08:00"
+      })
+    ], now);
+
+    expect(result.score).toMatchObject({
+      safety: 0,
+      riskLevel: "unknown",
+      coverage: {
+        knownSafetySignals: 0,
+        totalSafetySignals: 1
+      }
+    });
+  });
+
+  it("does not let known verification rescue unavailable secondary real-name", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        secondRealNameAvailable: false,
+        verificationAt: "2026-07-27T10:00:00+08:00"
+      })
+    ], now);
+
+    expect(result.score).toMatchObject({
+      safety: 0,
+      riskLevel: "high",
+      coverage: {
+        knownSafetySignals: 1,
+        totalSafetySignals: 1
+      }
+    });
+  });
+
+  it("treats known secondary-real-name evidence as complete without verification time", () => {
     const [missingVerification] = scoreEligibleListings([
       makeListing({ verificationAt: null })
     ], now);
 
     expect(missingVerification.score).toMatchObject({
-      riskLevel: "unknown",
+      riskLevel: "low",
       coverage: {
         knownSafetySignals: 1,
-        totalSafetySignals: 2
+        totalSafetySignals: 1
       }
     });
   });
 
-  it("ignores missing recovery coverage and flags stale verification", () => {
-    const [missing] = scoreEligibleListings([
-      makeListing({ recoveryCoverage: null })
-    ], now);
-    const [stale] = scoreEligibleListings([
-      makeListing({
-        verificationAt: "2026-05-01T00:00:00.000Z"
-      })
-    ], now);
+  it("keeps recent, stale, and missing verification reference-only", () => {
+    const results = [
+      "2026-07-27T10:00:00+08:00",
+      "2026-05-01T00:00:00.000Z",
+      null
+    ].map((verificationAt, index) => scoreEligibleListings([
+      makeListing({ key: `panzhi:verification-${index}`, verificationAt })
+    ], now)[0]);
+    const scoredFields = results.map(({ score }) => ({
+      total: score?.total,
+      exactTotal: score?.exactTotal,
+      safety: score?.safety,
+      dataQuality: score?.dataQuality,
+      coverage: score?.coverage,
+      riskLevel: score?.riskLevel
+    }));
 
-    expect(missing.score?.riskLevel).toBe("low");
-    expect(stale.score?.riskLevel).toBe("medium");
+    expect(scoredFields[1]).toEqual(scoredFields[0]);
+    expect(scoredFields[2]).toEqual(scoredFields[0]);
+    expect(scoredFields[0]).toMatchObject({
+      safety: 10,
+      coverage: { knownSafetySignals: 1, totalSafetySignals: 1 },
+      riskLevel: "low"
+    });
+    const [recent, stale, missing] = results;
+    expect(recent.score?.parts.verification).toBe(0);
+    expect(stale.score?.parts.verification).toBe(0);
+    expect(missing.score?.parts.verification).toBe(0);
+    expect(recent.score?.safetyReasons.join(" ")).toContain("距今 1 天");
+    expect(stale.score?.safetyReasons.join(" ")).toContain(
+      "验号时间仅作参考，不参与评分"
+    );
+    expect(missing.score?.safetyReasons.join(" ")).toContain("待人工核验");
   });
 
-  it("never lets permanent recovery coverage change score or risk", () => {
+  it("never lets permanent recovery coverage change score, quality, coverage, or risk", () => {
     const results = scoreEligibleListings([
       makeListing({ key: "panzhi:covered", recoveryCoverage: true }),
       makeListing({ key: "pxb7:uncovered", recoveryCoverage: false }),
       makeListing({ key: "jiaoyimao:unknown", recoveryCoverage: null })
     ], now);
 
-    expect(results.map(({ score }) => ({
+    const scoredFields = results.map(({ score }) => ({
       total: score?.total,
+      exactTotal: score?.exactTotal,
       safety: score?.safety,
+      dataQuality: score?.dataQuality,
       risk: score?.riskLevel,
       recovery: score?.parts.recovery,
       coverage: score?.coverage
-    }))).toEqual([
-      {
-        total: 70,
-        safety: 65,
-        risk: "low",
-        recovery: 0,
-        coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
-      },
-      {
-        total: 70,
-        safety: 65,
-        risk: "low",
-        recovery: 0,
-        coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
-      },
-      {
-        total: 70,
-        safety: 65,
-        risk: "low",
-        recovery: 0,
-        coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
-      }
-    ]);
+    }));
+
+    expect(scoredFields[1]).toEqual(scoredFields[0]);
+    expect(scoredFields[2]).toEqual(scoredFields[0]);
+    expect(scoredFields[0]).toMatchObject({
+      total: 61,
+      exactTotal: 61.3,
+      safety: 10,
+      dataQuality: 100,
+      risk: "low",
+      recovery: 0,
+      coverage: { knownSafetySignals: 1, totalSafetySignals: 1 }
+    });
+  });
+
+  it("lets a ban note override confirmed secondary-real-name availability", () => {
+    const [result] = scoreEligibleListings([
+      makeListing({
+        secondRealNameAvailable: true,
+        banNotes: ["存在封禁记录"]
+      })
+    ], now);
+
+    expect(result.score).toMatchObject({
+      safety: 10,
+      riskLevel: "high",
+      coverage: { knownSafetySignals: 1, totalSafetySignals: 1 }
+    });
+    expect(result.score?.safetyReasons.join(" ")).toContain("存在封禁记录");
   });
 
   it("makes the combined recommendation formula explicit", () => {
@@ -371,12 +436,12 @@ describe("scoreEligibleListings", () => {
     ], now);
 
     expect(result.score?.value).toBeCloseTo(17.2952380952);
-    expect(result.score?.safety).toBe(40);
+    expect(result.score?.safety).toBe(10);
     expect(result.score?.dataQuality).toBe(80);
     expect(result.score?.total).toBe(
       Math.round(normalizedRecommendationScore(
         result.score?.value ?? 0,
-        40,
+        10,
         80
       ))
     );

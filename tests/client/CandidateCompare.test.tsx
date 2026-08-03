@@ -20,8 +20,8 @@ const first = reviewed({
   priceCny: 3_500,
   score: {
     ...makeScore(78),
-    riskLevel: "medium",
-    coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
+    riskLevel: "low",
+    coverage: { knownSafetySignals: 1, totalSafetySignals: 1 }
   },
   m7RareFinishes: ["pearl"]
 });
@@ -33,7 +33,7 @@ const second = reviewed({
   score: {
     ...makeScore(71),
     riskLevel: "low",
-    coverage: { knownSafetySignals: 2, totalSafetySignals: 2 }
+    coverage: { knownSafetySignals: 1, totalSafetySignals: 1 }
   }
 });
 
@@ -81,7 +81,7 @@ describe("candidate comparison", () => {
     expect(screen.getByText("珠光")).toBeInTheDocument();
     expect(screen.getByText("最高分")).toBeInTheDocument();
     expect(screen.getByText("最低价")).toBeInTheDocument();
-    expect(screen.getByText("需关注 · 2/2")).toBeInTheDocument();
+    expect(screen.getAllByText("低风险 · 1/1")).toHaveLength(2);
     expect(screen.getAllByText("资产回收率")).toHaveLength(2);
 
     await user.click(

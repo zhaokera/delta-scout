@@ -88,7 +88,7 @@ export function RankingDiagnostics({
               <div><dt>账号价值</dt><dd>{displayAverage(item.value)}</dd></div>
               <div><dt>购买安全</dt><dd>{displayAverage(item.safety)}</dd></div>
               <div><dt>数据完整度</dt><dd>{displayAverage(item.dataQuality)}</dd></div>
-              <div><dt>安全证据</dt><dd>{displayAverage(item.knownSafetySignals)} / 2</dd></div>
+              <div><dt>安全证据</dt><dd>{displayAverage(item.knownSafetySignals)} / 1</dd></div>
             </dl>
           </article>
         ))}

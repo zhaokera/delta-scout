@@ -24,30 +24,28 @@ export const M7_PREMIUM_S_POINTS = 5;
 export const M7_RARE_FINISH_POINTS = 3;
 
 export const SAFETY_SCORE_MAX = {
-  secondRealName: 40,
-  verification: 25,
-  total: 65
+  secondRealName: 10,
+  total: 10
 } as const;
 
 export const RECOMMENDATION_SCORE_WEIGHTS = {
-  value: 0.55,
-  safety: 0.35,
+  value: 0.8,
+  safety: 0.1,
   dataQuality: 0.1
 } as const;
 
-export const RECOMMENDATION_RAW_MAX =
-  100 * RECOMMENDATION_SCORE_WEIGHTS.value +
-  SAFETY_SCORE_MAX.total * RECOMMENDATION_SCORE_WEIGHTS.safety +
-  100 * RECOMMENDATION_SCORE_WEIGHTS.dataQuality;
+export const RECOMMENDATION_RAW_MAX = 100;
 
 export function normalizedRecommendationScore(
   value: number,
   safety: number,
   dataQuality: number
 ): number {
+  const normalizedSafety =
+    safety / SAFETY_SCORE_MAX.total * 100;
   const raw =
     value * RECOMMENDATION_SCORE_WEIGHTS.value +
-    safety * RECOMMENDATION_SCORE_WEIGHTS.safety +
+    normalizedSafety * RECOMMENDATION_SCORE_WEIGHTS.safety +
     dataQuality * RECOMMENDATION_SCORE_WEIGHTS.dataQuality;
-  return (raw / RECOMMENDATION_RAW_MAX) * 100;
+  return raw;
 }

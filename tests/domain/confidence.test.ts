@@ -58,6 +58,26 @@ describe("calculateConfidence", () => {
     expect(calculateConfidence(listing)).toBe(0);
   });
 
+  it("does not let verification time alone raise confidence", () => {
+    const listing = makeListing({
+      confidence: 0,
+      m7Evidence: [],
+      loginPlatform: "unknown",
+      service: "unknown",
+      priceCny: null,
+      secondRealNameAvailable: null,
+      recoveryCoverage: null,
+      verificationAt: "2026-07-27T10:00:00+08:00",
+      totalAssetsM: null,
+      hafCoins: null,
+      redSkins: [],
+      redSkinUnnamed: false,
+      julangStatus: "unknown"
+    });
+
+    expect(calculateConfidence(listing)).toBe(0);
+  });
+
   it("can reach high confidence without M7 evidence", () => {
     const listing = makeListing({
       confidence: 0,

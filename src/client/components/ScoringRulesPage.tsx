@@ -105,7 +105,7 @@ export function ScoringRulesPage() {
               value={RECOMMENDATION_SCORE_WEIGHTS.safety * 100}
               suffix="%"
             />
-            <p>实名与验号证据，上限 {SAFETY_SCORE_MAX.total} 分</p>
+            <p>只看能否二次实名，上限 {SAFETY_SCORE_MAX.total} 分；同时仍是入池硬门槛</p>
           </div>
           <b>+</b>
           <div>
@@ -123,6 +123,15 @@ export function ScoringRulesPage() {
           </div>
         </div>
       </section>
+
+      <Alert
+        className="rules-page__alert"
+        type="warning"
+        showIcon
+        icon={<InfoCircleOutlined />}
+        title="验号时间不参与评分"
+        description="安全只看能否二次实名；验号时间与永久包赔仅在账号详情中保留为人工参考，不增加安全分、推荐分或排名权重。"
+      />
 
       <section className="rules-section rules-section--manual" aria-labelledby="manual-title">
         <header>

@@ -98,10 +98,10 @@ describe("ListingTable", () => {
         ...makeScore(40),
         exactTotal: 40.2,
         value: 30,
-        safety: 40,
+        safety: 10,
         dataQuality: 80,
-        riskLevel: "unknown",
-        coverage: { knownSafetySignals: 1, totalSafetySignals: 2 }
+        riskLevel: "low",
+        coverage: { knownSafetySignals: 1, totalSafetySignals: 1 }
       }
     });
 
@@ -117,7 +117,7 @@ describe("ListingTable", () => {
 
     expect(screen.getByText("资产回收率 18%")).toBeInTheDocument();
     expect(screen.getByText(/待核验潜力/)).toBeInTheDocument();
-    expect(screen.getByText("安全证据 1 / 2")).toBeInTheDocument();
+    expect(screen.getByText("安全证据 1 / 1")).toBeInTheDocument();
     expect(screen.getByRole("button", {
       name: "盼之账号 VALUE-1，¥2,888，推荐分 40.2"
     })).toBeInTheDocument();

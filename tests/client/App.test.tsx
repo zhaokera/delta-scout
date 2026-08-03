@@ -330,6 +330,10 @@ describe("App shell", () => {
       screen.getByText(/M7、巨浪、资产与报价只用于/)
     ).toBeInTheDocument();
     expect(screen.getByText("¥1,900–¥4,000")).toBeInTheDocument();
+    expect(screen.getByText("验号时间不参与评分")).toBeInTheDocument();
+    expect(
+      screen.getByText(/不增加安全分、推荐分或排名权重/)
+    ).toBeInTheDocument();
   });
 
   it("navigates the six PC menu pages and loads rejected records for the archive", async () => {
@@ -922,7 +926,7 @@ describe("App shell", () => {
           julang: 0,
           price: 10,
           assets: 5,
-          secondRealName: 20,
+          secondRealName: 10,
           recovery: 0,
           verification: 0
         }),
@@ -940,9 +944,9 @@ describe("App shell", () => {
           julang: 20,
           price: 23,
           assets: 9,
-          secondRealName: 40,
+          secondRealName: 10,
           recovery: 0,
-          verification: 25
+          verification: 0
         }),
         reasons: ["新快照"]
       }
@@ -1461,9 +1465,9 @@ describe("App shell", () => {
           julang: 20,
           price: 20,
           assets: 8,
-          secondRealName: 40,
+          secondRealName: 10,
           recovery: 0,
-          verification: 15
+          verification: 0
         }),
         reasons: ["安全信息 28.0/30", "价格合理性 16.0/20"]
       }

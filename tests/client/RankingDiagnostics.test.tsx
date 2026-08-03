@@ -16,9 +16,9 @@ function summary(source: "jiaoyimao" | "panzhi" | "pxb7", id: number) {
         ...makeScore(60 + id),
         exactTotal: 60.5 + id,
         value: 40 + id,
-        safety: 30,
+        safety: 10,
         dataQuality: 90,
-        coverage: { knownSafetySignals: 1, totalSafetySignals: 2 }
+        coverage: { knownSafetySignals: 1, totalSafetySignals: 1 }
       }
     }),
     manualReview: null
@@ -38,7 +38,7 @@ describe("RankingDiagnostics", () => {
       count: 2,
       score: 62,
       value: 41.5,
-      safety: 30,
+      safety: 10,
       dataQuality: 90,
       knownSafetySignals: 1
     });
@@ -55,5 +55,6 @@ describe("RankingDiagnostics", () => {
       .toHaveTextContent("不给任何平台加分、扣分或保底名额");
     expect(screen.getByText("螃蟹占 20 席", { exact: false }))
       .toBeInTheDocument();
+    expect(screen.getAllByText("1.0 / 1")).toHaveLength(2);
   });
 });

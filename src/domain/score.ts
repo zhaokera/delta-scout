@@ -78,48 +78,26 @@ function safetyParts(listing: Listing, now: Date) {
       listing.secondRealNameAvailable === true
         ? SAFETY_SCORE_MAX.secondRealName
         : 0,
-    recovery: 0,
-    verification:
-      verificationAge === null
-        ? 0
-        : verificationAge <= 7
-          ? SAFETY_SCORE_MAX.verification
-          : verificationAge <= 30
-            ? 15
-            : 5,
+    recovery: 0 as const,
+    // Verification time stays visible as purchase context, but it is not
+    // comparable across platforms and must never change the recommendation.
+    verification: 0 as const,
     verificationAge
   };
 }
 
 function safetyCoverage(listing: Listing): number {
-  return [
-    listing.secondRealNameAvailable,
-    listing.verificationAt
-  ].filter((value) => value !== null).length;
+  return listing.secondRealNameAvailable === null ? 0 : 1;
 }
 
-function riskLevel(
-  listing: Listing,
-  safety: number,
-  knownSafetySignals: number,
-  verificationAge: number | null
-): Score["riskLevel"] {
+function riskLevel(listing: Listing): Score["riskLevel"] {
   if (
     listing.secondRealNameAvailable === false ||
     listing.banNotes.length > 0
   ) {
     return "high";
   }
-  if (knownSafetySignals < 2 || verificationAge === null) {
-    return "unknown";
-  }
-  if (
-    verificationAge > 30 ||
-    safety < SAFETY_SCORE_MAX.total
-  ) {
-    return "medium";
-  }
-  return "low";
+  return listing.secondRealNameAvailable === null ? "unknown" : "low";
 }
 
 function booleanSafetyReason(
@@ -253,12 +231,7 @@ function scoreOne(
     safetyPartValues.verification;
   const knownSafetySignals = safetyCoverage(listing);
   const dataQuality = listing.confidence;
-  const calculatedRisk = riskLevel(
-    listing,
-    safety,
-    knownSafetySignals,
-    safetyPartValues.verificationAge
-  );
+  const calculatedRisk = riskLevel(listing);
   const normalizedTotal = normalizedRecommendationScore(
     value,
     safety,
@@ -274,8 +247,8 @@ function scoreOne(
         : "巨浪待核验";
   const verificationReason =
     safetyPartValues.verificationAge === null
-      ? "验号时间待核验"
-      : `验号距今 ${Math.floor(safetyPartValues.verificationAge)} 天`;
+      ? "验号时间仅作参考，不参与评分：待人工核验"
+      : `验号时间仅作参考，不参与评分：距今 ${Math.floor(safetyPartValues.verificationAge)} 天`;
   const valueReasons = [
     `${m7ValueReason(listing)}，品质价值 ${m7Quality.toFixed(1)}/${M7_PEAK_QUALITY_POINTS.S}`,
     listing.m7RareFinishes.length > 0
@@ -319,7 +292,7 @@ function scoreOne(
     riskLevel: calculatedRisk,
     coverage: {
       knownSafetySignals,
-      totalSafetySignals: 2
+      totalSafetySignals: 1
     },
     parts: {
       m7,
@@ -337,7 +310,7 @@ function scoreOne(
       `账号价值 ${value.toFixed(1)}/100`,
       `购买安全 ${safety.toFixed(1)}/${SAFETY_SCORE_MAX.total}`,
       `数据完整度 ${dataQuality.toFixed(1)}/100`,
-      `综合分按价值 55% + 安全 35% + 数据 10% 计算后归一化到 100；永久包赔不计分`,
+      `综合分按价值 80% + 安全 10% + 数据 10% 计算；安全只看能否二次实名，验号时间与永久包赔不计分`,
       potentialValueUpside(listing) > 0
         ? `待核验价值潜力 +${potentialValueUpside(listing).toFixed(1)}，不直接计入确定分`
         : "当前未识别额外待核验价值潜力"

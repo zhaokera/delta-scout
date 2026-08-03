@@ -1545,9 +1545,9 @@ describe("CollectionCoordinator", () => {
               julang: 15,
               price: 15,
               assets: 8,
-              secondRealName: 40,
+              secondRealName: 10,
               recovery: 0,
-              verification: 25
+              verification: 0
             }),
             reasons: ["old"]
           }
@@ -1614,9 +1614,9 @@ describe("CollectionCoordinator", () => {
         julang: 15,
         price: 20,
         assets: 10,
-        secondRealName: 40,
+        secondRealName: 10,
         recovery: 0,
-        verification: 25
+        verification: 0
       }),
       reasons: ["stale"]
     };

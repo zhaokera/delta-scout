@@ -18,10 +18,7 @@ export function calculateConfidence(listing: Listing): number {
   if (listing.priceCny !== null) {
     confidence += 15;
   }
-  if (
-    listing.secondRealNameAvailable !== null ||
-    listing.verificationAt !== null
-  ) {
+  if (listing.secondRealNameAvailable !== null) {
     confidence += 20;
   }
   if (listing.totalAssetsM !== null || listing.hafCoins !== null) {

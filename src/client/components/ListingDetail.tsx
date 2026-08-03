@@ -489,12 +489,10 @@ export function ListingDetail({
             <p>价格 {scorePart(listing.score.parts.price)} / {VALUE_SCORE_MAX.price}</p>
             <p>资产 {scorePart(listing.score.parts.assets)} / {VALUE_SCORE_MAX.assets}</p>
             <p>
-              二次实名 {scorePart(listing.score.parts.secondRealName)} / 40
+              二次实名 {scorePart(listing.score.parts.secondRealName)} / {SAFETY_SCORE_MAX.secondRealName}
             </p>
             <p>永久包赔 仅作参考 · 不参与评分</p>
-            <p>
-              验号时效 {scorePart(listing.score.parts.verification)} / 25
-            </p>
+            <p>验号时间 仅作参考 · 不参与评分</p>
           </div>
           {listing.score.valueReasons.map((reason) => (
             <p key={`value:${reason}`}>{reason}</p>

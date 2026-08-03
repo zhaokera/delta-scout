@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { VALUE_SCORE_MAX } from "./scoreAllocation.js";
+import {
+  SAFETY_SCORE_MAX,
+  VALUE_SCORE_MAX
+} from "./scoreAllocation.js";
 
 export const SourceIdSchema = z.enum(["jiaoyimao", "panzhi", "pxb7"]);
 export const LoginPlatformSchema = z.enum(["qq", "wechat", "unknown"]);
@@ -49,12 +52,12 @@ export const ScoreSchema = z.object({
   exactTotal: z.number().min(0).max(100).optional(),
   preferenceAdjustment: z.number().int().min(-8).max(0).default(0),
   value: z.number().min(0).max(100),
-  safety: z.number().min(0).max(100),
+  safety: z.number().min(0).max(SAFETY_SCORE_MAX.total),
   dataQuality: z.number().min(0).max(100),
   riskLevel: z.enum(["low", "medium", "high", "unknown"]),
   coverage: z.object({
-    knownSafetySignals: z.number().int().min(0).max(2),
-    totalSafetySignals: z.literal(2)
+    knownSafetySignals: z.number().int().min(0).max(1),
+    totalSafetySignals: z.literal(1)
   }),
   parts: z.object({
     m7: z.number().min(0).max(VALUE_SCORE_MAX.m7),
@@ -62,9 +65,9 @@ export const ScoreSchema = z.object({
     julang: z.number().min(0).max(VALUE_SCORE_MAX.julang),
     price: z.number().min(0).max(VALUE_SCORE_MAX.price),
     assets: z.number().min(0).max(VALUE_SCORE_MAX.assets),
-    secondRealName: z.number().min(0).max(40),
-    recovery: z.number().min(0).max(35),
-    verification: z.number().min(0).max(25)
+    secondRealName: z.number().min(0).max(SAFETY_SCORE_MAX.secondRealName),
+    recovery: z.literal(0),
+    verification: z.literal(0)
   }),
   valueReasons: z.array(z.string()),
   safetyReasons: z.array(z.string()),

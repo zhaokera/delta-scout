@@ -2047,6 +2047,61 @@ describe("ListingRepository", () => {
     expect(metadata()).toEqual(metadataBefore);
   });
 
+  it("recomputes stale verification-derived confidence without changing stored metadata", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const listing = makeListing({
+      key: "panzhi:legacy-verification-confidence",
+      sourceListingId: "legacy-verification-confidence",
+      priceCny: null,
+      loginPlatform: "unknown",
+      service: "unknown",
+      evidence: [],
+      m7PrismStatus: "unknown",
+      m7PrismQuality: null,
+      m7Evidence: [],
+      redSkins: [],
+      redSkinCount: 0,
+      redSkinUnnamed: false,
+      requiredRedSkins: [],
+      requiredRedSkinStatus: "unknown",
+      julangStatus: "unknown",
+      julangQuality: null,
+      realNameStatus: "unknown",
+      secondRealNameAvailable: null,
+      recoveryCoverage: true,
+      verificationAt: "2026-07-27T10:00:00+08:00",
+      totalAssetsM: null,
+      hafCoins: null,
+      confidence: 20,
+      eligibility: "needs_verification",
+      score: null
+    });
+    repository.replaceSourceSnapshot(
+      listing.source,
+      [listing],
+      "success",
+      scanTime
+    );
+    const sourceStatusesBefore = repository.getSourceStatuses(scanTime);
+
+    repository.recomputeDerivedListings(scanTime);
+
+    expect(repository.getListing(listing.key)).toMatchObject({
+      confidence: 0,
+      eligibility: "needs_verification",
+      score: null,
+      verificationAt: listing.verificationAt,
+      recoveryCoverage: listing.recoveryCoverage,
+      capturedAt: listing.capturedAt,
+      scanStability: listing.scanStability,
+      consecutiveUnchangedScans: listing.consecutiveUnchangedScans
+    });
+    expect(repository.getSourceStatuses(scanTime)).toEqual(
+      sourceStatusesBefore
+    );
+  });
+
   it("appends changed manual exclusions while identical writes stay idempotent", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);

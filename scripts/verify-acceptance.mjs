@@ -57,8 +57,8 @@ function assertCandidate(candidate, poolName) {
     );
   }
   assert.ok(
-    candidate.score.safety >= 0 && candidate.score.safety <= 65,
-    `${poolName}: score.safety is outside 0..65`
+    candidate.score.safety >= 0 && candidate.score.safety <= 10,
+    `${poolName}: score.safety is outside 0..10`
   );
   assert.ok(
     ["low", "medium", "high", "unknown"].includes(
@@ -66,11 +66,12 @@ function assertCandidate(candidate, poolName) {
     ),
     `${poolName}: invalid risk level`
   );
-  const rawTotal =
-    candidate.score.value * 0.55 +
-    candidate.score.safety * 0.35 +
-    candidate.score.dataQuality * 0.1;
-  const baseTotal = Math.round((rawTotal / 87.75) * 100);
+  const normalizedSafety = candidate.score.safety / 10 * 100;
+  const baseTotal = Math.round(
+    candidate.score.value * 0.8 +
+    normalizedSafety * 0.1 +
+    candidate.score.dataQuality * 0.1
+  );
   assert.ok(
     Number.isInteger(candidate.score.preferenceAdjustment) &&
       candidate.score.preferenceAdjustment >= -8 &&
@@ -84,13 +85,13 @@ function assertCandidate(candidate, poolName) {
   );
   for (const [part, maximum] of Object.entries({
     m7: 15,
-    redSkins: 30,
-    julang: 20,
-    price: 25,
-    assets: 10,
-    secondRealName: 40,
+    redSkins: 25,
+    julang: 15,
+    price: 20,
+    assets: 25,
+    secondRealName: 10,
     recovery: 0,
-    verification: 25
+    verification: 0
   })) {
     assert.equal(
       typeof candidate.score.parts[part],
@@ -105,12 +106,12 @@ function assertCandidate(candidate, poolName) {
   }
   assert.equal(
     candidate.score.coverage.totalSafetySignals,
-    2,
-    `${poolName}: permanent recovery coverage still affects safety coverage`
+    1,
+    `${poolName}: safety coverage must only track secondary real-name availability`
   );
   assert.ok(
     candidate.score.coverage.knownSafetySignals >= 0 &&
-      candidate.score.coverage.knownSafetySignals <= 2,
+      candidate.score.coverage.knownSafetySignals <= 1,
     `${poolName}: invalid scored safety coverage`
   );
 }
