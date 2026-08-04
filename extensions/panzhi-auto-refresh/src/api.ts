@@ -286,7 +286,8 @@ export class PanzhiAutomationApi implements PanzhiAutomationApiPort {
   ): Promise<unknown | null> {
     let response: Response;
     try {
-      response = await this.fetcher(url, {
+      const fetcher = this.fetcher;
+      response = await fetcher(url, {
         method: request.method,
         headers: {
           "Content-Type": "application/json",

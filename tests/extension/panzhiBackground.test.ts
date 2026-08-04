@@ -244,6 +244,20 @@ function makeFixture(options: {
 }
 
 describe("Panzhi MV3 worker lifecycle", () => {
+  it("calls a receiver-sensitive native fetch without rebinding it", async () => {
+    const receiverSensitiveFetch = vi.fn(function (this: unknown) {
+      if (this !== undefined) throw new TypeError("Illegal invocation");
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      }));
+    });
+    const api = new PanzhiAutomationApi(receiverSensitiveFetch);
+
+    await expect(api.recordExtensionHeartbeat()).resolves.toBeUndefined();
+    expect(receiverSensitiveFetch.mock.contexts).toEqual([undefined]);
+  });
+
   it("reports an unexpected cycle failure instead of hiding it", async () => {
     const f = makeFixture({ claimResult: null });
     const failure = new PanzhiAutomationNetworkError(
