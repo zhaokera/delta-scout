@@ -109,6 +109,12 @@ interface ActiveJob {
   job: PanzhiAutomationJobView;
 }
 
+interface PendingSnapshot {
+  jobId: string;
+  bearerToken: string;
+  snapshot: PanzhiPageSnapshot;
+}
+
 const FORWARD_STATE: Readonly<
   Partial<Record<PanzhiAutomationState, readonly PanzhiAutomationState[]>>
 > = {
@@ -141,6 +147,7 @@ export class PanzhiBackgroundController {
   private inFlight: Promise<void> | null = null;
   private heartbeatInFlight: Promise<void> | null = null;
   private active: ActiveJob | null = null;
+  private pendingSnapshot: PendingSnapshot | null = null;
   private consecutiveFailures = 0;
   private nextAttemptAt = 0;
 
@@ -226,7 +233,14 @@ export class PanzhiBackgroundController {
     await this.dependencies.api.recordExtensionHeartbeat();
     const active = await this.recoverOrClaim();
     if (!active) return;
-    await this.ensureValidTab();
+    if (
+      this.pendingSnapshot?.jobId === active.stored.jobId &&
+      this.pendingSnapshot.bearerToken === active.stored.bearerToken
+    ) {
+      await this.submitPendingSnapshot();
+      return;
+    }
+    this.pendingSnapshot = null;
 
     if (this.active?.job.state === "awaiting_user_verification") {
       const verification = await this.dependencies.checkVerification(
@@ -234,7 +248,9 @@ export class PanzhiBackgroundController {
       );
       if (verification.kind === "blocked") return;
       await this.advanceTo("applying_filters");
+      await this.ensureValidTab();
     } else {
+      await this.ensureValidTab();
       await this.advanceTo("applying_filters");
     }
 
@@ -339,10 +355,6 @@ export class PanzhiBackgroundController {
   private async handlePageResult(result: PageRunnerResult): Promise<void> {
     if (!this.active) return;
     if (result.kind === "awaiting_user_verification") {
-      if (this.active.job.state === "submitting") {
-        await this.failActive("captcha_required_during_safe_recollection");
-        return;
-      }
       const response = await this.updateState({
         state: "awaiting_user_verification"
       });
@@ -359,8 +371,25 @@ export class PanzhiBackgroundController {
 
     await this.advanceTo("submitting");
     if (!this.active) return;
+    this.pendingSnapshot = {
+      jobId: this.active.stored.jobId,
+      bearerToken: this.active.stored.bearerToken,
+      snapshot: result.snapshot
+    };
+    await this.submitPendingSnapshot();
+  }
+
+  private async submitPendingSnapshot(): Promise<void> {
+    if (!this.active || !this.pendingSnapshot) return;
+    if (
+      this.pendingSnapshot.jobId !== this.active.stored.jobId ||
+      this.pendingSnapshot.bearerToken !== this.active.stored.bearerToken
+    ) {
+      this.pendingSnapshot = null;
+      return;
+    }
     try {
-      await this.submitWithRetry(result.snapshot);
+      await this.submitWithRetry(this.pendingSnapshot.snapshot);
       await this.clearActive();
     } catch (error) {
       if (isSubmissionConflict(error)) {
@@ -458,6 +487,7 @@ export class PanzhiBackgroundController {
 
   private async clearActive(): Promise<void> {
     this.active = null;
+    this.pendingSnapshot = null;
     await this.dependencies.storage.clear();
   }
 }
@@ -531,13 +561,24 @@ interface ChromeLike {
 
 declare const chrome: ChromeLike | undefined;
 
-function isStoredJob(value: unknown): value is StoredPanzhiJob {
-  if (value === null || typeof value !== "object") return false;
+export function normalizeStoredPanzhiJob(
+  value: unknown
+): StoredPanzhiJob | null {
+  if (value === null || typeof value !== "object") return null;
   const input = value as Partial<StoredPanzhiJob>;
-  return typeof input.jobId === "string" &&
-    typeof input.bearerToken === "string" &&
-    (input.mode === "quick" || input.mode === "deep") &&
-    typeof input.tabId === "number";
+  if (
+    typeof input.jobId !== "string" ||
+    typeof input.bearerToken !== "string" ||
+    (input.mode !== "quick" && input.mode !== "deep") ||
+    typeof input.tabId !== "number" ||
+    !Number.isInteger(input.tabId)
+  ) return null;
+  return {
+    jobId: input.jobId,
+    bearerToken: input.bearerToken,
+    mode: input.mode,
+    tabId: input.tabId
+  };
 }
 
 function createChromeController(browser: ChromeLike): PanzhiBackgroundController {
@@ -569,7 +610,7 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
     storage: {
       read: async () => {
         const value = (await browser.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
-        return isStoredJob(value) ? value : null;
+        return normalizeStoredPanzhiJob(value);
       },
       write: (active) => browser.storage.local.set({ [STORAGE_KEY]: active }),
       clear: () => browser.storage.local.remove(STORAGE_KEY)

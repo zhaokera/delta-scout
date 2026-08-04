@@ -34,4 +34,15 @@ describe("Panzhi extension manifest", () => {
       /cookies|webRequest|history|downloads|clipboard|<all_urls>/i
     );
   });
+
+  it("keeps the extension strict project in the root typecheck command", () => {
+    const packageJson = JSON.parse(readFileSync(resolve(
+      process.cwd(),
+      "package.json"
+    ), "utf8")) as { scripts?: Record<string, string> };
+
+    expect(packageJson.scripts?.typecheck).toContain(
+      "tsc -p tsconfig.extension.json --noEmit"
+    );
+  });
 });

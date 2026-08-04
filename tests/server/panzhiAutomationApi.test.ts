@@ -407,6 +407,47 @@ describe("Panzhi automation API", () => {
       .expect(401);
   });
 
+  it("allows a safely recollecting submitting job to pause for verification and restart filters", async () => {
+    const f = fixture();
+    const queued = f.automation.enqueue("quick");
+    const claimed = await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .send({})
+      .expect(202);
+    const token = claimed.body.bearerToken as string;
+    for (const state of ["applying_filters", "collecting", "submitting"]) {
+      await request(f.app)
+        .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/state`)
+        .set(bearer(token))
+        .send({ state })
+        .expect(200);
+    }
+
+    const blocked = await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/state`)
+      .set(bearer(token))
+      .send({ state: "awaiting_user_verification" })
+      .expect(200);
+    expect(blocked.body).toMatchObject({
+      shouldNotify: true,
+      job: {
+        state: "awaiting_user_verification",
+        verificationNotifiedAt: baseTime.toISOString()
+      }
+    });
+
+    const resumed = await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/state`)
+      .set(bearer(token))
+      .send({ state: "applying_filters" })
+      .expect(200);
+    expect(resumed.body.job).toMatchObject({
+      state: "applying_filters",
+      verificationDeadlineAt: null,
+      verificationNotifiedAt: null
+    });
+  });
+
   it("uses one operation timestamp when a heartbeat crosses the verification deadline", async () => {
     const f = fixture();
     const queued = f.automation.enqueue("deep");

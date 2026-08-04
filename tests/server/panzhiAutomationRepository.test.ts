@@ -99,6 +99,10 @@ describe("Panzhi automation contracts", () => {
       "awaiting_user_verification",
       "collecting"
     )).toBe(false);
+    expect(canTransitionPanzhiAutomationJob(
+      "submitting",
+      "awaiting_user_verification"
+    )).toBe(true);
   });
 });
 
@@ -462,7 +466,12 @@ describe("PanzhiAutomationRepository", () => {
     ), "unauthorized");
   });
 
-  it.each(["opening_page", "applying_filters", "collecting"] as const)(
+  it.each([
+    "opening_page",
+    "applying_filters",
+    "collecting",
+    "submitting"
+  ] as const)(
     "allows verification detection while the job is %s",
     (state) => {
       const { repository, claimed } = claimedRepository();
@@ -480,6 +489,22 @@ describe("PanzhiAutomationRepository", () => {
           claimed.job.id,
           claimed.bearerToken,
           "collecting",
+          {},
+          start
+        );
+      }
+      if (state === "submitting") {
+        repository.transition(
+          claimed.job.id,
+          claimed.bearerToken,
+          "collecting",
+          {},
+          start
+        );
+        repository.transition(
+          claimed.job.id,
+          claimed.bearerToken,
+          "submitting",
           {},
           start
         );

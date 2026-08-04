@@ -136,7 +136,12 @@ const TRANSITIONS: Readonly<
     "failed",
     "cancelled"
   ]),
-  submitting: new Set(["success", "failed", "cancelled"]),
+  submitting: new Set([
+    "awaiting_user_verification",
+    "success",
+    "failed",
+    "cancelled"
+  ]),
   success: new Set(),
   failed: new Set(),
   cancelled: new Set()

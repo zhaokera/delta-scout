@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   PageRunnerResult,
-  PanzhiPageSnapshot
+  PanzhiPageSnapshot,
+  VerificationBlocker
 } from "../../extensions/panzhi-auto-refresh/src/contracts.js";
 import {
   PanzhiAutomationApiError,
@@ -10,6 +11,7 @@ import {
   type PanzhiAutomationJobView
 } from "../../extensions/panzhi-auto-refresh/src/api.js";
 import {
+  normalizeStoredPanzhiJob,
   PanzhiBackgroundController,
   sendContentCommandWithInjection,
   type PanzhiBackgroundDependencies,
@@ -123,10 +125,13 @@ function makeFixture(options: {
   resumeResult?: PanzhiAutomationClaim;
   runnerResult?: PageRunnerResult | Promise<PageRunnerResult>;
   existingTabs?: PanzhiBrowserTab[];
-  checkResult?: { kind: "clear" } | { kind: "blocked"; blocker: "captcha" };
+  checkResult?:
+    | { kind: "clear" }
+    | { kind: "blocked"; blocker: VerificationBlocker };
   random?: number;
 } = {}) {
   let stored = options.stored ?? null;
+  let currentTime = Date.parse("2026-08-04T08:00:00.000Z");
   let currentJob = options.resumeResult?.job ??
     options.claimResult?.job ??
     job(
@@ -213,7 +218,7 @@ function makeFixture(options: {
     sleep: vi.fn().mockImplementation(async (milliseconds) => {
       delays.push(milliseconds);
     }),
-    now: () => new Date("2026-08-04T08:00:00.000Z"),
+    now: () => new Date(currentTime),
     random: () => options.random ?? 0.5
   };
   const controller = new PanzhiBackgroundController(dependencies);
@@ -224,11 +229,30 @@ function makeFixture(options: {
     tabs,
     delays,
     writes,
+    advanceTime: (milliseconds: number) => {
+      currentTime += milliseconds;
+    },
     getStored: () => stored
   };
 }
 
 describe("Panzhi MV3 worker lifecycle", () => {
+  it("normalizes legacy storage to the exact four ownership fields", () => {
+    expect(normalizeStoredPanzhiJob({
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick",
+      tabId: 7,
+      items: snapshot().items,
+      pendingSnapshot: snapshot()
+    })).toEqual({
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick",
+      tabId: 7
+    });
+  });
+
   it("injects the packaged content entry once when an existing tab has no receiver, then retries each command once", async () => {
     const injection = deferred<void>();
     const bridge = {
@@ -435,6 +459,33 @@ describe("Panzhi MV3 worker lifecycle", () => {
     expect(f.dependencies.checkVerification).toHaveBeenCalledOnce();
   });
 
+  it("checks a login blocker in the original stored tab without navigating, reselecting, or creating", async () => {
+    const active = {
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick" as const,
+      tabId: 7
+    };
+    const f = makeFixture({
+      stored: active,
+      resumeResult: claim(firstJobId, "awaiting_user_verification"),
+      existingTabs: [{
+        id: 7,
+        url: "https://www.pzds.com/login?redirect=%2FgoodsList%2F391%2F6",
+        lastAccessed: 100
+      }],
+      checkResult: { kind: "blocked", blocker: "login" }
+    });
+
+    await f.controller.tick();
+
+    expect(f.dependencies.checkVerification).toHaveBeenCalledWith(7);
+    expect(f.tabs.query).not.toHaveBeenCalled();
+    expect(f.tabs.update).not.toHaveBeenCalled();
+    expect(f.tabs.create).not.toHaveBeenCalled();
+    expect(f.dependencies.runPage).not.toHaveBeenCalled();
+  });
+
   it("after verification disappears, reports applying_filters before restarting the runner", async () => {
     const active = {
       jobId: firstJobId,
@@ -458,6 +509,35 @@ describe("Panzhi MV3 worker lifecycle", () => {
     expect(f.dependencies.runPage).toHaveBeenCalledAfter(
       vi.mocked(f.api.updateJobState)
     );
+  });
+
+  it("pauses a recovered submitting recollection for verification instead of failing it", async () => {
+    const active = {
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick" as const,
+      tabId: 7
+    };
+    const f = makeFixture({
+      stored: active,
+      resumeResult: claim(firstJobId, "submitting"),
+      runnerResult: {
+        kind: "awaiting_user_verification",
+        stage: "awaiting_user_verification",
+        blocker: "slider",
+        resumeStage: "applying_filters"
+      }
+    });
+
+    await f.controller.tick();
+
+    expect(f.api.updateJobState).toHaveBeenCalledWith(active, {
+      state: "awaiting_user_verification"
+    });
+    expect(f.dependencies.focusTab).toHaveBeenCalledWith(7);
+    expect(f.dependencies.notifyVerification).toHaveBeenCalledWith("slider");
+    expect(f.dependencies.storage.clear).not.toHaveBeenCalled();
+    expect(f.getStored()).toEqual(active);
   });
 
   it("never persists collected cards and discards them across worker restart", async () => {
@@ -543,6 +623,48 @@ describe("Panzhi MV3 worker lifecycle", () => {
     expect(f.delays[1]).toBeGreaterThan(f.delays[0]!);
     expect(Math.max(...f.delays)).toBeLessThanOrEqual(4_500);
   });
+
+  it.each([
+    ["network failure", new Error("localhost unavailable")],
+    [
+      "HTTP 503",
+      new PanzhiAutomationApiError(
+        503,
+        "panzhi_automation_failed",
+        "temporarily unavailable"
+      )
+    ]
+  ])(
+    "keeps a snapshot only in memory after %s and retries the same object before any page work on the next tick",
+    async (_label, transientError) => {
+      const payload = snapshot("PENDING-CARD");
+      const f = makeFixture({ runnerResult: snapshotResult(payload) });
+      vi.mocked(f.api.submitSnapshot)
+        .mockRejectedValueOnce(transientError)
+        .mockResolvedValueOnce({ deduplicated: false });
+
+      await f.controller.tick();
+
+      expect(f.dependencies.runPage).toHaveBeenCalledOnce();
+      expect(f.api.submitSnapshot).toHaveBeenCalledOnce();
+      expect(f.getStored()).toEqual(expect.objectContaining({
+        jobId: firstJobId,
+        tabId: 7
+      }));
+      const tabReadsAfterCollection = vi.mocked(f.tabs.get).mock.calls.length;
+
+      f.advanceTime(30_000);
+      await f.controller.tick();
+
+      expect(f.dependencies.runPage).toHaveBeenCalledOnce();
+      expect(f.tabs.get).toHaveBeenCalledTimes(tabReadsAfterCollection);
+      const submitted = vi.mocked(f.api.submitSnapshot).mock.calls;
+      expect(submitted).toHaveLength(2);
+      expect(submitted[0]?.[1]).toBe(payload);
+      expect(submitted[1]?.[1]).toBe(payload);
+      expect(f.getStored()).toBeNull();
+    }
+  );
 
   it("ignores content stages from any tab other than the owned tab", async () => {
     const runner = deferred<PageRunnerResult>();
