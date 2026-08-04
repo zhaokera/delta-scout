@@ -221,6 +221,7 @@ function makeFixture(options: {
     ),
     focusTab: vi.fn().mockResolvedValue(undefined),
     notifyVerification: vi.fn().mockResolvedValue(undefined),
+    reportError: vi.fn(),
     sleep: vi.fn().mockImplementation(async (milliseconds) => {
       delays.push(milliseconds);
     }),
@@ -243,6 +244,19 @@ function makeFixture(options: {
 }
 
 describe("Panzhi MV3 worker lifecycle", () => {
+  it("reports an unexpected cycle failure instead of hiding it", async () => {
+    const f = makeFixture({ claimResult: null });
+    const failure = new PanzhiAutomationNetworkError(
+      "Panzhi automation API is unreachable"
+    );
+    vi.mocked(f.api.recordExtensionHeartbeat).mockRejectedValueOnce(failure);
+
+    await f.controller.tick();
+
+    expect(f.dependencies.reportError).toHaveBeenCalledOnce();
+    expect(f.dependencies.reportError).toHaveBeenCalledWith(failure);
+  });
+
   it("classifies fetch rejection as network failure and malformed success as protocol failure", async () => {
     const networkApi = new PanzhiAutomationApi(
       vi.fn().mockRejectedValue(new TypeError("fetch failed"))

@@ -355,6 +355,7 @@ export interface PanzhiBackgroundDependencies {
   checkVerification(tabId: number): Promise<VerificationCheck>;
   focusTab(tabId: number): Promise<void>;
   notifyVerification(blocker: VerificationBlocker): Promise<void>;
+  reportError(error: unknown): void;
   sleep(milliseconds: number): Promise<void>;
   now(): Date;
   random(): number;
@@ -485,7 +486,8 @@ export class PanzhiBackgroundController {
       await this.runCycle();
       this.consecutiveFailures = 0;
       this.nextAttemptAt = 0;
-    } catch {
+    } catch (error) {
+      this.dependencies.reportError(error);
       const base = Math.min(
         30_000,
         1_000 * 2 ** Math.min(this.consecutiveFailures, 5)
@@ -953,6 +955,9 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
         }，完成后会自动继续。`,
         priority: 2
       });
+    },
+    reportError: (error) => {
+      console.error("[panzhi-auto-refresh] background cycle failed", error);
     },
     sleep: (milliseconds) => new Promise((resolve) => {
       setTimeout(resolve, milliseconds);
