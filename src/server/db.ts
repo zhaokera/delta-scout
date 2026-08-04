@@ -175,6 +175,102 @@ export function createDatabase(path: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS refresh_schedule_due_idx
       ON refresh_schedule (enabled, next_quick_at, next_deep_at);
 
+    CREATE TABLE IF NOT EXISTS panzhi_browser_jobs (
+      id TEXT PRIMARY KEY
+        CHECK(length(id) = 36),
+      mode TEXT NOT NULL
+        CHECK(mode IN ('quick', 'deep')),
+      state TEXT NOT NULL
+        CHECK(state IN (
+          'queued', 'opening_page', 'applying_filters', 'collecting',
+          'awaiting_user_verification', 'submitting', 'success',
+          'failed', 'cancelled'
+        )),
+      lease_token_digest TEXT
+        CHECK(
+          lease_token_digest IS NULL
+          OR (
+            length(lease_token_digest) = 64
+            AND lease_token_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      lease_expires_at TEXT,
+      completed_bearer_digest TEXT
+        CHECK(
+          completed_bearer_digest IS NULL
+          OR (
+            length(completed_bearer_digest) = 64
+            AND completed_bearer_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      verification_deadline_at TEXT,
+      verification_notified_at TEXT,
+      normalized_request_digest TEXT
+        CHECK(
+          normalized_request_digest IS NULL
+          OR (
+            length(normalized_request_digest) = 64
+            AND normalized_request_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      result_json TEXT,
+      error TEXT,
+      scan_run_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT,
+      CHECK(
+        (lease_token_digest IS NULL) = (lease_expires_at IS NULL)
+      ),
+      CHECK(
+        state NOT IN ('queued', 'success', 'failed', 'cancelled')
+        OR lease_token_digest IS NULL
+      ),
+      CHECK(
+        state = 'success'
+        OR completed_bearer_digest IS NULL
+      ),
+      CHECK(
+        state = 'success'
+        OR result_json IS NULL
+      ),
+      CHECK(
+        state = 'success'
+        OR scan_run_id IS NULL
+      ),
+      CHECK(
+        state <> 'success'
+        OR (
+          scan_run_id IS NOT NULL
+          AND completed_bearer_digest IS NOT NULL
+          AND normalized_request_digest IS NOT NULL
+          AND result_json IS NOT NULL
+          AND finished_at IS NOT NULL
+        )
+      ),
+      CHECK(
+        state NOT IN ('success', 'failed', 'cancelled')
+        OR finished_at IS NOT NULL
+      ),
+      FOREIGN KEY (scan_run_id) REFERENCES scan_runs(id)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS panzhi_browser_one_active_job
+      ON panzhi_browser_jobs ((1))
+      WHERE state NOT IN ('success', 'failed', 'cancelled');
+    CREATE INDEX IF NOT EXISTS panzhi_browser_jobs_state_idx
+      ON panzhi_browser_jobs (state, updated_at);
+
+    CREATE TABLE IF NOT EXISTS panzhi_extension_status (
+      singleton INTEGER PRIMARY KEY
+        CHECK(singleton = 1),
+      last_heartbeat_at TEXT
+    );
+
+    INSERT INTO panzhi_extension_status (singleton, last_heartbeat_at)
+    VALUES (1, NULL)
+    ON CONFLICT(singleton) DO NOTHING;
+
     CREATE TABLE IF NOT EXISTS refresh_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id INTEGER NOT NULL,
