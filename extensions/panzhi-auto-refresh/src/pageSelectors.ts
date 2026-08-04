@@ -70,6 +70,7 @@ const SELECTED_CLASS_TOKENS = new Set([
   "is-active",
   "is-checked",
   "is-selected",
+  "opt-item_active",
   "selected"
 ]);
 
@@ -126,14 +127,40 @@ function uniqueTextControl(
   root: ParentNode,
   label: string
 ): HTMLElement | SelectorFailure {
-  const matches = exactTextElements(root, label);
-  if (matches.length === 0) {
+  const matches = new Set(
+    exactTextElements(root, label).map((element) =>
+      element.closest<HTMLElement>(".opt-item") ?? element)
+  );
+  if (matches.size === 0) {
     return failure("missing_controls", `Missing visible control: ${label}`);
   }
-  if (matches.length !== 1) {
+  if (matches.size !== 1) {
     return failure("structural_drift", `Ambiguous visible control: ${label}`);
   }
-  return matches[0];
+  return [...matches][0];
+}
+
+function uniqueSearchTypeControl(
+  root: HTMLElement,
+  label: string
+): HTMLElement | SelectorFailure {
+  const matches = new Set<HTMLElement>();
+  for (const chooser of root.querySelectorAll<HTMLElement>(
+    ".filter-item-checkbox"
+  )) {
+    if (!isElementVisible(chooser)) continue;
+    for (const option of chooser.querySelectorAll<HTMLElement>(".drop-item")) {
+      const optionLabel = option.querySelector("label");
+      if (normalizeVisibleText(optionLabel?.textContent) === label) {
+        matches.add(option);
+      }
+    }
+  }
+  if (matches.size === 0) return uniqueTextControl(root, label);
+  if (matches.size !== 1) {
+    return failure("structural_drift", `Ambiguous visible control: ${label}`);
+  }
+  return [...matches][0];
 }
 
 function nearbyVisibleText(field: HTMLElement): string {
@@ -236,8 +263,7 @@ export function locateRequiredControls(
   if ("kind" in realNameGroup) return realNameGroup;
   const skinGroup = smallestGroup(root, "特战干员外观", [
     PANZHI_REQUIRED_OPERATOR_SKINS[0].label,
-    PANZHI_REQUIRED_OPERATOR_SKINS[1].label,
-    "全部都要有"
+    PANZHI_REQUIRED_OPERATOR_SKINS[1].label
   ]);
   if ("kind" in skinGroup) return skinGroup;
   const priceGroup = smallestGroup(
@@ -276,7 +302,7 @@ export function locateRequiredControls(
     PANZHI_REQUIRED_OPERATOR_SKINS[1].label
   );
   if ("kind" in secondSkin) return secondSkin;
-  const allSemantics = uniqueTextControl(skinGroup, "全部都要有");
+  const allSemantics = uniqueSearchTypeControl(skinGroup, "全部都要有");
   if ("kind" in allSemantics) return allSemantics;
 
   for (const [element, expected] of [
@@ -346,6 +372,8 @@ function isSelectableInput(element: Element): element is HTMLInputElement {
 
 function interactiveCarrier(element: HTMLElement): HTMLElement | null {
   const selector = [
+    ".opt-item",
+    ".drop-item",
     "button",
     "label",
     'input[type="checkbox"]',
@@ -360,6 +388,24 @@ function interactiveCarrier(element: HTMLElement): HTMLElement | null {
     "[data-checked]"
   ].join(",");
   return element.closest<HTMLElement>(selector);
+}
+
+function directText(element: HTMLElement): string {
+  return normalizeVisibleText(
+    [...element.childNodes]
+      .filter((node) => node.nodeType === 3)
+      .map((node) => node.textContent ?? "")
+      .join(" ")
+  );
+}
+
+function searchTypeSelectionEvidence(element: HTMLElement): boolean | null {
+  const option = element.closest<HTMLElement>(".drop-item");
+  const chooser = option?.closest<HTMLElement>(".filter-item-checkbox");
+  const label = option?.querySelector("label");
+  const current = chooser ? directText(chooser) : "";
+  const expected = normalizeVisibleText(label?.textContent);
+  return current && expected ? current === expected : null;
 }
 
 function associatedInputs(
@@ -425,6 +471,8 @@ export function selectedState(element: HTMLElement): SelectedStateResult {
   ))) {
     evidence.push(...directSelectionEvidence(candidate));
   }
+  const searchTypeState = searchTypeSelectionEvidence(element);
+  if (searchTypeState !== null) evidence.push(searchTypeState);
   if (inputs.length === 1) evidence.push(inputs[0].checked);
   if (new Set(evidence).size > 1) {
     return failure("structural_drift", "Filter selected-state evidence conflicts");

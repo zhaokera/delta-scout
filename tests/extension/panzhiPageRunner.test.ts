@@ -58,6 +58,31 @@ function installFilterBehavior(
   }
 }
 
+function installLiveFilterBehavior(root: Document): void {
+  for (const option of root.querySelectorAll<HTMLElement>(".opt-item")) {
+    option.addEventListener("click", () => {
+      option.classList.add("opt-item_active");
+      signalResultCycle(root);
+    });
+  }
+  for (const option of root.querySelectorAll<HTMLElement>(".drop-item")) {
+    option.addEventListener("click", () => {
+      const checkbox = option.closest(".filter-item-checkbox");
+      const label = option.querySelector("label")?.textContent?.trim();
+      const textNode = [...(checkbox?.childNodes ?? [])].find(
+        (node) => node.nodeType === 3 && node.textContent?.trim()
+      );
+      if (textNode && label) textNode.textContent = `\n                ${label}\n                `;
+      signalResultCycle(root);
+    });
+  }
+  for (const input of root.querySelectorAll<HTMLInputElement>(
+    'input[placeholder="最低值"], input[placeholder="最高值"]'
+  )) {
+    input.addEventListener("input", () => signalResultCycle(root));
+  }
+}
+
 function appendCard(root: Document, id: string): void {
   const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
   if (!list) throw new Error("missing fixture list");
@@ -90,6 +115,28 @@ function dependencies(
 }
 
 describe("Panzhi visible-page selectors", () => {
+  it("applies filters through the div controls used by the live Panzhi page", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installLiveFilterBehavior(root);
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result.kind).toBe("snapshot");
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    expect(controls.qq.classList.contains("opt-item_active")).toBe(true);
+    expect(controls.secondRealName.classList.contains("opt-item_active")).toBe(true);
+    expect(controls.requiredSkins.every((control) =>
+      control.classList.contains("opt-item_active"))).toBe(true);
+    expect(controls.allSemantics.classList.contains("drop-item")).toBe(true);
+    expect(selectedState(controls.allSemantics)).toEqual({
+      kind: "selected-state",
+      selected: true
+    });
+    expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
+  });
+
   it("locates, applies, and strictly verifies the approved native filters", async () => {
     const root = loadFixture();
     installFilterBehavior(root);
