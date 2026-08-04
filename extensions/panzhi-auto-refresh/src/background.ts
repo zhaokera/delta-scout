@@ -1,6 +1,8 @@
 import {
   PanzhiAutomationApi,
   PanzhiAutomationApiError,
+  PanzhiAutomationNetworkError,
+  PanzhiAutomationProtocolError,
   type PanzhiAutomationApiPort,
   type PanzhiAutomationJobView,
   type PanzhiAutomationState,
@@ -8,6 +10,7 @@ import {
 } from "./api.js";
 import {
   PANZHI_CATALOG_URL,
+  PANZHI_REQUIRED_OPERATOR_SKINS,
   type PageRunnerResult,
   type PanzhiPageMode,
   type PanzhiPageSnapshot,
@@ -25,6 +28,259 @@ const STORAGE_KEY = "panzhiActiveJob";
 const ALARM_NAME = "panzhi-automation-poll";
 const ALARM_PERIOD_MINUTES = 0.5;
 const MAX_SUBMISSION_ATTEMPTS = 4;
+
+export class PanzhiContentProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PanzhiContentProtocolError";
+  }
+}
+
+function strictRecord(
+  value: unknown,
+  keys: readonly string[]
+): Record<string, unknown> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  const actualKeys = Object.keys(input);
+  return actualKeys.length === keys.length &&
+    actualKeys.every((key) => keys.includes(key))
+    ? input
+    : null;
+}
+
+function contentProtocol(message: string): never {
+  throw new PanzhiContentProtocolError(message);
+}
+
+function verificationBlocker(value: unknown): VerificationBlocker | null {
+  return value === "captcha" || value === "slider" || value === "login"
+    ? value
+    : null;
+}
+
+export function parseVerificationCheck(value: unknown): VerificationCheck {
+  const clear = strictRecord(value, ["kind"]);
+  if (clear?.kind === "clear") return { kind: "clear" };
+  const blocked = strictRecord(value, ["kind", "blocker"]);
+  const blocker = verificationBlocker(blocked?.blocker);
+  if (blocked?.kind === "blocked" && blocker) {
+    return { kind: "blocked", blocker };
+  }
+  return contentProtocol("invalid verification response");
+}
+
+function validIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function parseFilterProof(value: unknown): boolean {
+  const proof = strictRecord(value, [
+    "currentUrl",
+    "gameLabel",
+    "minPriceInput",
+    "maxPriceInput",
+    "secondRealNameFilter",
+    "operatorSkinFilter",
+    "observedAt"
+  ]);
+  if (!proof) return false;
+  const realName = strictRecord(proof.secondRealNameFilter, [
+    "label",
+    "selected"
+  ]);
+  const skin = strictRecord(proof.operatorSkinFilter, [
+    "fieldId",
+    "fieldLabel",
+    "fieldType",
+    "mappingField",
+    "searchType",
+    "searchTypeLabel",
+    "selectedOptions"
+  ]);
+  if (!realName || !skin || !Array.isArray(skin.selectedOptions)) return false;
+  const optionsValid = skin.selectedOptions.length ===
+      PANZHI_REQUIRED_OPERATOR_SKINS.length &&
+    skin.selectedOptions.every((option, index) => {
+      const parsed = strictRecord(option, [
+        "optionId",
+        "label",
+        "metadataCode"
+      ]);
+      const expected = PANZHI_REQUIRED_OPERATOR_SKINS[index];
+      return parsed !== null && expected !== undefined &&
+        parsed.optionId === expected.optionId &&
+        parsed.label === expected.label &&
+        parsed.metadataCode === expected.metadataCode;
+    });
+  return proof.currentUrl === PANZHI_CATALOG_URL &&
+    proof.gameLabel === "三角洲行动" &&
+    proof.minPriceInput === "1900" &&
+    proof.maxPriceInput === "4000" &&
+    realName.label === "可二次实名" &&
+    realName.selected === true &&
+    skin.fieldId === "22858" &&
+    skin.fieldLabel === "特战干员外观" &&
+    skin.fieldType === "CHECKBOX" &&
+    skin.mappingField === "22858" &&
+    skin.searchType === "ALL" &&
+    skin.searchTypeLabel === "全部都要有" &&
+    optionsValid &&
+    validIsoTimestamp(proof.observedAt);
+}
+
+interface ParsedSnapshotItem {
+  id: string;
+  url: string;
+  priceCny: number;
+}
+
+function parseSnapshotItem(value: unknown): ParsedSnapshotItem | null {
+  const item = strictRecord(value, [
+    "sourceListingId",
+    "url",
+    "title",
+    "rawText",
+    "priceCny"
+  ]);
+  if (
+    !item ||
+    typeof item.sourceListingId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,80}$/.test(item.sourceListingId) ||
+    typeof item.url !== "string" ||
+    item.url.length > 300 ||
+    typeof item.title !== "string" ||
+    item.title.trim().length < 1 ||
+    item.title.trim().length > 500 ||
+    typeof item.rawText !== "string" ||
+    item.rawText.trim().length < 1 ||
+    item.rawText.trim().length > 4_000 ||
+    typeof item.priceCny !== "number" ||
+    !Number.isFinite(item.priceCny) ||
+    item.priceCny < 0 ||
+    item.priceCny > 100_000_000 ||
+    item.url !== item.url.trim()
+  ) return null;
+  try {
+    const url = new URL(item.url);
+    if (
+      url.origin !== "https://www.pzds.com" ||
+      url.pathname !== `/goodsDetails/${item.sourceListingId}/6` ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.port !== "" ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) return null;
+  } catch {
+    return null;
+  }
+  return {
+    id: item.sourceListingId,
+    url: item.url,
+    priceCny: item.priceCny
+  };
+}
+
+function parseSnapshot(value: unknown): PanzhiPageSnapshot | null {
+  const snapshot = strictRecord(value, [
+    "mode",
+    "filterProof",
+    "loadActionCount",
+    "observedUniqueCount",
+    "stopReason",
+    "items"
+  ]);
+  if (
+    !snapshot ||
+    (snapshot.mode !== "quick" && snapshot.mode !== "deep") ||
+    !Number.isInteger(snapshot.loadActionCount) ||
+    typeof snapshot.loadActionCount !== "number" ||
+    snapshot.loadActionCount < 2 ||
+    !Number.isInteger(snapshot.observedUniqueCount) ||
+    typeof snapshot.observedUniqueCount !== "number" ||
+    snapshot.observedUniqueCount < 1 ||
+    !Array.isArray(snapshot.items) ||
+    snapshot.items.length < 1 ||
+    !parseFilterProof(snapshot.filterProof)
+  ) return null;
+  const expectedStop = snapshot.mode === "quick"
+    ? "quick_window"
+    : "no_growth_twice";
+  const maxLoads = snapshot.mode === "quick" ? 6 : 100;
+  const maxItems = snapshot.mode === "quick" ? 60 : 500;
+  const ids = snapshot.items.map(parseSnapshotItem);
+  const parsedItems = ids.filter(
+    (item): item is ParsedSnapshotItem => item !== null
+  );
+  if (
+    snapshot.stopReason !== expectedStop ||
+    snapshot.loadActionCount > maxLoads ||
+    snapshot.items.length > maxItems ||
+    snapshot.observedUniqueCount !== snapshot.items.length ||
+    parsedItems.length !== snapshot.items.length ||
+    new Set(parsedItems.map(({ id }) => id)).size !== parsedItems.length ||
+    new Set(parsedItems.map(({ url }) => url)).size !== parsedItems.length ||
+    !parsedItems.some(({ priceCny }) => priceCny >= 1_900 && priceCny <= 4_000)
+  ) return null;
+  return snapshot as unknown as PanzhiPageSnapshot;
+}
+
+export function parsePageRunnerResult(value: unknown): PageRunnerResult {
+  const awaiting = strictRecord(value, [
+    "kind",
+    "stage",
+    "blocker",
+    "resumeStage"
+  ]);
+  const blocker = verificationBlocker(awaiting?.blocker);
+  if (
+    awaiting?.kind === "awaiting_user_verification" &&
+    awaiting.stage === "awaiting_user_verification" &&
+    blocker &&
+    awaiting.resumeStage === "applying_filters"
+  ) {
+    return {
+      kind: "awaiting_user_verification",
+      stage: "awaiting_user_verification",
+      blocker,
+      resumeStage: "applying_filters"
+    };
+  }
+
+  const failureKeys = value !== null && typeof value === "object" &&
+    "loadActionCount" in value
+    ? ["kind", "stage", "code", "message", "loadActionCount"]
+    : ["kind", "stage", "code", "message"];
+  const failure = strictRecord(value, failureKeys);
+  const validFailureCode = failure?.code === "missing_controls" ||
+    failure?.code === "structural_drift" ||
+    failure?.code === "collection_limit" ||
+    failure?.code === "operation_timeout";
+  const validFailureCount = failure && "loadActionCount" in failure
+    ? typeof failure.loadActionCount === "number" &&
+      Number.isInteger(failure.loadActionCount) &&
+      failure.loadActionCount >= 0
+    : true;
+  if (
+    failure?.kind === "failure" &&
+    (failure.stage === "applying_filters" || failure.stage === "collecting") &&
+    validFailureCode &&
+    typeof failure.message === "string" &&
+    validFailureCount
+  ) {
+    return failure as unknown as PageRunnerResult;
+  }
+
+  const result = strictRecord(value, ["kind", "stage", "snapshot"]);
+  const snapshot = parseSnapshot(result?.snapshot);
+  if (result?.kind === "snapshot" && result.stage === "submitting" && snapshot) {
+    return { kind: "snapshot", stage: "submitting", snapshot };
+  }
+  return contentProtocol("invalid runner response");
+}
 
 export interface ContentCommandBridge {
   sendMessage(tabId: number, message: unknown): Promise<unknown>;
@@ -139,6 +395,21 @@ function isSubmissionConflict(error: unknown): boolean {
     error.status === 409 && error.code === "refresh_conflict";
 }
 
+function isTransientSubmissionError(error: unknown): boolean {
+  return error instanceof PanzhiAutomationNetworkError ||
+    (error instanceof PanzhiAutomationApiError && (
+      error.status === 408 ||
+      error.status === 429 ||
+      (error.status >= 500 && error.status <= 599)
+    ));
+}
+
+function permanentSubmissionCode(error: unknown): string {
+  if (error instanceof PanzhiAutomationApiError) return error.code;
+  if (error instanceof PanzhiAutomationProtocolError) return "protocol_error";
+  return "unexpected_error";
+}
+
 function failureText(result: Extract<PageRunnerResult, { kind: "failure" }>): string {
   return `${result.code}: ${result.message}`.slice(0, 500);
 }
@@ -243,9 +514,23 @@ export class PanzhiBackgroundController {
     this.pendingSnapshot = null;
 
     if (this.active?.job.state === "awaiting_user_verification") {
-      const verification = await this.dependencies.checkVerification(
-        this.active.stored.tabId
-      );
+      const verificationTabId = await this.resolveVerificationTab();
+      if (verificationTabId === null) {
+        await this.failActive("verification_tab_missing");
+        return;
+      }
+      let verification: VerificationCheck;
+      try {
+        verification = await this.dependencies.checkVerification(
+          verificationTabId
+        );
+      } catch (error) {
+        if (error instanceof PanzhiContentProtocolError) {
+          await this.failActive(`content_protocol_error:${error.message}`);
+          return;
+        }
+        throw error;
+      }
       if (verification.kind === "blocked") return;
       await this.advanceTo("applying_filters");
       await this.ensureValidTab();
@@ -255,11 +540,39 @@ export class PanzhiBackgroundController {
     }
 
     if (!this.active) return;
-    const result = await this.dependencies.runPage(
-      this.active.stored.tabId,
-      this.active.stored.mode
-    );
+    let result: PageRunnerResult;
+    try {
+      result = await this.dependencies.runPage(
+        this.active.stored.tabId,
+        this.active.stored.mode
+      );
+    } catch (error) {
+      if (error instanceof PanzhiContentProtocolError) {
+        await this.failActive(`content_protocol_error:${error.message}`);
+        return;
+      }
+      throw error;
+    }
     await this.handlePageResult(result);
+  }
+
+  private async resolveVerificationTab(): Promise<number | null> {
+    if (!this.active) return null;
+    const storedTabId = this.active.stored.tabId;
+    try {
+      const storedTab = await this.dependencies.tabs.get(storedTabId);
+      if (storedTab) return storedTabId;
+    } catch {
+      // Fall through to existing-tab selection without creating or navigating.
+    }
+    const candidates = await this.dependencies.tabs.query({
+      url: "https://www.pzds.com/*"
+    });
+    const selected = selectPanzhiTab(candidates);
+    if (selected?.id === undefined) return null;
+    this.active.stored = { ...this.active.stored, tabId: selected.id };
+    await this.dependencies.storage.write(this.active.stored);
+    return selected.id;
   }
 
   private async recoverOrClaim(): Promise<ActiveJob | null> {
@@ -400,7 +713,10 @@ export class PanzhiBackgroundController {
         await this.clearActive();
         return;
       }
-      throw error;
+      if (isTransientSubmissionError(error)) throw error;
+      await this.failActive(
+        `snapshot_submit_rejected:${permanentSubmissionCode(error)}`
+      );
     }
   }
 
@@ -616,14 +932,14 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
       clear: () => browser.storage.local.remove(STORAGE_KEY)
     },
     runPage: async (tabId, mode) =>
-      await sendContentCommandWithInjection(tabId, {
+      parsePageRunnerResult(await sendContentCommandWithInjection(tabId, {
         type: "panzhi-run",
         mode
-      }, contentBridge) as PageRunnerResult,
+      }, contentBridge)),
     checkVerification: async (tabId) =>
-      await sendContentCommandWithInjection(tabId, {
+      parseVerificationCheck(await sendContentCommandWithInjection(tabId, {
         type: "panzhi-check-verification"
-      }, contentBridge) as VerificationCheck,
+      }, contentBridge)),
     focusTab: async (tabId) => {
       await browser.tabs.update(tabId, { active: true });
     },

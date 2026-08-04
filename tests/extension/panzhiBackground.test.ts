@@ -5,13 +5,19 @@ import type {
   VerificationBlocker
 } from "../../extensions/panzhi-auto-refresh/src/contracts.js";
 import {
+  PanzhiAutomationApi,
+  PanzhiAutomationNetworkError,
   PanzhiAutomationApiError,
+  PanzhiAutomationProtocolError,
   type PanzhiAutomationApiPort,
   type PanzhiAutomationClaim,
   type PanzhiAutomationJobView
 } from "../../extensions/panzhi-auto-refresh/src/api.js";
 import {
   normalizeStoredPanzhiJob,
+  parsePageRunnerResult,
+  parseVerificationCheck,
+  PanzhiContentProtocolError,
   PanzhiBackgroundController,
   sendContentCommandWithInjection,
   type PanzhiBackgroundDependencies,
@@ -237,6 +243,73 @@ function makeFixture(options: {
 }
 
 describe("Panzhi MV3 worker lifecycle", () => {
+  it("classifies fetch rejection as network failure and malformed success as protocol failure", async () => {
+    const networkApi = new PanzhiAutomationApi(
+      vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+    );
+    await expect(networkApi.claimJob()).rejects.toBeInstanceOf(
+      PanzhiAutomationNetworkError
+    );
+
+    const protocolApi = new PanzhiAutomationApi(
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 202,
+        json: vi.fn().mockResolvedValue({ bearerToken: "missing-job" })
+      })
+    );
+    await expect(protocolApi.claimJob()).rejects.toBeInstanceOf(
+      PanzhiAutomationProtocolError
+    );
+  });
+
+  it("strictly parses content bridge verification and runner messages", () => {
+    expect(parseVerificationCheck({ kind: "clear" })).toEqual({ kind: "clear" });
+    expect(parseVerificationCheck({
+      kind: "blocked",
+      blocker: "login"
+    })).toEqual({ kind: "blocked", blocker: "login" });
+    expect(() => parseVerificationCheck({
+      kind: "clear",
+      blocker: "captcha"
+    })).toThrow(PanzhiContentProtocolError);
+    expect(() => parseVerificationCheck({
+      kind: "blocked",
+      blocker: "unknown"
+    })).toThrow(PanzhiContentProtocolError);
+
+    const complete = snapshotResult(snapshot("STRICT-CARD"));
+    expect(parsePageRunnerResult(complete)).toEqual(complete);
+    expect(() => parsePageRunnerResult({ kind: "snapshot" }))
+      .toThrow(PanzhiContentProtocolError);
+    expect(() => parsePageRunnerResult({
+      ...complete,
+      snapshot: { ...complete.snapshot, observedUniqueCount: Number.NaN }
+    })).toThrow(PanzhiContentProtocolError);
+    expect(() => parsePageRunnerResult({
+      ...complete,
+      snapshot: { ...complete.snapshot, loadActionCount: 1 }
+    })).toThrow(PanzhiContentProtocolError);
+    expect(() => parsePageRunnerResult({
+      ...complete,
+      snapshot: {
+        ...complete.snapshot,
+        observedUniqueCount: 0,
+        items: []
+      }
+    })).toThrow(PanzhiContentProtocolError);
+    expect(() => parsePageRunnerResult({
+      ...complete,
+      snapshot: {
+        ...complete.snapshot,
+        items: [{
+          ...complete.snapshot.items[0],
+          url: `${complete.snapshot.items[0]?.url}?tracking=1`
+        }]
+      }
+    })).toThrow(PanzhiContentProtocolError);
+  });
+
   it("normalizes legacy storage to the exact four ownership fields", () => {
     expect(normalizeStoredPanzhiJob({
       jobId: firstJobId,
@@ -486,6 +559,90 @@ describe("Panzhi MV3 worker lifecycle", () => {
     expect(f.dependencies.runPage).not.toHaveBeenCalled();
   });
 
+  it("reselects only an existing deterministic tab when the stored verification tab was closed", async () => {
+    const active = {
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick" as const,
+      tabId: 99
+    };
+    const f = makeFixture({
+      stored: active,
+      resumeResult: claim(firstJobId, "awaiting_user_verification"),
+      existingTabs: [
+        { id: 4, url: canonicalUrl, lastAccessed: 50 },
+        { id: 3, url: canonicalUrl, lastAccessed: 50 }
+      ],
+      checkResult: { kind: "blocked", blocker: "captcha" }
+    });
+
+    await f.controller.tick();
+
+    expect(f.tabs.query).toHaveBeenCalledOnce();
+    expect(f.tabs.create).not.toHaveBeenCalled();
+    expect(f.tabs.update).not.toHaveBeenCalled();
+    expect(f.dependencies.checkVerification).toHaveBeenCalledWith(3);
+    expect(f.writes).toContainEqual({ ...active, tabId: 3 });
+  });
+
+  it("fails safely when a closed verification tab has no existing replacement", async () => {
+    const active = {
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick" as const,
+      tabId: 99
+    };
+    const f = makeFixture({
+      stored: active,
+      resumeResult: claim(firstJobId, "awaiting_user_verification"),
+      existingTabs: []
+    });
+
+    await f.controller.tick();
+
+    expect(f.tabs.query).toHaveBeenCalledOnce();
+    expect(f.tabs.create).not.toHaveBeenCalled();
+    expect(f.tabs.update).not.toHaveBeenCalled();
+    expect(f.dependencies.checkVerification).not.toHaveBeenCalled();
+    expect(f.api.updateJobState).toHaveBeenCalledWith(active, {
+      state: "failed",
+      error: "verification_tab_missing"
+    });
+    expect(f.getStored()).toBeNull();
+  });
+
+  it("fails safely on an invalid verification bridge response without navigating", async () => {
+    const active = {
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick" as const,
+      tabId: 7
+    };
+    const f = makeFixture({
+      stored: active,
+      resumeResult: claim(firstJobId, "awaiting_user_verification"),
+      existingTabs: [{
+        id: 7,
+        url: "https://www.pzds.com/login",
+        lastAccessed: 100
+      }]
+    });
+    vi.mocked(f.dependencies.checkVerification).mockRejectedValue(
+      new PanzhiContentProtocolError("invalid verification response")
+    );
+
+    await f.controller.tick();
+
+    expect(f.tabs.query).not.toHaveBeenCalled();
+    expect(f.tabs.update).not.toHaveBeenCalled();
+    expect(f.tabs.create).not.toHaveBeenCalled();
+    expect(f.api.updateJobState).toHaveBeenCalledWith(active, {
+      state: "failed",
+      error: "content_protocol_error:invalid verification response"
+    });
+    expect(f.getStored()).toBeNull();
+  });
+
   it("after verification disappears, reports applying_filters before restarting the runner", async () => {
     const active = {
       jobId: firstJobId,
@@ -538,6 +695,26 @@ describe("Panzhi MV3 worker lifecycle", () => {
     expect(f.dependencies.notifyVerification).toHaveBeenCalledWith("slider");
     expect(f.dependencies.storage.clear).not.toHaveBeenCalled();
     expect(f.getStored()).toEqual(active);
+  });
+
+  it("fails safely on an invalid runner response without creating a pending snapshot", async () => {
+    const f = makeFixture({
+      runnerResult: Promise.reject(
+        new PanzhiContentProtocolError("invalid runner response")
+      )
+    });
+
+    await f.controller.tick();
+
+    expect(f.api.submitSnapshot).not.toHaveBeenCalled();
+    expect(f.api.updateJobState).toHaveBeenLastCalledWith(
+      expect.anything(),
+      {
+        state: "failed",
+        error: "content_protocol_error:invalid runner response"
+      }
+    );
+    expect(f.getStored()).toBeNull();
   });
 
   it("never persists collected cards and discards them across worker restart", async () => {
@@ -625,7 +802,10 @@ describe("Panzhi MV3 worker lifecycle", () => {
   });
 
   it.each([
-    ["network failure", new Error("localhost unavailable")],
+    [
+      "network failure",
+      new PanzhiAutomationNetworkError("localhost unavailable")
+    ],
     [
       "HTTP 503",
       new PanzhiAutomationApiError(
@@ -662,6 +842,32 @@ describe("Panzhi MV3 worker lifecycle", () => {
       expect(submitted).toHaveLength(2);
       expect(submitted[0]?.[1]).toBe(payload);
       expect(submitted[1]?.[1]).toBe(payload);
+      expect(f.getStored()).toBeNull();
+    }
+  );
+
+  it.each([
+    [400, "invalid_panzhi_automation_payload"],
+    [409, "body_mismatch"],
+    [409, "invalid_transition"]
+  ])(
+    "fails and clears a permanently rejected snapshot (%s %s)",
+    async (status, code) => {
+      const f = makeFixture();
+      vi.mocked(f.api.submitSnapshot).mockRejectedValueOnce(
+        new PanzhiAutomationApiError(status, code, "permanent rejection")
+      );
+
+      await f.controller.tick();
+
+      expect(f.api.submitSnapshot).toHaveBeenCalledOnce();
+      expect(f.api.updateJobState).toHaveBeenLastCalledWith(
+        expect.anything(),
+        {
+          state: "failed",
+          error: `snapshot_submit_rejected:${code}`
+        }
+      );
       expect(f.getStored()).toBeNull();
     }
   );

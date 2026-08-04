@@ -95,6 +95,20 @@ export class PanzhiAutomationApiError extends Error {
   }
 }
 
+export class PanzhiAutomationNetworkError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "PanzhiAutomationNetworkError";
+  }
+}
+
+export class PanzhiAutomationProtocolError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "PanzhiAutomationProtocolError";
+  }
+}
+
 type FetchLike = (
   input: string,
   init?: RequestInit
@@ -102,14 +116,18 @@ type FetchLike = (
 
 function record(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Panzhi automation API returned an invalid object");
+    throw new PanzhiAutomationProtocolError(
+      "Panzhi automation API returned an invalid object"
+    );
   }
   return value as Record<string, unknown>;
 }
 
 function nullableString(value: unknown, field: string): string | null {
   if (value === null || typeof value === "string") return value;
-  throw new Error(`Panzhi automation API returned invalid ${field}`);
+  throw new PanzhiAutomationProtocolError(
+    `Panzhi automation API returned invalid ${field}`
+  );
 }
 
 const JOB_STATES: ReadonlySet<string> = new Set([
@@ -135,7 +153,9 @@ function parseJob(value: unknown): PanzhiAutomationJobView {
     typeof input.updatedAt !== "string" ||
     (input.scanRunId !== null && typeof input.scanRunId !== "number")
   ) {
-    throw new Error("Panzhi automation API returned an invalid job");
+    throw new PanzhiAutomationProtocolError(
+      "Panzhi automation API returned an invalid job"
+    );
   }
   return {
     id: input.id,
@@ -161,7 +181,9 @@ function parseJob(value: unknown): PanzhiAutomationJobView {
 function parseClaim(value: unknown): PanzhiAutomationClaim {
   const input = record(value);
   if (typeof input.bearerToken !== "string") {
-    throw new Error("Panzhi automation API omitted its bearer token");
+    throw new PanzhiAutomationProtocolError(
+      "Panzhi automation API omitted its bearer token"
+    );
   }
   return { job: parseJob(input.job), bearerToken: input.bearerToken };
 }
@@ -201,7 +223,9 @@ export class PanzhiAutomationApi implements PanzhiAutomationApiPort {
   ): Promise<PanzhiAutomationHeartbeatResponse> {
     const input = record(await this.jobRequest(active, "heartbeat", {}));
     if (typeof input.leaseExpiresAt !== "string") {
-      throw new Error("Panzhi heartbeat omitted its lease expiry");
+      throw new PanzhiAutomationProtocolError(
+        "Panzhi heartbeat omitted its lease expiry"
+      );
     }
     return { job: parseJob(input.job), leaseExpiresAt: input.leaseExpiresAt };
   }
@@ -215,7 +239,9 @@ export class PanzhiAutomationApi implements PanzhiAutomationApiPort {
       input.shouldNotify !== undefined &&
       typeof input.shouldNotify !== "boolean"
     ) {
-      throw new Error("Panzhi state response has invalid notification state");
+      throw new PanzhiAutomationProtocolError(
+        "Panzhi state response has invalid notification state"
+      );
     }
     return {
       job: parseJob(input.job),
@@ -231,7 +257,9 @@ export class PanzhiAutomationApi implements PanzhiAutomationApiPort {
   ): Promise<PanzhiAutomationSnapshotResponse> {
     const input = record(await this.jobRequest(active, "snapshot", snapshot));
     if (typeof input.deduplicated !== "boolean") {
-      throw new Error("Panzhi snapshot response is invalid");
+      throw new PanzhiAutomationProtocolError(
+        "Panzhi snapshot response is invalid"
+      );
     }
     return { ...input, deduplicated: input.deduplicated };
   }
@@ -256,21 +284,31 @@ export class PanzhiAutomationApi implements PanzhiAutomationApiPort {
     },
     allowNoContent = false
   ): Promise<unknown | null> {
-    const response = await this.fetcher(url, {
-      method: request.method,
-      headers: {
-        "Content-Type": "application/json",
-        ...request.headers
-      },
-      body: JSON.stringify(request.body)
-    });
+    let response: Response;
+    try {
+      response = await this.fetcher(url, {
+        method: request.method,
+        headers: {
+          "Content-Type": "application/json",
+          ...request.headers
+        },
+        body: JSON.stringify(request.body)
+      });
+    } catch (error) {
+      throw new PanzhiAutomationNetworkError(
+        "Panzhi automation API is unreachable",
+        error
+      );
+    }
     if (allowNoContent && response.status === 204) return null;
     let body: unknown = null;
     try {
       body = await response.json();
     } catch {
       if (response.ok) {
-        throw new Error("Panzhi automation API returned invalid JSON");
+        throw new PanzhiAutomationProtocolError(
+          "Panzhi automation API returned invalid JSON"
+        );
       }
     }
     if (!response.ok) {
