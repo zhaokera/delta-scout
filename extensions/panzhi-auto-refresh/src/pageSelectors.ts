@@ -136,6 +136,27 @@ function uniqueTextControl(
   return matches[0];
 }
 
+function nearbyVisibleText(field: HTMLElement): string {
+  let container = field.parentElement;
+  for (let depth = 0; container && depth < 4; depth += 1) {
+    const texts: string[] = [];
+    for (const element of container.querySelectorAll<HTMLElement>("*")) {
+      if (!isElementVisible(element)) continue;
+      const text = normalizeVisibleText(element.textContent);
+      if (!text || text.length > 80) continue;
+      const hasVisibleTextChild = [...element.children].some((child) =>
+        isElementVisible(child) && normalizeVisibleText(child.textContent) !== ""
+      );
+      if (hasVisibleTextChild || texts.includes(text)) continue;
+      texts.push(text);
+      if (texts.length === 12) break;
+    }
+    if (texts.length > 1) return texts.join(" | ").slice(0, 320);
+    container = container.parentElement;
+  }
+  return normalizeVisibleText(field.textContent).slice(0, 80);
+}
+
 function smallestGroup(
   root: Document,
   fieldLabel: string,
@@ -168,9 +189,14 @@ function smallestGroup(
   }
 
   if (groups.size === 0) {
+    const nearby = fieldLabels.map(nearbyVisibleText)
+      .filter((text, index, all) => text !== "" && all.indexOf(text) === index)
+      .join(" || ")
+      .slice(0, 320);
     return failure(
       "missing_controls",
-      `Missing controls within visible field: ${fieldLabel}`
+      `Missing controls within visible field: ${fieldLabel}` +
+        (nearby ? `; nearby=${nearby}` : "")
     );
   }
   const smallestGroups = [...groups].filter(

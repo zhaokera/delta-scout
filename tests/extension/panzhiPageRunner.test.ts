@@ -358,6 +358,26 @@ describe("Panzhi visible-page selectors", () => {
     });
   });
 
+  it("reports bounded nearby filter text when a visible field is collapsed", () => {
+    const root = loadFixture();
+    const skinGroup = root.querySelector<HTMLElement>(
+      '[aria-label="特战干员外观"]'
+    );
+    expect(skinGroup).not.toBeNull();
+    skinGroup!.innerHTML = `
+      <h2>特战干员外观</h2>
+      <button type="button">展开更多</button>
+      <span>请选择外观</span>
+    `;
+
+    expect(locateRequiredControls(root)).toMatchObject({
+      kind: "failure",
+      code: "missing_controls",
+      message:
+        "Missing controls within visible field: 特战干员外观; nearby=特战干员外观 | 展开更多 | 请选择外观"
+    });
+  });
+
   it("detects captcha, slider, and login walls from visible semantic markers", () => {
     const captcha = loadFixture("panzhi-captcha-page.html");
     expect(detectVerificationBlocker(captcha)).toMatchObject({
