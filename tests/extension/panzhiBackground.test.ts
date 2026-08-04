@@ -354,12 +354,10 @@ describe("Panzhi MV3 worker lifecycle", () => {
     });
   });
 
-  it("injects the packaged content entry once when an existing tab has no receiver, then retries each command once", async () => {
+  it("shares one packaged content injection across overlapping commands", async () => {
     const injection = deferred<void>();
     const bridge = {
       sendMessage: vi.fn()
-        .mockRejectedValueOnce(new Error("Could not establish connection. Receiving end does not exist."))
-        .mockRejectedValueOnce(new Error("Could not establish connection. Receiving end does not exist."))
         .mockResolvedValueOnce({ kind: "clear" })
         .mockResolvedValueOnce({ kind: "clear" }),
       executeScript: vi.fn().mockReturnValue(injection.promise)
@@ -378,7 +376,26 @@ describe("Panzhi MV3 worker lifecycle", () => {
       target: { tabId: 7 },
       files: ["content.js"]
     });
-    expect(bridge.sendMessage).toHaveBeenCalledTimes(4);
+    expect(bridge.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("injects the current packaged content before a stale receiver can answer", async () => {
+    let currentInjected = false;
+    const bridge = {
+      sendMessage: vi.fn().mockImplementation(async () =>
+        currentInjected ? "current" : "stale"),
+      executeScript: vi.fn().mockImplementation(async () => {
+        currentInjected = true;
+      })
+    };
+
+    await expect(sendContentCommandWithInjection(
+      7,
+      { type: "panzhi-run-v2", mode: "quick" },
+      bridge
+    )).resolves.toBe("current");
+    expect(bridge.executeScript).toHaveBeenCalledOnce();
+    expect(bridge.sendMessage).toHaveBeenCalledOnce();
   });
 
   it("shares one in-memory promise across overlapping alarm ticks", async () => {

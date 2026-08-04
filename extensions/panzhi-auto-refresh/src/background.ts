@@ -321,13 +321,8 @@ export async function sendContentCommandWithInjection(
   message: unknown,
   bridge: ContentCommandBridge
 ): Promise<unknown> {
-  try {
-    return await bridge.sendMessage(tabId, message);
-  } catch (error) {
-    if (!isMissingContentReceiver(error)) throw error;
-    await injectContentOnce(tabId, bridge);
-    return bridge.sendMessage(tabId, message);
-  }
+  await injectContentOnce(tabId, bridge);
+  return bridge.sendMessage(tabId, message);
 }
 
 export interface StoredPanzhiJob {
@@ -935,12 +930,12 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
     },
     runPage: async (tabId, mode) =>
       parsePageRunnerResult(await sendContentCommandWithInjection(tabId, {
-        type: "panzhi-run",
+        type: "panzhi-run-v2",
         mode
       }, contentBridge)),
     checkVerification: async (tabId) =>
       parseVerificationCheck(await sendContentCommandWithInjection(tabId, {
-        type: "panzhi-check-verification"
+        type: "panzhi-check-verification-v2"
       }, contentBridge)),
     focusTab: async (tabId) => {
       await browser.tabs.update(tabId, { active: true });
