@@ -541,7 +541,7 @@ export function locateResultContainer(
   const visibility = new WeakMap<Element, boolean>();
   const explicit = new Set(
     [...root.querySelectorAll<HTMLElement>(
-      '[aria-label="商品列表"], [data-panzhi-results], [role="list"]'
+      '[aria-label="商品列表"], [data-panzhi-results]'
     )].filter(
       (element) =>
         isElementVisible(element, visibility) &&
@@ -572,9 +572,36 @@ export function locateResultContainer(
     }
   }
   const element = smallestUniqueContainer(inferred);
-  return element
-    ? { kind: "result-container", element }
-    : failure("structural_drift", "Panzhi result container is ambiguous");
+  if (!element) {
+    return failure("structural_drift", "Panzhi result container is ambiguous");
+  }
+
+  const inferredIds = visibleCardAnchors(element, visibility)
+    .map((anchor) => cardIdentity(anchor)!)
+    .filter((id, index, ids) => ids.indexOf(id) === index);
+  const weakRoleLists = [...root.querySelectorAll<HTMLElement>('[role="list"]')]
+    .filter(
+      (candidate) =>
+        isElementVisible(candidate, visibility) &&
+        visibleCardAnchors(candidate, visibility).length >= 2
+    );
+  for (const weak of weakRoleLists) {
+    const weakIds = visibleCardAnchors(weak, visibility)
+      .map((anchor) => cardIdentity(anchor)!)
+      .filter((id, index, ids) => ids.indexOf(id) === index);
+    const sameCards = weakIds.length === inferredIds.length &&
+      weakIds.every((id, index) => id === inferredIds[index]);
+    const sameBranch = weak === element ||
+      weak.contains(element) ||
+      element.contains(weak);
+    if (!sameBranch || !sameCards) {
+      return failure(
+        "structural_drift",
+        "Panzhi role list conflicts with the inferred result container"
+      );
+    }
+  }
+  return { kind: "result-container", element };
 }
 
 function scopedVisibleTextContains(root: HTMLElement, pattern: RegExp): boolean {
@@ -595,7 +622,19 @@ export function readResultState(root: Document): ResultState | SelectorFailure {
   const located = locateResultContainer(root);
   if (located.kind === "failure") return located;
   const anchors = visibleCardAnchors(located.element);
-  const visibleIds = [...new Set(anchors.map((anchor) => cardIdentity(anchor)!))];
+  const visibleCards = new Map<string, string>();
+  for (const anchor of anchors) {
+    const id = cardIdentity(anchor)!;
+    if (visibleCards.has(id)) continue;
+    const heading = anchor.querySelector<HTMLElement>("h1,h2,h3,h4,h5,h6");
+    const title = heading ? visibleDescendantText(heading) : "";
+    const rawText = visibleDescendantText(anchor);
+    const price = rawText.match(
+      /[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/
+    )?.[1] ?? "";
+    visibleCards.set(id, JSON.stringify({ id, title, rawText, price }));
+  }
+  const visibleIds = [...visibleCards.keys()];
   const loadingVisible = resultLoadingVisible(located.element);
   const endMarkerVisible =
     located.element.getAttribute("data-end") === "true" ||
@@ -606,7 +645,7 @@ export function readResultState(root: Document): ResultState | SelectorFailure {
   }
   return {
     kind: "result-state",
-    signature: visibleIds.join("\u001f"),
+    signature: [...visibleCards.values()].join("\u001f"),
     visibleIds,
     loadingVisible,
     endMarkerVisible

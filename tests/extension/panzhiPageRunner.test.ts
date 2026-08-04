@@ -11,6 +11,7 @@ import {
   detectVerificationBlocker,
   extractVisibleCards,
   locateRequiredControls,
+  readResultState,
   selectedState,
   verifyRequiredFilters
 } from "../../extensions/panzhi-auto-refresh/src/pageSelectors.js";
@@ -181,6 +182,61 @@ describe("Panzhi visible-page selectors", () => {
     });
   });
 
+  it("does not let a single-card role list override the inferred main results", () => {
+    const root = loadFixture();
+    root.body.innerHTML = `<main>
+      <div>
+        <a href="/goodsDetails/SA2VISIBLE1/6">
+          <h4>主商品 A</h4><span>¥ 2888</span>
+        </a>
+        <a href="/goodsDetails/SA2VISIBLE2/6">
+          <h4>主商品 B</h4><span>¥ 3999</span>
+        </a>
+      </div>
+      <aside role="list">
+        <a href="/goodsDetails/SA2RECOMMENDED/6">
+          <h4>推荐商品</h4><span>¥ 2666</span>
+        </a>
+      </aside>
+    </main>`;
+
+    const extracted = extractVisibleCards(root);
+
+    expect(extracted.kind).toBe("cards");
+    if (extracted.kind !== "cards") return;
+    expect(extracted.items.map(({ sourceListingId }) => sourceListingId))
+      .toEqual(["SA2VISIBLE1", "SA2VISIBLE2"]);
+
+    root.querySelector("aside")?.insertAdjacentHTML(
+      "beforeend",
+      `<a href="/goodsDetails/SA2RECOMMENDED2/6">
+        <h4>推荐商品二</h4><span>¥ 2777</span>
+      </a>`
+    );
+    expect(extractVisibleCards(root)).toMatchObject({
+      kind: "failure",
+      code: "structural_drift"
+    });
+  });
+
+  it("changes the result signature when a visible same-id price changes", () => {
+    const root = loadFixture();
+    const before = readResultState(root);
+    expect(before.kind).toBe("result-state");
+    const visiblePrice = root.querySelector<HTMLElement>(
+      "a[href*='SA2VISIBLE1'] span:not(.fixture-old-price)"
+    );
+    expect(visiblePrice).not.toBeNull();
+    visiblePrice!.textContent = "¥ 3888";
+
+    const after = readResultState(root);
+
+    expect(after.kind).toBe("result-state");
+    if (before.kind !== "result-state" || after.kind !== "result-state") return;
+    expect(after.visibleIds).toEqual(before.visibleIds);
+    expect(after.signature).not.toBe(before.signature);
+  });
+
   it("does not borrow selected state from an unrelated sibling input", () => {
     const root = loadFixture();
     const wrapper = root.createElement("div");
@@ -343,6 +399,56 @@ describe("Panzhi visible-page selectors", () => {
 });
 
 describe("Panzhi page collection runner", () => {
+  it("waits for a quiet window after a same-id price update", async () => {
+    const root = loadFixture();
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    controls.minPrice.value = "1900";
+    controls.maxPrice.value = "4000";
+    for (const control of [
+      controls.qq,
+      controls.secondRealName,
+      ...controls.requiredSkins,
+      controls.allSemantics
+    ]) {
+      control.setAttribute("aria-pressed", "true");
+    }
+    const list = root.querySelector<HTMLElement>("[aria-label='商品列表']")!;
+    const visiblePrice = root.querySelector<HTMLElement>(
+      "a[href*='SA2VISIBLE1'] span:not(.fixture-old-price)"
+    )!;
+    let priceChangedAt = 0;
+    let collectingAt = 0;
+    list.setAttribute("aria-busy", "true");
+    setTimeout(() => list.setAttribute("aria-busy", "false"), 0);
+    setTimeout(() => {
+      visiblePrice.textContent = "¥ 3888";
+      priceChangedAt = Date.now();
+    }, 15);
+
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      mutationTimeoutMs: 100,
+      resultStabilityMs: 30,
+      loadMore: async () => {
+        for (let index = 0; index < 58; index += 1) {
+          appendCard(root, `SA2QUIET${String(index).padStart(2, "0")}`);
+        }
+      },
+      onStage: async (stage) => {
+        if (stage === "collecting") collectingAt = Date.now();
+      }
+    })).run("quick");
+
+    expect(result.kind).toBe("snapshot");
+    if (result.kind !== "snapshot") return;
+    expect(result.snapshot.items.find(
+      ({ sourceListingId }) => sourceListingId === "SA2VISIBLE1"
+    )?.priceCny).toBe(3888);
+    expect(priceChangedAt).toBeGreaterThan(0);
+    expect(collectingAt - priceChangedAt).toBeGreaterThanOrEqual(24);
+  });
+
   it("waits for preselected filters to become idle before initializing cards", async () => {
     const root = loadFixture();
     const controls = locateRequiredControls(root);
