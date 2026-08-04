@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -40,7 +40,27 @@ await build({
   treeShaking: true
 });
 
-await copyFile(
+const rootManifest = JSON.parse(await readFile(
   resolve(extensionRoot, "manifest.json"),
-  resolve(outputDirectory, "manifest.json")
+  "utf8"
+));
+const stripDistributionPrefix = (path) => path.replace(/^dist\//u, "");
+const distributionManifest = {
+  ...rootManifest,
+  background: {
+    ...rootManifest.background,
+    service_worker: stripDistributionPrefix(
+      rootManifest.background.service_worker
+    )
+  },
+  content_scripts: rootManifest.content_scripts.map((entry) => ({
+    ...entry,
+    js: entry.js.map(stripDistributionPrefix)
+  }))
+};
+
+await writeFile(
+  resolve(outputDirectory, "manifest.json"),
+  `${JSON.stringify(distributionManifest, null, 2)}\n`,
+  "utf8"
 );

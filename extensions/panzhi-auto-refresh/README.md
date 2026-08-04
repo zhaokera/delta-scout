@@ -14,7 +14,7 @@
 
 2. 在 Chrome 地址栏打开 `chrome://extensions`。
 3. 打开右上角“开发者模式”。
-4. 点击“加载已解压的扩展程序”，选择项目里的 `extensions/panzhi-auto-refresh/dist/`，不要选择源码目录。
+4. 点击“加载已解压的扩展程序”，选择项目里的 `extensions/panzhi-auto-refresh/dist/`。如果误选了父目录 `extensions/panzhi-auto-refresh/`，构建后也能正常运行，避免出现“看似安装成功但后台未启动”。
 5. 打开 `http://127.0.0.1:4311/refresh` 进入刷新中心。盼之刷新卡片通常会在 30 秒内显示“Chrome 自动刷新已连接”。
 
 扩展源码或清单更新后，重新运行 `pnpm build:panzhi-extension`，再到扩展页点击该扩展的“重新加载”。构建目录只包含 `manifest.json`、`background.js` 和 `content.js`，由构建命令重建，不提交到 Git。

@@ -31,7 +31,9 @@ describe("Panzhi extension build wiring", () => {
       "extensions/panzhi-auto-refresh/src/content.ts"
     );
     expect(buildScript).toContain("extensions/panzhi-auto-refresh/dist");
-    expect(buildScript).toContain("copyFile(");
+    expect(buildScript).toContain("readFile(");
+    expect(buildScript).toContain("writeFile(");
+    expect(buildScript).toContain("stripDistributionPrefix");
     expect(buildScript).toContain('resolve(extensionRoot, "manifest.json")');
   });
 

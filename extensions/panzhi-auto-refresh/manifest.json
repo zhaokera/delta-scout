@@ -15,13 +15,13 @@
     "http://127.0.0.1:4310/*"
   ],
   "background": {
-    "service_worker": "background.js",
+    "service_worker": "dist/background.js",
     "type": "module"
   },
   "content_scripts": [
     {
       "matches": ["https://www.pzds.com/*"],
-      "js": ["content.js"],
+      "js": ["dist/content.js"],
       "run_at": "document_idle"
     }
   ]
