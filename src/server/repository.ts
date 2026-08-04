@@ -524,6 +524,21 @@ export class ListingRepository {
     return Number(result.lastInsertRowid);
   }
 
+  hasCompletePublishedSourceSnapshot(source: SourceId): boolean {
+    const parsedSource = SourceIdSchema.parse(source);
+    const row = this.database.prepare(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM scan_source_results
+        WHERE source = ?
+          AND state = 'success'
+          AND published = 1
+          AND stop_reason <> 'quick_window'
+      ) AS present
+    `).get(parsedSource) as { present: number };
+    return row.present === 1;
+  }
+
   failScan(
     runId: number,
     error: string,

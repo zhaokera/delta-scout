@@ -231,6 +231,82 @@ describe("PanzhiSnapshotPublisher", () => {
     expect(count(database, "scan_runs")).toBe(0);
   });
 
+  it("does not treat captcha-limited deep listings as a complete quick baseline", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    publisher.publish(snapshot([item("CAPTCHA-ONLY")], {
+      stopReason: "captcha_required"
+    }), firstCapture);
+    const runCount = count(database, "scan_runs");
+    let thrown: unknown;
+
+    try {
+      publisher.publish(snapshot([item("QUICK-AFTER-CAPTCHA")], {
+        mode: "quick",
+        loadActionCount: 2,
+        stopReason: "quick_window",
+        filterProof: {
+          ...snapshot([]).filterProof,
+          observedAt: secondCapture.toISOString()
+        }
+      }), secondCapture);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(PanzhiSnapshotPublisherError);
+    expect(thrown).toMatchObject({
+      code: "panzhi_complete_snapshot_required"
+    });
+    expect(count(database, "scan_runs")).toBe(runCount);
+    expect(repository.getListings().map(({ sourceListingId }) =>
+      sourceListingId
+    )).toEqual(["CAPTCHA-ONLY"]);
+  });
+
+  it("accepts a trusted complete zero-item Panzhi scan as a quick baseline", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    const runId = repository.startScopedScan("panzhi", firstCapture);
+    repository.commitScanRefresh(runId, [], [{
+      source: "panzhi",
+      state: "success",
+      attemptedAt: firstCapture,
+      itemCount: 0,
+      metadata: {
+        pagesScanned: 4,
+        stopReason: "no_growth_twice",
+        observedItemCount: 0,
+        coverage: "full",
+        observedListingKeys: []
+      }
+    }], firstCapture);
+
+    const result = publisher.publish(snapshot([item("AFTER-EMPTY")], {
+      mode: "quick",
+      loadActionCount: 2,
+      stopReason: "quick_window",
+      filterProof: {
+        ...snapshot([]).filterProof,
+        observedAt: secondCapture.toISOString()
+      }
+    }), secondCapture);
+
+    expect(result).toMatchObject({
+      mode: "quick",
+      state: "success",
+      observedItemCount: 1,
+      publishedItemCount: 1,
+      preservedItemCount: 0,
+      published: true
+    });
+    expect(repository.getListings().map(({ sourceListingId }) =>
+      sourceListingId
+    )).toEqual(["AFTER-EMPTY"]);
+  });
+
   it("uses one outer transaction and creates exactly one scoped Panzhi scan", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);
@@ -317,6 +393,88 @@ describe("PanzhiSnapshotPublisher", () => {
         throw new Error("completion hook failed");
       }
     )).toThrow();
+
+    for (const [table, orderBy] of Object.entries(tables)) {
+      expect(tableRows(database, table, orderBy)).toEqual(before[table]);
+    }
+  });
+
+  it("rolls back a real anomaly-guard mutation when the completion hook throws", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    const trustedItems = Array.from({ length: 20 }, (_, index) =>
+      item(`ROLLBACK-TRUSTED-${String(index).padStart(2, "0")}`, 2_500 + index)
+    );
+    publisher.publish(snapshot(trustedItems, {
+      loadActionCount: 10
+    }), firstCapture);
+    seedHookRows(database);
+    const tables = {
+      listings: "listing_key",
+      source_status: "source",
+      source_anomaly_guards: "source",
+      listing_observations: "run_id, listing_key",
+      refresh_events: "id",
+      scan_source_results: "run_id, source",
+      scan_runs: "id",
+      panzhi_browser_jobs: "id",
+      refresh_schedule: "source"
+    } as const;
+    const before = Object.fromEntries(
+      Object.entries(tables).map(([table, orderBy]) => [
+        table,
+        tableRows(database, table, orderBy)
+      ])
+    );
+    const beforeRunCount = count(database, "scan_runs");
+
+    expect(() => publisher.publish(snapshot([
+      item("ROLLBACK-LOW-1"),
+      item("ROLLBACK-LOW-2")
+    ], {
+      loadActionCount: 2,
+      filterProof: {
+        ...snapshot([]).filterProof,
+        observedAt: secondCapture.toISOString()
+      }
+    }), secondCapture, (result) => {
+      expect(result).toMatchObject({
+        state: "quarantined",
+        published: false
+      });
+      expect(database.prepare(`
+        SELECT state, baseline_item_count, baseline_pages_scanned,
+               observed_item_count, observed_pages_scanned
+        FROM source_anomaly_guards WHERE source = 'panzhi'
+      `).get()).toEqual({
+        state: "suspect",
+        baseline_item_count: 20,
+        baseline_pages_scanned: 10,
+        observed_item_count: 2,
+        observed_pages_scanned: 2
+      });
+      expect(database.prepare(`
+        SELECT state, last_attempt_at, stop_reason
+        FROM source_status WHERE source = 'panzhi'
+      `).get()).toEqual({
+        state: "partial",
+        last_attempt_at: secondCapture.toISOString(),
+        stop_reason: "anomaly_guard"
+      });
+      expect(count(database, "scan_runs")).toBe(beforeRunCount + 1);
+      database.prepare(`
+        UPDATE panzhi_browser_jobs
+        SET error = 'hook-mutated', updated_at = ?
+        WHERE id = ?
+      `).run(secondCapture.toISOString(), panzhiJobId);
+      database.prepare(`
+        UPDATE refresh_schedule
+        SET last_state = 'failed', last_error = 'hook-mutated'
+        WHERE source = 'panzhi'
+      `).run();
+      throw new Error("completion hook failed after anomaly guard");
+    })).toThrow();
 
     for (const [table, orderBy] of Object.entries(tables)) {
       expect(tableRows(database, table, orderBy)).toEqual(before[table]);

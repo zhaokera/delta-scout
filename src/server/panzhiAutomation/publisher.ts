@@ -60,7 +60,10 @@ export class PanzhiSnapshotPublisher {
             ({ source }) => source === "panzhi"
           )
         : [];
-      if (mode === "quick" && previousPanzhi.length === 0) {
+      const hasCompleteBaseline = mode === "quick"
+        ? this.repository.hasCompletePublishedSourceSnapshot("panzhi")
+        : false;
+      if (mode === "quick" && !hasCompleteBaseline) {
         throw new PanzhiSnapshotPublisherError(
           "panzhi_complete_snapshot_required",
           "首次使用盼之时需要先完成一次完整快照"
