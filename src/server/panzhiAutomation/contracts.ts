@@ -113,8 +113,18 @@ const TRANSITIONS: Readonly<
   Record<PanzhiAutomationState, ReadonlySet<PanzhiAutomationState>>
 > = {
   queued: new Set(["opening_page", "failed", "cancelled"]),
-  opening_page: new Set(["applying_filters", "failed", "cancelled"]),
-  applying_filters: new Set(["collecting", "failed", "cancelled"]),
+  opening_page: new Set([
+    "applying_filters",
+    "awaiting_user_verification",
+    "failed",
+    "cancelled"
+  ]),
+  applying_filters: new Set([
+    "collecting",
+    "awaiting_user_verification",
+    "failed",
+    "cancelled"
+  ]),
   collecting: new Set([
     "awaiting_user_verification",
     "submitting",
@@ -122,8 +132,7 @@ const TRANSITIONS: Readonly<
     "cancelled"
   ]),
   awaiting_user_verification: new Set([
-    "collecting",
-    "submitting",
+    "applying_filters",
     "failed",
     "cancelled"
   ]),

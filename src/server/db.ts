@@ -261,6 +261,83 @@ export function createDatabase(path: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS panzhi_browser_jobs_state_idx
       ON panzhi_browser_jobs (state, updated_at);
 
+    CREATE TRIGGER IF NOT EXISTS
+      panzhi_browser_jobs_published_source_insert
+      BEFORE INSERT ON panzhi_browser_jobs
+      WHEN NEW.state = 'success'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scan_source_results
+          WHERE run_id = NEW.scan_run_id
+            AND source = 'panzhi'
+            AND published = 1
+        )
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'successful Panzhi job requires a published source result'
+        );
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS
+      panzhi_browser_jobs_published_source_update
+      BEFORE UPDATE OF state, scan_run_id ON panzhi_browser_jobs
+      WHEN NEW.state = 'success'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scan_source_results
+          WHERE run_id = NEW.scan_run_id
+            AND source = 'panzhi'
+            AND published = 1
+        )
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'successful Panzhi job requires a published source result'
+        );
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS
+      panzhi_published_source_result_update_guard
+      BEFORE UPDATE OF run_id, source, published ON scan_source_results
+      WHEN OLD.source = 'panzhi'
+        AND OLD.published = 1
+        AND (
+          NEW.run_id <> OLD.run_id
+          OR NEW.source <> 'panzhi'
+          OR NEW.published <> 1
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM panzhi_browser_jobs
+          WHERE scan_run_id = OLD.run_id
+            AND state = 'success'
+        )
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'cannot unlink a published Panzhi source result'
+        );
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS
+      panzhi_published_source_result_delete_guard
+      BEFORE DELETE ON scan_source_results
+      WHEN OLD.source = 'panzhi'
+        AND OLD.published = 1
+        AND EXISTS (
+          SELECT 1
+          FROM panzhi_browser_jobs
+          WHERE scan_run_id = OLD.run_id
+            AND state = 'success'
+        )
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'cannot delete a published Panzhi source result'
+        );
+      END;
+
     CREATE TABLE IF NOT EXISTS panzhi_extension_status (
       singleton INTEGER PRIMARY KEY
         CHECK(singleton = 1),

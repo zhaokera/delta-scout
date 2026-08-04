@@ -47,6 +47,20 @@ function claimedRepository(mode: "quick" | "deep" = "quick") {
   return { database, repository, enqueued, claimed };
 }
 
+function insertPublishedPanzhiSourceResult(
+  database: ReturnType<typeof createDatabase>,
+  runId: number
+): void {
+  database.prepare(`
+    INSERT INTO scan_source_results (
+      run_id, source, state, pages_scanned,
+      observed_item_count, eligible_count,
+      balanced_candidate_count, global_candidate_count,
+      published
+    ) VALUES (?, 'panzhi', 'success', 1, 1, 1, 0, 0, 1)
+  `).run(runId);
+}
+
 describe("Panzhi automation contracts", () => {
   it("publishes the approved modes, states, terminal helpers, and transitions", () => {
     expect(PanzhiAutomationModeSchema.options).toEqual(["quick", "deep"]);
@@ -65,6 +79,22 @@ describe("Panzhi automation contracts", () => {
     expect(isTerminalPanzhiAutomationState("collecting")).toBe(false);
     expect(canTransitionPanzhiAutomationJob("queued", "opening_page")).toBe(true);
     expect(canTransitionPanzhiAutomationJob("opening_page", "success")).toBe(false);
+    expect(canTransitionPanzhiAutomationJob(
+      "opening_page",
+      "awaiting_user_verification"
+    )).toBe(true);
+    expect(canTransitionPanzhiAutomationJob(
+      "applying_filters",
+      "awaiting_user_verification"
+    )).toBe(true);
+    expect(canTransitionPanzhiAutomationJob(
+      "awaiting_user_verification",
+      "applying_filters"
+    )).toBe(true);
+    expect(canTransitionPanzhiAutomationJob(
+      "awaiting_user_verification",
+      "collecting"
+    )).toBe(false);
   });
 });
 
@@ -325,9 +355,119 @@ describe("PanzhiAutomationRepository", () => {
     )).toBe(1);
     expect(repository.getJob(claimed.job.id)).toMatchObject({
       state: "failed",
-      error: "verification_deadline_expired"
+      error: "captcha_required"
     });
   });
+
+  it.each(["opening_page", "applying_filters", "collecting"] as const)(
+    "allows verification detection while the job is %s",
+    (state) => {
+      const { repository, claimed } = claimedRepository();
+      if (state !== "opening_page") {
+        repository.transition(
+          claimed.job.id,
+          claimed.bearerToken,
+          "applying_filters",
+          {},
+          start
+        );
+      }
+      if (state === "collecting") {
+        repository.transition(
+          claimed.job.id,
+          claimed.bearerToken,
+          "collecting",
+          {},
+          start
+        );
+      }
+
+      const result = repository.transition(
+        claimed.job.id,
+        claimed.bearerToken,
+        "awaiting_user_verification",
+        {},
+        start
+      );
+
+      expect(result.job.state).toBe("awaiting_user_verification");
+    }
+  );
+
+  it("resumes verification by returning to applying filters", () => {
+    const { repository, claimed } = claimedRepository();
+    repository.transition(
+      claimed.job.id,
+      claimed.bearerToken,
+      "applying_filters",
+      {},
+      start
+    );
+    repository.transition(
+      claimed.job.id,
+      claimed.bearerToken,
+      "collecting",
+      {},
+      start
+    );
+    repository.transition(
+      claimed.job.id,
+      claimed.bearerToken,
+      "awaiting_user_verification",
+      {},
+      start
+    );
+
+    const resumed = repository.transition(
+      claimed.job.id,
+      claimed.bearerToken,
+      "applying_filters",
+      { clearVerification: true },
+      plus(1)
+    );
+
+    expect(resumed.job).toMatchObject({
+      state: "applying_filters",
+      verificationDeadlineAt: null,
+      verificationNotifiedAt: null
+    });
+  });
+
+  it.each(["collecting", "submitting"] as const)(
+    "rejects verification recovery that jumps directly to %s",
+    (next) => {
+      const { repository, claimed } = claimedRepository();
+      repository.transition(
+        claimed.job.id,
+        claimed.bearerToken,
+        "applying_filters",
+        {},
+        start
+      );
+      repository.transition(
+        claimed.job.id,
+        claimed.bearerToken,
+        "collecting",
+        {},
+        start
+      );
+      repository.transition(
+        claimed.job.id,
+        claimed.bearerToken,
+        "awaiting_user_verification",
+        {},
+        start
+      );
+
+      expectRepositoryError(() => repository.transition(
+        claimed.job.id,
+        claimed.bearerToken,
+        next,
+        { clearVerification: true },
+        plus(1)
+      ), "invalid_transition");
+    }
+  );
 
   it("enforces success scan linkage and supports exact completed snapshot replay only", () => {
     const { database, repository, claimed } = claimedRepository();
@@ -367,6 +507,7 @@ describe("PanzhiAutomationRepository", () => {
       ) VALUES (?, ?, 'success', 0, 'single_source', 'panzhi')
     `).run(start.toISOString(), start.toISOString());
     const scanRunId = Number(run.lastInsertRowid);
+    insertPublishedPanzhiSourceResult(database, scanRunId);
     const completed = repository.completePublished({
       jobId: claimed.job.id,
       bearerToken: claimed.bearerToken,
@@ -428,6 +569,113 @@ describe("PanzhiAutomationRepository", () => {
     )).toBeNull();
   });
 
+  it("rejects repository completion without a published Panzhi source result", () => {
+    const { database, repository, claimed } = claimedRepository();
+    repository.transition(claimed.job.id, claimed.bearerToken, "applying_filters", {}, start);
+    repository.transition(claimed.job.id, claimed.bearerToken, "collecting", {}, start);
+    repository.transition(claimed.job.id, claimed.bearerToken, "submitting", {}, start);
+
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const run = database.prepare(`
+        INSERT INTO scan_runs (
+          started_at, finished_at, state, is_baseline,
+          scope, requested_source
+        ) VALUES (?, ?, 'success', 0, 'single_source', 'panzhi')
+      `).run(start.toISOString(), start.toISOString());
+      expectRepositoryError(() => repository.completePublished({
+        jobId: claimed.job.id,
+        bearerToken: claimed.bearerToken,
+        canonicalBodyDigest: digest("missing-source-result"),
+        result: { ok: true },
+        scanRunId: Number(run.lastInsertRowid),
+        now: start
+      }), "conflict");
+    } finally {
+      database.exec("ROLLBACK");
+    }
+  });
+
+  it("rejects direct SQL success without a published Panzhi source result", () => {
+    const { database, repository, claimed } = claimedRepository();
+    repository.transition(claimed.job.id, claimed.bearerToken, "applying_filters", {}, start);
+    repository.transition(claimed.job.id, claimed.bearerToken, "collecting", {}, start);
+    repository.transition(claimed.job.id, claimed.bearerToken, "submitting", {}, start);
+
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const run = database.prepare(`
+        INSERT INTO scan_runs (
+          started_at, finished_at, state, is_baseline,
+          scope, requested_source
+        ) VALUES (?, ?, 'success', 0, 'single_source', 'panzhi')
+      `).run(start.toISOString(), start.toISOString());
+      expect(() => database.prepare(`
+        UPDATE panzhi_browser_jobs
+        SET state = 'success',
+            lease_token_digest = NULL,
+            lease_expires_at = NULL,
+            completed_bearer_digest = ?,
+            normalized_request_digest = ?,
+            result_json = '{}',
+            scan_run_id = ?,
+            finished_at = ?
+        WHERE id = ?
+      `).run(
+        digest(claimed.bearerToken),
+        digest("direct-sql-body"),
+        Number(run.lastInsertRowid),
+        start.toISOString(),
+        claimed.job.id
+      )).toThrow();
+    } finally {
+      database.exec("ROLLBACK");
+    }
+  });
+
+  it.each(["unpublish", "delete"] as const)(
+    "prevents %s of a source result linked to a successful job",
+    (operation) => {
+      const { database, repository, claimed } = claimedRepository();
+      repository.transition(claimed.job.id, claimed.bearerToken, "applying_filters", {}, start);
+      repository.transition(claimed.job.id, claimed.bearerToken, "collecting", {}, start);
+      repository.transition(claimed.job.id, claimed.bearerToken, "submitting", {}, start);
+      database.exec("BEGIN IMMEDIATE");
+      const run = database.prepare(`
+        INSERT INTO scan_runs (
+          started_at, finished_at, state, is_baseline,
+          scope, requested_source
+        ) VALUES (?, ?, 'success', 0, 'single_source', 'panzhi')
+      `).run(start.toISOString(), start.toISOString());
+      const scanRunId = Number(run.lastInsertRowid);
+      insertPublishedPanzhiSourceResult(database, scanRunId);
+      repository.completePublished({
+        jobId: claimed.job.id,
+        bearerToken: claimed.bearerToken,
+        canonicalBodyDigest: digest(`linked-source:${operation}`),
+        result: { ok: true },
+        scanRunId,
+        now: start
+      });
+      database.exec("COMMIT");
+
+      expect(() => {
+        if (operation === "unpublish") {
+          database.prepare(`
+            UPDATE scan_source_results
+            SET published = 0
+            WHERE run_id = ? AND source = 'panzhi'
+          `).run(scanRunId);
+        } else {
+          database.prepare(`
+            DELETE FROM scan_source_results
+            WHERE run_id = ? AND source = 'panzhi'
+          `).run(scanRunId);
+        }
+      }).toThrow();
+    }
+  );
+
   it("rolls back completion with its caller-owned transaction", () => {
     const { database, repository, claimed } = claimedRepository();
     repository.transition(claimed.job.id, claimed.bearerToken, "applying_filters", {}, start);
@@ -441,6 +689,7 @@ describe("PanzhiAutomationRepository", () => {
         scope, requested_source
       ) VALUES (?, ?, 'success', 0, 'single_source', 'panzhi')
     `).run(start.toISOString(), start.toISOString());
+    insertPublishedPanzhiSourceResult(database, Number(run.lastInsertRowid));
     repository.completePublished({
       jobId: claimed.job.id,
       bearerToken: claimed.bearerToken,

@@ -493,6 +493,20 @@ export class PanzhiAutomationRepository {
         "A valid scan run is required for a successful Panzhi job"
       );
     }
+    const publishedPanzhiResult = this.database.prepare(`
+      SELECT 1
+      FROM scan_source_results
+      WHERE run_id = ?
+        AND source = 'panzhi'
+        AND published = 1
+      LIMIT 1
+    `).get(input.scanRunId);
+    if (!publishedPanzhiResult) {
+      throw new PanzhiAutomationRepositoryError(
+        "conflict",
+        "A published Panzhi source result is required for completion"
+      );
+    }
     const resultJson = JSON.stringify(input.result);
     if (resultJson === undefined) {
       throw new PanzhiAutomationRepositoryError(
@@ -586,7 +600,7 @@ export class PanzhiAutomationRepository {
           lease_expires_at = NULL,
           normalized_request_digest = NULL,
           result_json = NULL,
-          error = 'verification_deadline_expired',
+          error = 'captcha_required',
           scan_run_id = NULL,
           updated_at = ?,
           finished_at = ?
