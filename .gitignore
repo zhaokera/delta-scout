@@ -1,8 +1,9 @@
 .superpowers/
 .worktrees/
 node_modules/
-dist/
-dist-server/
+/dist/
+/dist-server/
+/extensions/panzhi-auto-refresh/dist/
 coverage/
 .env
 data/
