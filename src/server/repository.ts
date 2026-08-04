@@ -190,6 +190,12 @@ export type SourceRefreshStatusUpdate =
       error: string;
     };
 
+export interface CommitScanRefreshContext {
+  runId: number;
+  state: ScanState;
+  publishedSources: readonly SourceId[];
+}
+
 export type ManualListingReviewErrorCode =
   | "listing_not_found"
   | "listing_not_eligible";
@@ -222,6 +228,10 @@ export class ListingRepository {
   private savepointSequence = 0;
 
   constructor(private readonly database: DatabaseSync) {}
+
+  runInTransaction<T>(operation: () => T): T {
+    return this.runTransaction(operation);
+  }
 
   private insertRefreshEvents(
     runId: number,
@@ -594,7 +604,8 @@ export class ListingRepository {
     runId: number,
     listings: Listing[],
     statusUpdates: SourceRefreshStatusUpdate[],
-    finishedAt = new Date()
+    finishedAt = new Date(),
+    beforeCommit?: (context: CommitScanRefreshContext) => void
   ): ScanState {
     type FreshUpdate = Extract<
       SourceRefreshStatusUpdate,
@@ -935,7 +946,7 @@ export class ListingRepository {
     });
 
     try {
-      this.database.exec("BEGIN IMMEDIATE");
+      return this.runTransaction(() => {
       this.database.exec("DELETE FROM listings");
       const insertListing = this.database.prepare(`
         INSERT INTO listings (listing_key, source, eligibility, payload)
@@ -1278,14 +1289,16 @@ export class ListingRepository {
         `)
         .run(roundState, finishedAt.toISOString(), runId);
       this.pruneScanHistory();
-      this.database.exec("COMMIT");
+      beforeCommit?.({
+        runId,
+        state: roundState,
+        publishedSources: preparedUpdates
+          .filter(({ published }) => published)
+          .map(({ original }) => original.source)
+      });
       return roundState;
+      });
     } catch (cause) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // Preserve the original failure.
-      }
       throw new Error("无法提交带历史的刷新快照", { cause });
     }
   }
