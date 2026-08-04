@@ -345,7 +345,7 @@ describe("Panzhi automation API", () => {
       .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/heartbeat`)
       .set(bearer(token))
       .send({})
-      .expect(409);
+      .expect(401);
   });
 
   it("recovers an expired lease in status and keeps one notification across reclaim until filters recover", async () => {
@@ -491,7 +491,7 @@ describe("Panzhi automation API", () => {
       .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/heartbeat`)
       .set(bearer(token))
       .send({})
-      .expect(404);
+      .expect(401);
   });
 
   it("finalizes an overdue verification when claim is the first maintenance request", async () => {
@@ -572,6 +572,218 @@ describe("Panzhi automation API", () => {
     for (const response of [malformed, wrong, missing, illegal, mismatch, expired]) {
       expect(JSON.stringify(response.body)).not.toContain(token);
       expect(JSON.stringify(response.body)).not.toMatch(/digest|result_json/i);
+    }
+  });
+
+  it("authenticates every endpoint before expiring active verification", async () => {
+    const f = fixture();
+    const queued = f.automation.enqueue("deep");
+    const claimed = await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .send({})
+      .expect(202);
+    const token = claimed.body.bearerToken as string;
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/state`)
+      .set(bearer(token))
+      .send({ state: "awaiting_user_verification" })
+      .expect(200);
+    f.database.prepare(`
+      UPDATE panzhi_browser_jobs
+      SET lease_expires_at = ?
+      WHERE id = ?
+    `).run("2026-08-05T02:02:00.000Z", queued.job.id);
+    f.setNow(new Date("2026-08-05T02:00:00.001Z"));
+
+    await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .set(bearer("wrong-token"))
+      .send({ jobId: queued.job.id })
+      .expect(401);
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/heartbeat`)
+      .set(bearer("wrong-token"))
+      .send({})
+      .expect(401);
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/state`)
+      .set(bearer("wrong-token"))
+      .send({ state: "applying_filters" })
+      .expect(401);
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/snapshot`)
+      .set(bearer("wrong-token"))
+      .send(snapshot(["EXPIRED-WRONG-TOKEN"]))
+      .expect(401);
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/cancel`)
+      .set(bearer("wrong-token"))
+      .send({})
+      .expect(401);
+    expect(f.automationRepository.getJob(queued.job.id)).toMatchObject({
+      state: "awaiting_user_verification"
+    });
+
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/heartbeat`)
+      .set(bearer(token))
+      .send({})
+      .expect(404);
+    expect(f.automationRepository.getJob(queued.job.id)).toMatchObject({
+      state: "failed",
+      error: "captcha_required"
+    });
+    expect(f.schedule.list().find(({ source }) => source === "panzhi"))
+      .toMatchObject({
+        attentionRequired: false,
+        backoffUntil: "2026-08-05T04:00:00.001Z",
+        lastError: "captcha_required"
+      });
+  });
+
+  it("uses completed tokens for success terminal checks and invalidates failed or cancelled tokens", async () => {
+    const succeeded = fixture();
+    const completed = await claimAndAdvanceToSubmitting(succeeded);
+    const payload = snapshot(["TERMINAL-AUTH"]);
+    await request(succeeded.app)
+      .post(`/api/sources/panzhi/automation/jobs/${completed.jobId}/snapshot`)
+      .set(bearer(completed.token))
+      .send(payload)
+      .expect(200);
+
+    await request(succeeded.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .set(bearer("wrong-token"))
+      .send({ jobId: completed.jobId })
+      .expect(401);
+    await request(succeeded.app)
+      .post(`/api/sources/panzhi/automation/jobs/${completed.jobId}/heartbeat`)
+      .set(bearer("wrong-token"))
+      .send({})
+      .expect(401);
+    await request(succeeded.app)
+      .post(`/api/sources/panzhi/automation/jobs/${completed.jobId}/state`)
+      .set(bearer("wrong-token"))
+      .send({ state: "failed", error: "wrong_token" })
+      .expect(401);
+    await request(succeeded.app)
+      .post(`/api/sources/panzhi/automation/jobs/${completed.jobId}/cancel`)
+      .set(bearer("wrong-token"))
+      .send({})
+      .expect(401);
+    await request(succeeded.app)
+      .post(`/api/sources/panzhi/automation/jobs/${completed.jobId}/snapshot`)
+      .set(bearer("wrong-token"))
+      .send(payload)
+      .expect(401);
+
+    await request(succeeded.app)
+      .post(`/api/sources/panzhi/automation/jobs/${completed.jobId}/heartbeat`)
+      .set(bearer(completed.token))
+      .send({})
+      .expect(409);
+    await request(succeeded.app)
+      .post(`/api/sources/panzhi/automation/jobs/${completed.jobId}/state`)
+      .set(bearer(completed.token))
+      .send({ state: "failed", error: "already_done" })
+      .expect(409);
+    await request(succeeded.app)
+      .post(`/api/sources/panzhi/automation/jobs/${completed.jobId}/cancel`)
+      .set(bearer(completed.token))
+      .send({})
+      .expect(409);
+
+    const failed = fixture();
+    const failedJob = failed.automation.enqueue("deep").job;
+    const failedClaim = await request(failed.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .send({})
+      .expect(202);
+    await request(failed.app)
+      .post(`/api/sources/panzhi/automation/jobs/${failedJob.id}/state`)
+      .set(bearer(failedClaim.body.bearerToken))
+      .send({ state: "failed", error: "extension_failed" })
+      .expect(200);
+    await request(failed.app)
+      .post(`/api/sources/panzhi/automation/jobs/${failedJob.id}/heartbeat`)
+      .set(bearer(failedClaim.body.bearerToken))
+      .send({})
+      .expect(401);
+
+    const cancelled = fixture();
+    const cancelledJob = cancelled.automation.enqueue("deep").job;
+    const cancelledClaim = await request(cancelled.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .send({})
+      .expect(202);
+    await request(cancelled.app)
+      .post(`/api/sources/panzhi/automation/jobs/${cancelledJob.id}/cancel`)
+      .set(bearer(cancelledClaim.body.bearerToken))
+      .send({})
+      .expect(200);
+    await request(cancelled.app)
+      .post(`/api/sources/panzhi/automation/jobs/${cancelledJob.id}/heartbeat`)
+      .set(bearer(cancelledClaim.body.bearerToken))
+      .send({})
+      .expect(401);
+  });
+
+  it("uses fixed automation failure backoffs without requesting attention or advancing cadence", () => {
+    const generic = fixture();
+    const original = generic.schedule.list().find(
+      ({ source }) => source === "panzhi"
+    )!;
+    for (const [index, minutes] of [5, 15, 60, 120].entries()) {
+      const at = new Date(baseTime.getTime() + index * 1_000);
+      generic.schedule.markAutomationFailedWithoutAdvancing(
+        "panzhi",
+        "deep",
+        "failed",
+        "extension_failed",
+        at,
+        () => 0
+      );
+      expect(generic.schedule.list().find(
+        ({ source }) => source === "panzhi"
+      )).toMatchObject({
+        attentionRequired: false,
+        backoffUntil: new Date(at.getTime() + minutes * 60_000).toISOString(),
+        nextQuickAt: original.nextQuickAt,
+        nextDeepAt: original.nextDeepAt
+      });
+    }
+
+    const captcha = fixture();
+    captcha.schedule.markAutomationFailedWithoutAdvancing(
+      "panzhi",
+      "deep",
+      "failed",
+      "captcha_required",
+      baseTime,
+      () => 0
+    );
+    expect(captcha.schedule.list().find(({ source }) => source === "panzhi"))
+      .toMatchObject({
+        attentionRequired: false,
+        backoffUntil: "2026-08-04T04:00:00.000Z"
+      });
+
+    const rateLimited = fixture();
+    for (const [index, minutes] of [30, 60, 120, 240, 360, 360].entries()) {
+      const at = new Date(baseTime.getTime() + index * 1_000);
+      rateLimited.schedule.markAutomationFailedWithoutAdvancing(
+        "panzhi",
+        "quick",
+        "partial",
+        "rate_limited",
+        at,
+        () => 1
+      );
+      expect(rateLimited.schedule.list().find(
+        ({ source }) => source === "panzhi"
+      )?.backoffUntil).toBe(
+        new Date(at.getTime() + minutes * 60_000).toISOString()
+      );
     }
   });
 
@@ -756,7 +968,7 @@ describe("Panzhi automation API", () => {
       lastState: "partial",
       lastError: "anomaly_guard",
       consecutiveFailures: 1,
-      attentionRequired: true
+      attentionRequired: false
     });
     expect(scheduleAfter.nextQuickAt).toBe(scheduleBefore.nextQuickAt);
     expect(scheduleAfter.nextDeepAt).toBe(scheduleBefore.nextDeepAt);

@@ -199,6 +199,30 @@ export class PanzhiAutomationRepository {
     return row ? toJob(row) : null;
   }
 
+  authenticateJobToken(
+    jobId: string,
+    bearerToken: string
+  ): PanzhiAutomationJob {
+    const row = this.findRow(jobId);
+    const storedDigest = row?.state === "success"
+      ? row.completed_bearer_digest
+      : row?.lease_token_digest ?? null;
+    const matched = digestMatches(bearerToken, storedDigest);
+    if (!row) {
+      throw new PanzhiAutomationRepositoryError(
+        "not_found",
+        "Panzhi automation job not found"
+      );
+    }
+    if (!matched) {
+      throw new PanzhiAutomationRepositoryError(
+        "unauthorized",
+        "The bearer token is invalid or no longer active"
+      );
+    }
+    return toJob(row);
+  }
+
   recordExtensionHeartbeat(
     now = new Date()
   ): PanzhiAutomationExtensionHeartbeat {

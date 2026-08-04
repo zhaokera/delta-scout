@@ -221,13 +221,13 @@ export class PanzhiAutomationService {
   }
 
   resume(jobId: string, bearerToken: string) {
-    this.requireActiveJob(jobId);
+    this.requireAuthenticatedActiveJob(jobId, bearerToken);
     const result = this.repository.resume(jobId, bearerToken, this.now());
     return { ...result, job: publicJob(result.job) };
   }
 
   heartbeat(jobId: string, bearerToken: string) {
-    this.requireActiveJob(jobId);
+    this.requireAuthenticatedActiveJob(jobId, bearerToken);
     const result = this.repository.heartbeat(
       jobId,
       bearerToken,
@@ -241,7 +241,7 @@ export class PanzhiAutomationService {
     bearerToken: string,
     update: PanzhiAutomationStateUpdate
   ) {
-    const current = this.requireActiveJob(jobId);
+    const current = this.requireAuthenticatedActiveJob(jobId, bearerToken);
     if (
       (update.state === "failed" && !update.error) ||
       (update.state !== "failed" && update.error !== undefined)
@@ -302,7 +302,7 @@ export class PanzhiAutomationService {
   }
 
   cancel(jobId: string, bearerToken: string) {
-    const current = this.requireActiveJob(jobId);
+    const current = this.requireAuthenticatedActiveJob(jobId, bearerToken);
     const now = this.now();
     const result = this.listings.runInTransaction(() => {
       const cancelled = this.repository.cancel(jobId, bearerToken, now);
@@ -326,6 +326,7 @@ export class PanzhiAutomationService {
   ): PanzhiAutomationSnapshotResponse {
     const parsed = PanzhiBrowserSnapshotSchema.parse(input);
     const digest = canonicalDigest(parsed);
+    this.repository.authenticateJobToken(jobId, bearerToken);
     const replay = this.repository.findSuccessfulReplay<
       PanzhiSnapshotPublishResult
     >(jobId, bearerToken, digest);
@@ -456,6 +457,14 @@ export class PanzhiAutomationService {
       );
     }
     return { requeued, verificationExpired };
+  }
+
+  private requireAuthenticatedActiveJob(
+    jobId: string,
+    bearerToken: string
+  ): PanzhiAutomationJob {
+    this.repository.authenticateJobToken(jobId, bearerToken);
+    return this.requireActiveJob(jobId);
   }
 
   private requireActiveJob(jobId: string): PanzhiAutomationJob {

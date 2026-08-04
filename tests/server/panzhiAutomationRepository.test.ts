@@ -245,6 +245,31 @@ describe("PanzhiAutomationRepository", () => {
     expect(resumed.job.leaseExpiresAt).toBe(plus(180_000).toISOString());
   });
 
+  it("authenticates a job token without renewing or validating its lease", () => {
+    const { database, repository, claimed } = claimedRepository();
+    const before = database.prepare(`
+      SELECT lease_expires_at, updated_at
+      FROM panzhi_browser_jobs WHERE id = ?
+    `).get(claimed.job.id);
+
+    expect(repository.authenticateJobToken(
+      claimed.job.id,
+      claimed.bearerToken
+    )).toMatchObject({ id: claimed.job.id, state: "opening_page" });
+    expect(database.prepare(`
+      SELECT lease_expires_at, updated_at
+      FROM panzhi_browser_jobs WHERE id = ?
+    `).get(claimed.job.id)).toEqual(before);
+    expectRepositoryError(() => repository.authenticateJobToken(
+      claimed.job.id,
+      "wrong-token"
+    ), "unauthorized");
+    expectRepositoryError(() => repository.authenticateJobToken(
+      "00000000-0000-4000-8000-000000000000",
+      claimed.bearerToken
+    ), "not_found");
+  });
+
   it("requeues the same job after an expired lease and invalidates the old bearer", () => {
     const { database, repository, claimed } = claimedRepository();
 

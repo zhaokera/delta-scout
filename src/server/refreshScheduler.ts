@@ -306,16 +306,15 @@ export class RefreshScheduleRepository {
     state: "partial" | "failed",
     error: string,
     at: Date,
-    random: () => number
+    _random: () => number
   ): void {
     const row = this.list().find((entry) => entry.source === source)!;
     const failures = row.consecutiveFailures + 1;
-    const baseBackoffMinutes =
-      [5, 15, 60, 120][Math.min(3, failures - 1)] ?? 5;
-    const jitteredBackoff = Math.max(
-      1,
-      Math.round(baseBackoffMinutes * (0.9 + random() * 0.2))
-    );
+    const baseBackoffMinutes = error === "captcha_required"
+      ? 120
+      : error === "rate_limited"
+        ? Math.min(360, 30 * 2 ** Math.max(0, failures - 1))
+        : [5, 15, 60, 120][Math.min(3, failures - 1)] ?? 5;
     this.database.prepare(`
       UPDATE refresh_schedule
       SET last_finished_at = ?,
@@ -324,14 +323,14 @@ export class RefreshScheduleRepository {
           consecutive_failures = ?,
           backoff_until = ?,
           last_error = ?,
-          attention_required = 1
+          attention_required = 0
       WHERE source = ?
     `).run(
       at.toISOString(),
       mode,
       state,
       failures,
-      addMinutes(at, jitteredBackoff).toISOString(),
+      addMinutes(at, baseBackoffMinutes).toISOString(),
       error,
       source
     );
