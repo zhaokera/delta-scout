@@ -2830,7 +2830,7 @@ describe("Panzhi browser-native filter snapshot API", () => {
       sources: [
         expect.objectContaining({
           source: "panzhi",
-          observedItemCount: 1,
+          observedItemCount: 2,
           published: true
         })
       ]
