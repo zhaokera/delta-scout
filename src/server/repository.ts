@@ -655,13 +655,17 @@ export class ListingRepository {
     }
   }
 
-  commitScanRefresh(
+  commitScanRefresh<HookResult = void>(
     runId: number,
     listings: Listing[],
     statusUpdates: SourceRefreshStatusUpdate[],
     finishedAt = new Date(),
-    beforeCommit?: (context: CommitScanRefreshContext) => void
+    beforeCommit?: (context: CommitScanRefreshContext) => HookResult,
+    ..._synchronousOnly: SynchronousCallGuard<HookResult>
   ): ScanState {
+    if (beforeCommit && isNativeAsyncFunction(beforeCommit)) {
+      throw new SynchronousTransactionError("before_commit");
+    }
     type FreshUpdate = Extract<
       SourceRefreshStatusUpdate,
       { state: "success" | "partial" }
@@ -1347,13 +1351,16 @@ export class ListingRepository {
         .run(roundState, finishedAt.toISOString(), runId);
       this.pruneScanHistory();
       try {
-        beforeCommit?.({
+        const hookResult = beforeCommit?.({
           runId,
           state: roundState,
           publishedSources: preparedUpdates
             .filter(({ published }) => published)
             .map(({ original }) => original.source)
         });
+        if (isThenable(hookResult)) {
+          throw new SynchronousTransactionError("before_commit");
+        }
       } catch (error) {
         beforeCommitFailed = true;
         beforeCommitFailure = error;

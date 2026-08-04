@@ -2,8 +2,12 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
+import type { Listing } from "../../src/domain/listing.js";
 import { createDatabase } from "../../src/server/db.js";
-import type { PanzhiBrowserSnapshot } from "../../src/server/panzhiBrowserSnapshot.js";
+import {
+  buildPanzhiBrowserListings,
+  type PanzhiBrowserSnapshot
+} from "../../src/server/panzhiBrowserSnapshot.js";
 import {
   PanzhiSnapshotPublisher,
   PanzhiSnapshotPublisherError
@@ -11,7 +15,10 @@ import {
 import {
   PanzhiAutomationRepositoryError
 } from "../../src/server/panzhiAutomation/repository.js";
-import { ListingRepository } from "../../src/server/repository.js";
+import {
+  ListingRepository,
+  type SourceRefreshStatusUpdate
+} from "../../src/server/repository.js";
 
 const firstCapture = new Date("2026-08-01T08:00:00.000Z");
 const secondCapture = new Date("2026-08-01T09:00:00.000Z");
@@ -26,6 +33,14 @@ if (false) {
   repository.runInTransaction(async () => undefined);
   // @ts-expect-error Completion hooks must not return promises.
   publisher.publish({}, firstCapture, async () => undefined);
+  // @ts-expect-error Scan commit hooks must not return promises.
+  repository.commitScanRefresh(
+    1,
+    [],
+    [],
+    firstCapture,
+    async () => undefined
+  );
 }
 
 function item(
@@ -105,6 +120,22 @@ function count(database: DatabaseSync, table: string): number {
   return (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
     count: number;
   }).count;
+}
+
+function directSuccessUpdate(
+  itemCount: number,
+  attemptedAt = firstCapture
+): SourceRefreshStatusUpdate {
+  return {
+    source: "panzhi",
+    state: "success",
+    attemptedAt,
+    itemCount,
+    metadata: {
+      pagesScanned: 4,
+      stopReason: "no_growth_twice"
+    }
+  };
 }
 
 function seedHookRows(database: DatabaseSync): void {
@@ -492,6 +523,106 @@ describe("PanzhiSnapshotPublisher", () => {
       target: "operation"
     });
     expect(count(database, "scan_runs")).toBe(0);
+  });
+
+  it("rejects a native async scan commit hook before its body starts", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const listings = buildPanzhiBrowserListings(
+      snapshot([item("DIRECT-ASYNC-HOOK")]),
+      firstCapture
+    ).listings;
+    const unsafeCommit = repository.commitScanRefresh.bind(repository) as (
+      runId: number,
+      listings: Listing[],
+      updates: SourceRefreshStatusUpdate[],
+      finishedAt: Date,
+      hook: () => unknown
+    ) => unknown;
+    let started = false;
+    let thrown: unknown;
+
+    try {
+      repository.runInTransaction(() => {
+        const runId = repository.startScopedScan("panzhi", firstCapture);
+        return unsafeCommit(
+          runId,
+          listings,
+          [directSuccessUpdate(listings.length)],
+          firstCapture,
+          async () => {
+            started = true;
+          }
+        );
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(started).toBe(false);
+    expect(thrown).toMatchObject({
+      code: "synchronous_transaction_required",
+      target: "before_commit"
+    });
+    expect(count(database, "scan_runs")).toBe(0);
+    expect(count(database, "scan_source_results")).toBe(0);
+    expect(repository.getListings()).toEqual([]);
+  });
+
+  it("rolls back a direct scan commit when its hook returns a thenable", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const listings = buildPanzhiBrowserListings(
+      snapshot([item("DIRECT-THENABLE-HOOK")]),
+      firstCapture
+    ).listings;
+    const unsafeCommit = repository.commitScanRefresh.bind(repository) as (
+      runId: number,
+      listings: Listing[],
+      updates: SourceRefreshStatusUpdate[],
+      finishedAt: Date,
+      hook: () => unknown
+    ) => unknown;
+    let hookStarted = false;
+    let thrown: unknown;
+
+    try {
+      repository.runInTransaction(() => {
+        const runId = repository.startScopedScan("panzhi", firstCapture);
+        return unsafeCommit(
+          runId,
+          listings,
+          [directSuccessUpdate(listings.length)],
+          firstCapture,
+          () => {
+            hookStarted = true;
+            expect(repository.getListing(listings[0].key)).not.toBeNull();
+            expect(database.prepare(`
+              SELECT state FROM scan_runs WHERE id = ?
+            `).get(runId)).toEqual({ state: "success" });
+            return Promise.resolve("not-sync");
+          }
+        );
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(hookStarted).toBe(true);
+    expect(thrown).toMatchObject({
+      code: "synchronous_transaction_required",
+      target: "before_commit"
+    });
+    expect(count(database, "scan_runs")).toBe(0);
+    expect(count(database, "scan_source_results")).toBe(0);
+    expect(count(database, "listing_observations")).toBe(0);
+    expect(repository.getListings()).toEqual([]);
+    expect(repository.getSourceStatuses().find(
+      ({ source }) => source === "panzhi"
+    )).toMatchObject({
+      state: "idle",
+      itemCount: 0
+    });
   });
 
   it("rejects a native async publisher hook before its body starts", () => {
