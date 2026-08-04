@@ -14,6 +14,15 @@ import { createDatabase } from "./db.js";
 import {
   RefreshAdmissionController
 } from "./refreshAdmission.js";
+import {
+  PanzhiAutomationRepository
+} from "./panzhiAutomation/repository.js";
+import {
+  PanzhiSnapshotPublisher
+} from "./panzhiAutomation/publisher.js";
+import {
+  PanzhiAutomationService
+} from "./panzhiAutomation/service.js";
 import { ListingRepository } from "./repository.js";
 import { RefreshTracker } from "./refreshTracker.js";
 import {
@@ -79,6 +88,17 @@ const scheduler = new RefreshScheduler(
   tracker,
   admission
 );
+const panzhiAutomationRepository = new PanzhiAutomationRepository(database);
+const panzhiPublisher = new PanzhiSnapshotPublisher(repository);
+const panzhiAutomationService = new PanzhiAutomationService({
+  repository: panzhiAutomationRepository,
+  publisher: panzhiPublisher,
+  listings: repository,
+  schedule: scheduleRepository,
+  admission,
+  tracker
+});
+panzhiAutomationService.maintain();
 
 createApp({
   repository,
@@ -87,7 +107,9 @@ createApp({
   admission,
   browserRepository,
   browserService,
-  scheduler
+  scheduler,
+  panzhiAutomationService,
+  panzhiPublisher
 }).listen(port, host, () => {
   console.log(
     `Delta Account Scout API listening on http://${host}:${port}`
@@ -99,8 +121,9 @@ const maintenance = setInterval(() => {
   try {
     admission.reconcile();
     browserRepository.cleanupTerminalStaging(new Date());
+    panzhiAutomationService.maintain();
   } catch {
-    console.error("Browser refresh maintenance failed");
+    console.error("Refresh maintenance failed");
   }
 }, 60_000);
 maintenance.unref();

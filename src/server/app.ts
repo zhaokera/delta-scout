@@ -52,14 +52,21 @@ import {
   RefreshAdmissionController
 } from "./refreshAdmission.js";
 import type { RefreshTracker } from "./refreshTracker.js";
-import {
-  buildPanzhiBrowserListings,
-  PanzhiBrowserSnapshotSchema
-} from "./panzhiBrowserSnapshot.js";
 import type {
   RefreshScheduler,
   RefreshTriggerResult
 } from "./refreshScheduler.js";
+import {
+  PanzhiAutomationRepositoryError
+} from "./panzhiAutomation/repository.js";
+import {
+  PanzhiAutomationServiceError,
+  type PanzhiAutomationService
+} from "./panzhiAutomation/service.js";
+import {
+  PanzhiSnapshotPublisher,
+  PanzhiSnapshotPublisherError
+} from "./panzhiAutomation/publisher.js";
 
 interface RefreshCoordinator {
   refreshAll(
@@ -69,7 +76,7 @@ interface RefreshCoordinator {
   ): Promise<ScanState>;
 }
 
-interface AppDependencies {
+export interface AppDependencies {
   repository: ListingRepository;
   coordinator: RefreshCoordinator;
   tracker: RefreshTracker;
@@ -77,6 +84,8 @@ interface AppDependencies {
   browserRepository: BrowserRefreshRepository;
   browserService: JiaoyimaoBrowserTaskService;
   scheduler?: Pick<RefreshScheduler, "snapshot" | "trigger">;
+  panzhiAutomationService?: PanzhiAutomationService;
+  panzhiPublisher?: PanzhiSnapshotPublisher;
   now?: () => Date;
 }
 
@@ -94,6 +103,20 @@ const AcknowledgeRefreshEventsSchema = z.strictObject({
 });
 const ClaimBodySchema = z.strictObject({
   claimCode: z.string()
+});
+const PanzhiAutomationClaimBodySchema = z.union([
+  z.strictObject({}),
+  z.strictObject({ jobId: z.uuid() })
+]);
+const PanzhiAutomationStateBodySchema = z.strictObject({
+  state: z.enum([
+    "applying_filters",
+    "collecting",
+    "awaiting_user_verification",
+    "submitting",
+    "failed"
+  ]),
+  error: z.string().trim().min(1).max(500).optional()
 });
 type PoolMode = z.infer<typeof PoolModeSchema>;
 
@@ -185,10 +208,72 @@ function sendManualReviewError(
   });
 }
 
+function sendPanzhiAutomationError(
+  response: Response,
+  error: unknown
+): void {
+  if (error instanceof ZodError) {
+    response.status(400).json({
+      error: "invalid_panzhi_automation_payload",
+      message: "盼之自动化请求格式无效"
+    });
+    return;
+  }
+  if (error instanceof PanzhiAutomationRepositoryError) {
+    const status = error.code === "unauthorized"
+      ? 401
+      : error.code === "not_found" || error.code === "expired"
+        ? 404
+        : 409;
+    response.status(status).json({
+      error: error.code,
+      message: status === 401
+        ? "盼之自动化凭据无效"
+        : status === 404
+          ? "盼之自动化任务不存在或已过期"
+          : "盼之自动化任务状态冲突"
+    });
+    return;
+  }
+  if (error instanceof PanzhiAutomationServiceError) {
+    const status = error.code === "unauthorized"
+      ? 401
+      : error.code === "not_found" || error.code === "expired"
+        ? 404
+        : 409;
+    response.status(status).json({
+      error: error.code,
+      message: status === 401
+        ? "盼之自动化凭据无效"
+        : status === 404
+          ? "盼之自动化任务不存在或已过期"
+          : "盼之自动化任务状态冲突",
+      ...(error.code === "refresh_conflict" && error.details?.activeKind
+        ? {
+            activeKind: error.details.activeKind,
+            ...(error.details.jobId ? { jobId: error.details.jobId } : {})
+          }
+        : {})
+    });
+    return;
+  }
+  response.status(500).json({
+    error: "panzhi_automation_failed",
+    message: "盼之自动化操作失败"
+  });
+}
+
 function readBearerToken(authorization: string | undefined): string {
   if (!authorization) return "";
   const match = authorization.match(/^Bearer[ \t]+(.*)$/i);
   return match?.[1] ?? authorization;
+}
+
+function readStrictBearerToken(
+  authorization: string | undefined
+): string {
+  const match = authorization?.match(/^Bearer[ \t]+([^\s]+)$/i);
+  return match?.[1] ?? "";
 }
 
 const BROWSER_REFRESH_PATH_PREFIXES = [
@@ -197,6 +282,10 @@ const BROWSER_REFRESH_PATH_PREFIXES = [
 ] as const;
 const PANZHI_BROWSER_SNAPSHOT_PATH =
   "/api/sources/panzhi/browser-snapshot";
+const PANZHI_AUTOMATION_PREFIX =
+  "/api/sources/panzhi/automation";
+const PANZHI_AUTOMATION_SNAPSHOT_PATH =
+  `${PANZHI_AUTOMATION_PREFIX}/jobs/:id/snapshot`;
 const PANZHI_BROWSER_SNAPSHOT_MAX_BYTES = 1024 * 1024;
 
 function isBrowserRefreshPath(path: string): boolean {
@@ -427,6 +516,10 @@ export function createApp(dependencies?: AppDependencies): Express {
     PANZHI_BROWSER_SNAPSHOT_PATH,
     readPanzhiBrowserSnapshotBody
   );
+  app.use(
+    PANZHI_AUTOMATION_SNAPSHOT_PATH,
+    readPanzhiBrowserSnapshotBody
+  );
   app.use(express.json({ limit: "256kb" }));
   app.get("/api/health", (_request, response) => {
     response.json({
@@ -435,7 +528,15 @@ export function createApp(dependencies?: AppDependencies): Express {
     });
   });
 
-  if (!dependencies) return app;
+  if (!dependencies) {
+    app.use(PANZHI_AUTOMATION_PREFIX, (_request, response) => {
+      response.status(503).json({
+        error: "panzhi_automation_unavailable",
+        message: "盼之自动化服务未配置"
+      });
+    });
+    return app;
+  }
 
   const {
     repository,
@@ -445,8 +546,12 @@ export function createApp(dependencies?: AppDependencies): Express {
     browserRepository,
     browserService,
     scheduler,
+    panzhiAutomationService,
+    panzhiPublisher: providedPanzhiPublisher,
     now = () => new Date()
   } = dependencies;
+  const panzhiPublisher = providedPanzhiPublisher ??
+    new PanzhiSnapshotPublisher(repository);
 
   const bridgeToken = (
     authorization: string | undefined
@@ -454,49 +559,11 @@ export function createApp(dependencies?: AppDependencies): Express {
 
   app.post(PANZHI_BROWSER_SNAPSHOT_PATH, (request, response) => {
     const capturedAt = now();
+    let acquired;
     try {
-      const snapshot = PanzhiBrowserSnapshotSchema.parse(request.body);
-      const built = buildPanzhiBrowserListings(snapshot, capturedAt);
-      const sourceState = snapshot.stopReason === "captcha_required"
-        ? "partial" as const
-        : "success" as const;
-      const acquired = admission.withAllSourcesLease(() => {
-        const runId = repository.startScopedScan("panzhi", capturedAt);
-        try {
-          const state = repository.commitScanRefresh(
-            runId,
-            built.listings,
-            [
-              {
-                source: "panzhi",
-                state: sourceState,
-                attemptedAt: capturedAt,
-                itemCount: built.listings.length,
-                metadata: {
-                  pagesScanned: snapshot.loadActionCount,
-                  stopReason: snapshot.stopReason,
-                  error: sourceState === "partial"
-                    ? "captcha_required"
-                    : null
-                }
-              }
-            ],
-            capturedAt
-          );
-          return { runId, state };
-        } catch (error) {
-          try {
-            repository.failScan(
-              runId,
-              "盼之浏览器快照发布失败",
-              capturedAt
-            );
-          } catch {
-            // Preserve the original publish error.
-          }
-          throw error;
-        }
-      });
+      acquired = admission.withAllSourcesLease(() =>
+        panzhiPublisher.publish(request.body, capturedAt)
+      );
       if (acquired.kind === "conflict") {
         response.status(409).json({
           error: "refresh_conflict",
@@ -506,22 +573,10 @@ export function createApp(dependencies?: AppDependencies): Express {
         });
         return;
       }
-      acquired.lease.release();
       tracker.synchronize(repository.getRefreshSnapshot());
-      const published = repository.getScanHistory(1)[0]?.sources.some(
-        (source) =>
-          source.source === "panzhi" &&
-          source.published
-      ) ?? false;
+      const { published: _published, ...publicResult } = acquired.value;
       response.json({
-        source: "panzhi",
-        state: published
-          ? sourceState
-          : "quarantined",
-        scanRunId: acquired.value.runId,
-        observedItemCount: snapshot.items.length,
-        publishedItemCount: published ? built.listings.length : 0,
-        droppedByPrice: built.droppedByPrice
+        ...publicResult
       });
     } catch (error) {
       if (error instanceof ZodError) {
@@ -531,12 +586,174 @@ export function createApp(dependencies?: AppDependencies): Express {
         });
         return;
       }
+      if (error instanceof PanzhiSnapshotPublisherError) {
+        response.status(409).json({
+          error: error.code,
+          message: error.message
+        });
+        return;
+      }
       response.status(500).json({
         error: "panzhi_browser_snapshot_failed",
         message: "盼之浏览器快照发布失败"
       });
+    } finally {
+      if (acquired?.kind === "acquired") acquired.lease.release();
     }
   });
+
+  const unavailablePanzhiAutomation = (response: Response): void => {
+    response.status(503).json({
+      error: "panzhi_automation_unavailable",
+      message: "盼之自动化服务未配置"
+    });
+  };
+
+  app.use(PANZHI_AUTOMATION_PREFIX, (request, response, next) => {
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({
+        error: "invalid_panzhi_automation_payload",
+        message: "盼之自动化请求格式无效"
+      });
+      return;
+    }
+    next();
+  });
+
+  app.get(`${PANZHI_AUTOMATION_PREFIX}/status`, (_request, response) => {
+    if (!panzhiAutomationService) {
+      unavailablePanzhiAutomation(response);
+      return;
+    }
+    try {
+      response.json(panzhiAutomationService.status());
+    } catch (error) {
+      sendPanzhiAutomationError(response, error);
+    }
+  });
+
+  app.post(`${PANZHI_AUTOMATION_PREFIX}/heartbeat`, (request, response) => {
+    if (!panzhiAutomationService) {
+      unavailablePanzhiAutomation(response);
+      return;
+    }
+    try {
+      EmptyBodySchema.parse(request.body);
+      response.json(panzhiAutomationService.recordExtensionHeartbeat());
+    } catch (error) {
+      sendPanzhiAutomationError(response, error);
+    }
+  });
+
+  app.post(`${PANZHI_AUTOMATION_PREFIX}/jobs/claim`, (request, response) => {
+    if (!panzhiAutomationService) {
+      unavailablePanzhiAutomation(response);
+      return;
+    }
+    try {
+      const body = PanzhiAutomationClaimBodySchema.parse(request.body);
+      const rawAuthorization = request.get("authorization");
+      if ("jobId" in body) {
+        const token = readStrictBearerToken(rawAuthorization);
+        if (!token) {
+          throw new PanzhiAutomationServiceError(
+            "unauthorized",
+            "A bearer token is required to resume a job"
+          );
+        }
+        response.json(panzhiAutomationService.resume(body.jobId, token));
+        return;
+      }
+      if (rawAuthorization !== undefined) {
+        throw new PanzhiAutomationServiceError(
+          "body_mismatch",
+          "A bearer token requires a resume job id"
+        );
+      }
+      const claimed = panzhiAutomationService.claim();
+      if (!claimed) {
+        response.status(204).end();
+        return;
+      }
+      response.status(202).json(claimed);
+    } catch (error) {
+      sendPanzhiAutomationError(response, error);
+    }
+  });
+
+  app.post(
+    `${PANZHI_AUTOMATION_PREFIX}/jobs/:id/heartbeat`,
+    (request, response) => {
+      if (!panzhiAutomationService) {
+        unavailablePanzhiAutomation(response);
+        return;
+      }
+      try {
+        EmptyBodySchema.parse(request.body);
+        response.json(panzhiAutomationService.heartbeat(
+          request.params.id,
+          readStrictBearerToken(request.get("authorization"))
+        ));
+      } catch (error) {
+        sendPanzhiAutomationError(response, error);
+      }
+    }
+  );
+
+  app.post(
+    `${PANZHI_AUTOMATION_PREFIX}/jobs/:id/state`,
+    (request, response) => {
+      if (!panzhiAutomationService) {
+        unavailablePanzhiAutomation(response);
+        return;
+      }
+      try {
+        const body = PanzhiAutomationStateBodySchema.parse(request.body);
+        response.json(panzhiAutomationService.updateState(
+          request.params.id,
+          readStrictBearerToken(request.get("authorization")),
+          body
+        ));
+      } catch (error) {
+        sendPanzhiAutomationError(response, error);
+      }
+    }
+  );
+
+  app.post(PANZHI_AUTOMATION_SNAPSHOT_PATH, (request, response) => {
+    if (!panzhiAutomationService) {
+      unavailablePanzhiAutomation(response);
+      return;
+    }
+    try {
+      response.json(panzhiAutomationService.submitSnapshot(
+        request.params.id,
+        readStrictBearerToken(request.get("authorization")),
+        request.body
+      ));
+    } catch (error) {
+      sendPanzhiAutomationError(response, error);
+    }
+  });
+
+  app.post(
+    `${PANZHI_AUTOMATION_PREFIX}/jobs/:id/cancel`,
+    (request, response) => {
+      if (!panzhiAutomationService) {
+        unavailablePanzhiAutomation(response);
+        return;
+      }
+      try {
+        EmptyBodySchema.parse(request.body);
+        response.json(panzhiAutomationService.cancel(
+          request.params.id,
+          readStrictBearerToken(request.get("authorization"))
+        ));
+      } catch (error) {
+        sendPanzhiAutomationError(response, error);
+      }
+    }
+  );
 
   app.post(
     "/api/sources/jiaoyimao/browser-refresh",

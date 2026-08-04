@@ -299,6 +299,90 @@ export class RefreshScheduleRepository {
       source
     );
   }
+
+  markAutomationFailedWithoutAdvancing(
+    source: "panzhi",
+    mode: RefreshMode,
+    state: "partial" | "failed",
+    error: string,
+    at: Date,
+    random: () => number
+  ): void {
+    const row = this.list().find((entry) => entry.source === source)!;
+    const failures = row.consecutiveFailures + 1;
+    const baseBackoffMinutes =
+      [5, 15, 60, 120][Math.min(3, failures - 1)] ?? 5;
+    const jitteredBackoff = Math.max(
+      1,
+      Math.round(baseBackoffMinutes * (0.9 + random() * 0.2))
+    );
+    this.database.prepare(`
+      UPDATE refresh_schedule
+      SET last_finished_at = ?,
+          last_mode = ?,
+          last_state = ?,
+          consecutive_failures = ?,
+          backoff_until = ?,
+          last_error = ?,
+          attention_required = 1
+      WHERE source = ?
+    `).run(
+      at.toISOString(),
+      mode,
+      state,
+      failures,
+      addMinutes(at, jitteredBackoff).toISOString(),
+      error,
+      source
+    );
+  }
+
+  markAutomationFinished(
+    source: "panzhi",
+    mode: RefreshMode,
+    state: ScanState,
+    error: string | null,
+    at: Date,
+    random: () => number
+  ): void {
+    const row = this.list().find((entry) => entry.source === source)!;
+    const interval = mode === "quick"
+      ? row.quickIntervalMinutes
+      : row.deepIntervalMinutes;
+    const nextAt = addMinutes(
+      at,
+      Math.max(1, Math.round(interval * (0.9 + random() * 0.2)))
+    ).toISOString();
+    this.database.prepare(`
+      UPDATE refresh_schedule
+      SET last_finished_at = ?,
+          last_mode = ?,
+          last_state = ?,
+          observed_source_success_at = ?,
+          consecutive_failures = 0,
+          backoff_until = NULL,
+          last_error = ?,
+          attention_required = 0,
+          next_quick_at = CASE
+            WHEN ? = 'quick' THEN ? ELSE next_quick_at
+          END,
+          next_deep_at = CASE
+            WHEN ? = 'deep' THEN ? ELSE next_deep_at
+          END
+      WHERE source = ?
+    `).run(
+      at.toISOString(),
+      mode,
+      state,
+      at.toISOString(),
+      error,
+      mode,
+      nextAt,
+      mode,
+      nextAt,
+      source
+    );
+  }
 }
 
 export class RefreshScheduler {
