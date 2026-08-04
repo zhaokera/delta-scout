@@ -1,5 +1,7 @@
 import type { SourceId } from "../../domain/listing";
 import type {
+  PanzhiAutomationState,
+  PanzhiAutomationStatusView,
   RefreshEventView,
   RefreshMode,
   RefreshScheduleView
@@ -19,6 +21,18 @@ const STATE_LABELS: Record<RefreshScheduleView["lastState"], string> = {
   blocked: "自动刷新受阻",
   failed: "最近刷新失败",
   attention_required: "等待人工快照"
+};
+
+const PANZHI_STAGE_LABELS: Record<PanzhiAutomationState, string> = {
+  queued: "等待 Chrome 扩展领取",
+  opening_page: "正在复用或打开盼之标签页",
+  applying_filters: "正在设置并核对原生筛选",
+  collecting: "正在读取商品卡片",
+  awaiting_user_verification: "等待你完成 Chrome 验证",
+  submitting: "正在提交可信快照",
+  success: "自动刷新成功",
+  failed: "自动刷新失败",
+  cancelled: "自动刷新已取消"
 };
 
 interface DisplayRefreshEvent extends RefreshEventView {
@@ -73,12 +87,14 @@ export function RefreshAutomationPanel({
   schedules,
   events,
   busy,
+  panzhiAutomation,
   onRefresh,
   onAcknowledge
 }: {
   schedules: RefreshScheduleView[];
   events: RefreshEventView[];
   busy: boolean;
+  panzhiAutomation?: PanzhiAutomationStatusView | null;
   onRefresh: (source: SourceId, mode: RefreshMode) => void;
   onAcknowledge: () => void;
 }) {
@@ -96,6 +112,7 @@ export function RefreshAutomationPanel({
       <RefreshScheduleGrid
         schedules={schedules}
         busy={busy}
+        panzhiAutomation={panzhiAutomation}
         onRefresh={onRefresh}
       />
       <RefreshEventFeed
@@ -110,10 +127,12 @@ export function RefreshAutomationPanel({
 export function RefreshScheduleGrid({
   schedules,
   busy,
+  panzhiAutomation,
   onRefresh
 }: {
   schedules: RefreshScheduleView[];
   busy: boolean;
+  panzhiAutomation?: PanzhiAutomationStatusView | null;
   onRefresh: (source: SourceId, mode: RefreshMode) => void;
 }) {
   if (schedules.length === 0) {
@@ -157,18 +176,42 @@ export function RefreshScheduleGrid({
           ) : null}
           {schedule.attentionRequired ? (
             <p className="refresh-schedule__warning">
-              已到本轮刷新时间，需要登录浏览器补一次原生筛选快照
+              自动任务已排队；Chrome 扩展连接后会继续执行
             </p>
           ) : null}
-          <div className="refresh-schedule__actions">
+          {schedule.source === "panzhi" ? (
+            <PanzhiAutomationStatus status={panzhiAutomation} />
+          ) : null}
+          <div className={
+            schedule.source === "panzhi"
+              ? "refresh-schedule__actions refresh-schedule__actions--panzhi"
+              : "refresh-schedule__actions"
+          }>
             {schedule.source === "panzhi" ? (
-              <a
-                href="https://www.pzds.com/goodsList/391/6"
-                target="_blank"
-                rel="noreferrer"
-              >
-                打开盼之 ↗
-              </a>
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onRefresh("panzhi", "quick")}
+                >
+                  立即快速刷新
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onRefresh("panzhi", "deep")}
+                >
+                  立即完整刷新
+                </button>
+                <a
+                  className="refresh-schedule__diagnostic"
+                  href="https://www.pzds.com/goodsList/391/6"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  打开盼之诊断页
+                </a>
+              </>
             ) : (
               <>
                 <button
@@ -190,6 +233,76 @@ export function RefreshScheduleGrid({
           </div>
         </article>
       ))}
+    </div>
+  );
+}
+
+function PanzhiAutomationStatus({
+  status
+}: {
+  status?: PanzhiAutomationStatusView | null;
+}) {
+  const connected = status?.connected === true;
+  const job = status?.currentJob ?? null;
+  return (
+    <div
+      className={`panzhi-automation panzhi-automation--${
+        connected ? "connected" : "disconnected"
+      }`}
+      aria-label="盼之 Chrome 自动刷新状态"
+    >
+      <div className="panzhi-automation__health">
+        <span aria-hidden="true" />
+        <div>
+          <strong>
+            {connected
+              ? "Chrome 自动刷新已连接"
+              : "Chrome 自动刷新未连接"}
+          </strong>
+          <small>
+            {connected && status?.lastHeartbeatAt
+              ? `心跳 ${formatTime(status.lastHeartbeatAt)}`
+              : "等待本机扩展心跳"}
+          </small>
+        </div>
+      </div>
+
+      {!connected ? (
+        <p className="panzhi-automation__setup">
+          在 Chrome 扩展管理页加载已解压目录
+          <code>extensions/panzhi-auto-refresh/dist/</code>
+        </p>
+      ) : null}
+
+      {job ? (
+        <div
+          className={`panzhi-automation__stage panzhi-automation__stage--${job.state}`}
+          data-state={job.state}
+        >
+          <div>
+            <small>{job.mode === "quick" ? "QUICK RUN" : "DEEP RUN"}</small>
+            <strong>{PANZHI_STAGE_LABELS[job.state]}</strong>
+          </div>
+          <time dateTime={job.updatedAt}>
+            更新 {formatTime(job.updatedAt)}
+          </time>
+        </div>
+      ) : (
+        <p className="panzhi-automation__standby">
+          暂无执行中的盼之任务
+        </p>
+      )}
+
+      {job?.state === "awaiting_user_verification" ? (
+        <p className="panzhi-automation__verification" role="alert">
+          <strong>需要你完成一次可见验证</strong>
+          请在已打开的 Chrome 盼之页面完成可见验证码或滑块；完成后会自动继续。
+        </p>
+      ) : null}
+
+      {job?.state === "failed" && job.error ? (
+        <p className="panzhi-automation__error">{job.error}</p>
+      ) : null}
     </div>
   );
 }

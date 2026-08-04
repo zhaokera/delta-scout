@@ -29,7 +29,7 @@ function sourceState(status: SourceStatusView): {
     return { label: "验证码阻塞", tone: "warn" };
   }
   if (status.error === "browser_snapshot_required") {
-    return { label: "需要浏览器快照", tone: "warn" };
+    return { label: "等待自动浏览器采集", tone: "warn" };
   }
   if (status.error === "unverified_structure") {
     return { label: "列表待人工接入", tone: "warn" };
@@ -44,7 +44,7 @@ const STOP_REASON_LABELS: Record<string, string> = {
   repeated_request: "重复请求保护停止",
   safety_limit: "达到安全上限",
   captcha_required: "入口触发验证码",
-  browser_snapshot_required: "需在网页完成原生筛选",
+  browser_snapshot_required: "等待 Chrome 自动刷新",
   unverified_structure: "列表结构待核验",
   entry_failed: "入口请求失败",
   anomaly_guard: "异常量保护已启用",
@@ -170,18 +170,6 @@ export function SourceStrip({
                 <span>刷新交易猫</span>
                 <small>OPEN BROWSER BRIDGE ↗</small>
               </button>
-            ) : null}
-            {status.source === "panzhi" &&
-            status.error === "browser_snapshot_required" ? (
-              <a
-                className="source-card__browser-refresh"
-                href="https://www.pzds.com/goodsList/391/6"
-                target="_blank"
-                rel="noreferrer"
-              >
-                <span>打开盼之筛选页</span>
-                <small>LOGIN / FILTER / SNAPSHOT ↗</small>
-              </a>
             ) : null}
           </article>
         );

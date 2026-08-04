@@ -1074,6 +1074,130 @@ button {
   font: 650 9px/1.5 var(--mono);
 }
 
+.panzhi-automation {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 11px;
+  padding: 10px;
+  background: rgba(4, 7, 5, 0.72);
+  border: 1px solid #283129;
+  border-left: 2px solid #596159;
+}
+
+.panzhi-automation--connected {
+  border-left-color: var(--acid);
+}
+
+.panzhi-automation--disconnected {
+  border-left-color: var(--amber);
+}
+
+.panzhi-automation__health,
+.panzhi-automation__stage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.panzhi-automation__health {
+  justify-content: flex-start;
+}
+
+.panzhi-automation__health > span {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgba(255, 189, 74, 0.08);
+}
+
+.panzhi-automation--connected .panzhi-automation__health > span {
+  background: var(--acid);
+  box-shadow: 0 0 0 3px rgba(216, 255, 62, 0.08);
+}
+
+.panzhi-automation__health > div,
+.panzhi-automation__stage > div {
+  display: grid;
+  gap: 3px;
+}
+
+.panzhi-automation__health strong,
+.panzhi-automation__stage strong,
+.panzhi-automation__verification strong {
+  color: #e5e9e4;
+  font: 750 10px/1.25 var(--sans);
+}
+
+.panzhi-automation__health small,
+.panzhi-automation__stage small,
+.panzhi-automation__stage time {
+  color: #7f8980;
+  font: 700 8px/1.25 var(--mono);
+  letter-spacing: 0.04em;
+}
+
+.panzhi-automation__stage {
+  padding-top: 8px;
+  border-top: 1px solid #222a23;
+}
+
+.panzhi-automation__stage--queued strong,
+.panzhi-automation__stage--opening_page strong,
+.panzhi-automation__stage--applying_filters strong,
+.panzhi-automation__stage--collecting strong,
+.panzhi-automation__stage--submitting strong,
+.panzhi-automation__stage--success strong {
+  color: var(--acid);
+}
+
+.panzhi-automation__stage--awaiting_user_verification strong {
+  color: var(--amber);
+}
+
+.panzhi-automation__stage--failed strong,
+.panzhi-automation__stage--cancelled strong {
+  color: var(--danger);
+}
+
+.panzhi-automation__setup,
+.panzhi-automation__standby,
+.panzhi-automation__verification,
+.panzhi-automation__error {
+  margin: 0;
+  color: #89928a;
+  font: 650 8px/1.5 var(--mono);
+}
+
+.panzhi-automation__setup {
+  display: grid;
+  gap: 4px;
+}
+
+.panzhi-automation__setup code {
+  overflow-wrap: anywhere;
+  color: #d7dcd6;
+  font: inherit;
+}
+
+.panzhi-automation__verification {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  color: #e4c287;
+  background: rgba(255, 189, 74, 0.055);
+  border: 1px solid rgba(255, 189, 74, 0.24);
+}
+
+.panzhi-automation__verification strong {
+  color: var(--amber);
+}
+
+.panzhi-automation__error {
+  color: #e79b8d;
+}
+
 .refresh-schedule__actions button,
 .refresh-schedule__actions a,
 .refresh-events__heading button {
@@ -1090,6 +1214,20 @@ button {
 .refresh-schedule__actions button:disabled {
   color: #626963;
   cursor: not-allowed;
+}
+
+.refresh-schedule__actions--panzhi {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.refresh-schedule__actions .refresh-schedule__diagnostic {
+  min-height: auto;
+  margin-left: auto;
+  padding: 5px 0;
+  color: #79817a;
+  border-color: transparent;
+  font-size: 8px;
 }
 
 .refresh-events {

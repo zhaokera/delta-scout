@@ -28,6 +28,7 @@ import {
   httpScoutApi,
   type ListingHistoryView,
   type ListingView,
+  type PanzhiAutomationStatusView,
   type PoolMode,
   type RefreshEventView,
   type RefreshMode,
@@ -129,6 +130,12 @@ function ScoutApp({ api }: { api: ScoutApi }) {
   const [sources, setSources] = useState<SourceStatusView[]>([]);
   const [refreshSchedules, setRefreshSchedules] =
     useState<RefreshScheduleView[]>([]);
+  const [panzhiAutomation, setPanzhiAutomation] =
+    useState<PanzhiAutomationStatusView>({
+      connected: false,
+      lastHeartbeatAt: null,
+      currentJob: null
+    });
   const [refreshEvents, setRefreshEvents] =
     useState<RefreshEventView[]>([]);
   const [listings, setListings] =
@@ -176,6 +183,7 @@ function ScoutApp({ api }: { api: ScoutApi }) {
   );
   const broadcastRef = useRef<BroadcastChannel | null>(null);
   const pollSequenceRef = useRef(0);
+  const panzhiStatusSequenceRef = useRef(0);
   const knownRunIdRef = useRef<number | null>(null);
   const knownSnapshotAtRef = useRef<string | null>(null);
   const selectedKeyRef = useRef<string | null>(null);
@@ -194,6 +202,43 @@ function ScoutApp({ api }: { api: ScoutApi }) {
     }
     if (eventsResult.status === "fulfilled") {
       setRefreshEvents(eventsResult.value);
+    }
+  }, [api]);
+
+  const loadPanzhiAutomationStatus = useCallback(async () => {
+    const sequence = ++panzhiStatusSequenceRef.current;
+    if (!api.getPanzhiAutomationStatus) {
+      if (
+        mounted.current &&
+        sequence === panzhiStatusSequenceRef.current
+      ) {
+        setPanzhiAutomation({
+          connected: false,
+          lastHeartbeatAt: null,
+          currentJob: null
+        });
+      }
+      return;
+    }
+    try {
+      const status = await api.getPanzhiAutomationStatus();
+      if (
+        mounted.current &&
+        sequence === panzhiStatusSequenceRef.current
+      ) {
+        setPanzhiAutomation(status);
+      }
+    } catch {
+      if (
+        mounted.current &&
+        sequence === panzhiStatusSequenceRef.current
+      ) {
+        setPanzhiAutomation({
+          connected: false,
+          lastHeartbeatAt: null,
+          currentJob: null
+        });
+      }
     }
   }, [api]);
 
@@ -671,6 +716,20 @@ function ScoutApp({ api }: { api: ScoutApi }) {
     };
   }, [api, initialView, load, loadAutomation]);
 
+  useEffect(() => {
+    if (location.pathname !== APP_ROUTES.refresh) return;
+    void loadPanzhiAutomationStatus();
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadPanzhiAutomationStatus();
+      }
+    }, 5_000);
+    return () => {
+      panzhiStatusSequenceRef.current += 1;
+      clearInterval(timer);
+    };
+  }, [loadPanzhiAutomationStatus, location.pathname]);
+
   const visibleListings = useMemo(
     () =>
       listings.filter((listing) =>
@@ -947,7 +1006,12 @@ function ScoutApp({ api }: { api: ScoutApi }) {
       const started = await api.startSourceRefresh(source, mode);
       if (!mounted.current) return;
       if ("kind" in started) {
-        await loadAutomation();
+        await Promise.all([
+          loadAutomation(),
+          source === "panzhi"
+            ? loadPanzhiAutomationStatus()
+            : Promise.resolve()
+        ]);
         return;
       }
       const status = await api.getRefreshStatus();
@@ -1297,6 +1361,7 @@ function ScoutApp({ api }: { api: ScoutApi }) {
             </header>
             <RefreshScheduleGrid
               schedules={refreshSchedules}
+              panzhiAutomation={panzhiAutomation}
               busy={
                 refreshing ||
                 browserRefresh.busy ||

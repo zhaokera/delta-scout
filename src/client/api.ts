@@ -187,6 +187,37 @@ export interface ListingHistoryView {
 
 export type RefreshMode = "quick" | "deep";
 
+export type PanzhiAutomationState =
+  | "queued"
+  | "opening_page"
+  | "applying_filters"
+  | "collecting"
+  | "awaiting_user_verification"
+  | "submitting"
+  | "success"
+  | "failed"
+  | "cancelled";
+
+export interface PanzhiAutomationJobView {
+  id: string;
+  mode: RefreshMode;
+  state: PanzhiAutomationState;
+  leaseExpiresAt: string | null;
+  verificationDeadlineAt: string | null;
+  verificationNotifiedAt: string | null;
+  error: string | null;
+  scanRunId: number | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface PanzhiAutomationStatusView {
+  connected: boolean;
+  lastHeartbeatAt: string | null;
+  currentJob: PanzhiAutomationJobView | null;
+}
+
 export interface RefreshScheduleView {
   source: SourceId;
   enabled: boolean;
@@ -261,6 +292,7 @@ export interface ScoutApi {
       }
   >;
   getRefreshSchedule?(): Promise<RefreshScheduleView[]>;
+  getPanzhiAutomationStatus?(): Promise<PanzhiAutomationStatusView>;
   getRefreshEvents?(
     limit?: number,
     unreadOnly?: boolean
@@ -613,6 +645,10 @@ export const httpScoutApi: ScoutApi = {
     requestJson<{ schedules: RefreshScheduleView[] }>(
       "/api/refresh-schedule"
     ).then(({ schedules }) => schedules),
+  getPanzhiAutomationStatus: () =>
+    requestJson<PanzhiAutomationStatusView>(
+      "/api/sources/panzhi/automation/status"
+    ),
   getRefreshEvents: (limit = 30, unreadOnly = false) =>
     requestJson<{ events: RefreshEventView[] }>(
       `/api/refresh-events?limit=${limit}&unread=${unreadOnly}`

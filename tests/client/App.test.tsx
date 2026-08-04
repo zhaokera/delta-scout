@@ -14,7 +14,9 @@ import { App } from "../../src/client/App";
 import type {
   JiaoyimaoBrowserRefreshJob,
   ListingView,
+  PanzhiAutomationStatusView,
   PoolMode,
+  RefreshScheduleView,
   RefreshStatusView,
   ScoutApi,
   SourceStatusView
@@ -242,6 +244,36 @@ function makeRefreshStatus(
   };
 }
 
+function makePanzhiAutomationStatus(
+  overrides: Partial<PanzhiAutomationStatusView> = {}
+): PanzhiAutomationStatusView {
+  return {
+    connected: true,
+    lastHeartbeatAt: "2026-08-04T08:00:00.000Z",
+    currentJob: null,
+    ...overrides
+  };
+}
+
+function makePanzhiSchedule(): RefreshScheduleView {
+  return {
+    source: "panzhi",
+    enabled: true,
+    quickIntervalMinutes: 120,
+    deepIntervalMinutes: 1440,
+    nextQuickAt: "2026-08-04T10:00:00.000Z",
+    nextDeepAt: "2026-08-05T08:00:00.000Z",
+    lastStartedAt: null,
+    lastFinishedAt: null,
+    lastMode: null,
+    lastState: "idle",
+    consecutiveFailures: 0,
+    backoffUntil: null,
+    lastError: null,
+    attentionRequired: false
+  };
+}
+
 function makeBrowserRefreshJob(
   overrides: Partial<JiaoyimaoBrowserRefreshJob> = {}
 ): JiaoyimaoBrowserRefreshJob {
@@ -361,6 +393,132 @@ describe("App shell", () => {
         "balanced"
       );
     });
+    expect(screen.queryByRole("menuitem", {
+      name: /盼之.*刷新/
+    })).not.toBeInTheDocument();
+  });
+
+  it("polls Panzhi automation while the refresh panel is mounted", async () => {
+    const getPanzhiAutomationStatus = vi.fn(async () =>
+      makePanzhiAutomationStatus()
+    );
+    const api = makeApi();
+    api.getRefreshSchedule = vi.fn(async () => [makePanzhiSchedule()]);
+    api.getPanzhiAutomationStatus = getPanzhiAutomationStatus;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    const { unmount } = render(<App api={api} />);
+    try {
+      fireEvent.click(screen.getByRole("menuitem", { name: "刷新中心" }));
+      await waitFor(() => {
+        expect(getPanzhiAutomationStatus).toHaveBeenCalledTimes(1);
+      });
+      expect(screen.getByText("Chrome 自动刷新已连接"))
+        .toBeInTheDocument();
+
+      const statusInterval = setIntervalSpy.mock.calls
+        .filter(([, delay]) => delay === 5_000)
+        .at(-1);
+      expect(statusInterval?.[1]).toBe(5_000);
+      await act(async () => {
+        (statusInterval?.[0] as () => void)();
+      });
+      await waitFor(() => {
+        expect(getPanzhiAutomationStatus).toHaveBeenCalledTimes(2);
+      });
+
+      fireEvent.click(screen.getByRole("menuitem", { name: "候选总榜" }));
+      expect(clearIntervalSpy).toHaveBeenCalled();
+    } finally {
+      unmount();
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("ignores an older Panzhi status response after a newer poll", async () => {
+    const older = deferred<PanzhiAutomationStatusView>();
+    const getPanzhiAutomationStatus = vi.fn()
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValue(makePanzhiAutomationStatus());
+    const api = makeApi();
+    api.getRefreshSchedule = vi.fn(async () => [makePanzhiSchedule()]);
+    api.getPanzhiAutomationStatus = getPanzhiAutomationStatus;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+
+    const { unmount } = render(<App api={api} />);
+    try {
+      fireEvent.click(screen.getByRole("menuitem", { name: "刷新中心" }));
+      await waitFor(() => {
+        expect(getPanzhiAutomationStatus).toHaveBeenCalledTimes(1);
+      });
+
+      const statusInterval = setIntervalSpy.mock.calls
+        .filter(([, delay]) => delay === 5_000)
+        .at(-1);
+      await act(async () => {
+        (statusInterval?.[0] as () => void)();
+      });
+      expect(await screen.findByText("Chrome 自动刷新已连接"))
+        .toBeInTheDocument();
+
+      await act(async () => {
+        older.resolve(makePanzhiAutomationStatus({
+          connected: false,
+          lastHeartbeatAt: null
+        }));
+        await older.promise;
+      });
+      expect(screen.getByText("Chrome 自动刷新已连接"))
+        .toBeInTheDocument();
+    } finally {
+      unmount();
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("queues Panzhi quick and deep refreshes without leaving the app", async () => {
+    const startSourceRefresh = vi.fn(async (
+      source: SourceId,
+      mode: "quick" | "deep" = "quick"
+    ) => ({
+      kind: "queued" as const,
+      jobId: "5a89a54c-47ef-49c0-b48f-8f931ddf0c8b",
+      source: source as "panzhi",
+      mode
+    }));
+    const api = makeApi();
+    api.getRefreshSchedule = vi.fn(async () => [makePanzhiSchedule()]);
+    api.getPanzhiAutomationStatus = vi.fn(async () =>
+      makePanzhiAutomationStatus({ connected: false })
+    );
+    api.startSourceRefresh = startSourceRefresh;
+    render(<App api={api} />);
+    fireEvent.click(screen.getByRole("menuitem", { name: "刷新中心" }));
+    const card = (await screen.findByText("盼之")).closest("article");
+    expect(card).not.toBeNull();
+
+    fireEvent.click(within(card!).getByRole("button", {
+      name: "立即快速刷新"
+    }));
+    fireEvent.click(within(card!).getByRole("button", {
+      name: "立即完整刷新"
+    }));
+
+    await waitFor(() => {
+      expect(startSourceRefresh).toHaveBeenNthCalledWith(
+        1,
+        "panzhi",
+        "quick"
+      );
+      expect(startSourceRefresh).toHaveBeenNthCalledWith(
+        2,
+        "panzhi",
+        "deep"
+      );
+    });
+    expect(window.location.pathname).toBe("/refresh");
   });
 
   it("does not describe a partial platform snapshot as fully successful", async () => {
@@ -489,6 +647,27 @@ describe("App shell", () => {
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
       signal: controller.signal
     });
+  });
+
+  it("reads the typed Panzhi automation status from localhost API", async () => {
+    const status = makePanzhiAutomationStatus({ connected: false });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => status
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await expect(httpScoutApi.getPanzhiAutomationStatus?.())
+        .resolves.toEqual(status);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sources/panzhi/automation/status",
+      undefined
+    );
   });
 
   it("loads the pool first and switches among four isolated views", async () => {
@@ -1536,13 +1715,12 @@ describe("App shell", () => {
     render(<App api={api} />);
 
     expect(await screen.findByText("验证码阻塞")).toBeInTheDocument();
-    expect(screen.getByText("需要浏览器快照")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: /打开盼之筛选页/ })
-    ).toHaveAttribute(
-      "href",
-      "https://www.pzds.com/goodsList/391/6"
-    );
+    expect(screen.getByText("等待自动浏览器采集"))
+      .toBeInTheDocument();
+    expect(screen.getByText("等待 Chrome 自动刷新"))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /打开盼之/ }))
+      .not.toBeInTheDocument();
     expect(screen.getByText("列表待人工接入")).toBeInTheDocument();
     const row = screen.getByRole("button", {
       name: /SA2PEAK.*¥5,560/
