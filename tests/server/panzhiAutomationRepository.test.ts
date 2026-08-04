@@ -1,6 +1,9 @@
 // @vitest-environment node
 
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createDatabase } from "../../src/server/db.js";
 import {
   canTransitionPanzhiAutomationJob,
@@ -28,7 +31,7 @@ function digest(value: string): string {
 function expectRepositoryError(
   operation: () => unknown,
   code: PanzhiAutomationRepositoryError["code"]
-): void {
+): PanzhiAutomationRepositoryError {
   let caught: unknown;
   try {
     operation();
@@ -37,6 +40,7 @@ function expectRepositoryError(
   }
   expect(caught).toBeInstanceOf(PanzhiAutomationRepositoryError);
   expect(caught).toMatchObject({ code });
+  return caught as PanzhiAutomationRepositoryError;
 }
 
 function claimedRepository(mode: "quick" | "deep" = "quick") {
@@ -359,6 +363,80 @@ describe("PanzhiAutomationRepository", () => {
     });
   });
 
+  it.each(["resume", "heartbeat"] as const)(
+    "persists an expired verification failure before rejecting %s",
+    (operation) => {
+      const { repository, claimed } = claimedRepository();
+      repository.transition(
+        claimed.job.id,
+        claimed.bearerToken,
+        "awaiting_user_verification",
+        { verificationNotified: true },
+        start
+      );
+      const afterDeadline = plus(24 * 60 * 60 * 1_000 + 1);
+
+      expectRepositoryError(
+        () => operation === "resume"
+          ? repository.resume(
+              claimed.job.id,
+              claimed.bearerToken,
+              afterDeadline
+            )
+          : repository.heartbeat(
+              claimed.job.id,
+              claimed.bearerToken,
+              afterDeadline
+            ),
+        "expired"
+      );
+
+      expect(repository.getJob(claimed.job.id)).toMatchObject({
+        state: "failed",
+        error: "captcha_required",
+        leaseExpiresAt: null
+      });
+      expectRepositoryError(() => repository.heartbeat(
+        claimed.job.id,
+        claimed.bearerToken,
+        afterDeadline
+      ), "unauthorized");
+    }
+  );
+
+  it("persists an expired verification failure before rejecting recovery", () => {
+    const { repository, claimed } = claimedRepository();
+    repository.transition(
+      claimed.job.id,
+      claimed.bearerToken,
+      "awaiting_user_verification",
+      { verificationNotified: true },
+      start
+    );
+    const afterDeadline = plus(24 * 60 * 60 * 1_000 + 1);
+
+    expectRepositoryError(() => repository.transition(
+      claimed.job.id,
+      claimed.bearerToken,
+      "applying_filters",
+      {},
+      afterDeadline
+    ), "expired");
+
+    expect(repository.getJob(claimed.job.id)).toMatchObject({
+      state: "failed",
+      error: "captcha_required",
+      leaseExpiresAt: null
+    });
+    expectRepositoryError(() => repository.transition(
+      claimed.job.id,
+      claimed.bearerToken,
+      "applying_filters",
+      {},
+      afterDeadline
+    ), "unauthorized");
+  });
+
   it.each(["opening_page", "applying_filters", "collecting"] as const)(
     "allows verification detection while the job is %s",
     (state) => {
@@ -394,7 +472,7 @@ describe("PanzhiAutomationRepository", () => {
     }
   );
 
-  it("resumes verification by returning to applying filters", () => {
+  it("automatically clears verification fields when returning to filters", () => {
     const { repository, claimed } = claimedRepository();
     repository.transition(
       claimed.job.id,
@@ -414,7 +492,7 @@ describe("PanzhiAutomationRepository", () => {
       claimed.job.id,
       claimed.bearerToken,
       "awaiting_user_verification",
-      {},
+      { verificationNotified: true },
       start
     );
 
@@ -422,7 +500,7 @@ describe("PanzhiAutomationRepository", () => {
       claimed.job.id,
       claimed.bearerToken,
       "applying_filters",
-      { clearVerification: true },
+      { verificationNotified: true },
       plus(1)
     );
 
@@ -552,20 +630,51 @@ describe("PanzhiAutomationRepository", () => {
       claimed.bearerToken,
       bodyDigest
     )).toEqual({ ...result, scanRunId });
-    expect(repository.findSuccessfulReplay(
+    const conflictingBodyDigest = digest("different-body");
+    const conflict = expectRepositoryError(() =>
+      repository.findSuccessfulReplay(
       claimed.job.id,
       claimed.bearerToken,
-      digest("different-body")
-    )).toBeNull();
-    expect(repository.findSuccessfulReplay(
+      conflictingBodyDigest
+      ),
+      "conflict"
+    );
+    const wrongBearerToken = "wrong-token";
+    const unauthorized = expectRepositoryError(() =>
+      repository.findSuccessfulReplay(
       claimed.job.id,
-      "wrong-token",
+      wrongBearerToken,
       bodyDigest
-    )).toBeNull();
-    expect(repository.findSuccessfulReplay(
+      ),
+      "unauthorized"
+    );
+    const notFound = expectRepositoryError(() =>
+      repository.findSuccessfulReplay(
       "00000000-0000-4000-8000-000000000000",
       claimed.bearerToken,
       bodyDigest
+      ),
+      "not_found"
+    );
+    for (const error of [conflict, unauthorized, notFound]) {
+      for (const secret of [
+        claimed.bearerToken,
+        wrongBearerToken,
+        bodyDigest,
+        conflictingBodyDigest
+      ]) {
+        expect(error.message).not.toContain(secret);
+      }
+    }
+  });
+
+  it("returns no successful replay while a job is still active", () => {
+    const { repository, claimed } = claimedRepository();
+
+    expect(repository.findSuccessfulReplay(
+      claimed.job.id,
+      claimed.bearerToken,
+      digest("active-request")
     )).toBeNull();
   });
 
@@ -736,5 +845,63 @@ describe("PanzhiAutomationRepository", () => {
       error: "snapshot_rejected",
       scanRunId: null
     });
+  });
+
+  it("uses savepoints without taking ownership of an outer transaction", () => {
+    const database = createDatabase(":memory:");
+    const repository = new PanzhiAutomationRepository(database);
+
+    database.exec("BEGIN IMMEDIATE");
+    repository.recordExtensionHeartbeat(start);
+    const enqueued = repository.enqueue("quick", start);
+    const claimed = repository.claim(start)!;
+    expectRepositoryError(() => repository.transition(
+      claimed.job.id,
+      claimed.bearerToken,
+      "success",
+      {},
+      start
+    ), "invalid_transition");
+
+    expect(database.isTransaction).toBe(true);
+    expect(repository.getJob(enqueued.job.id)?.state).toBe("opening_page");
+    database.exec("ROLLBACK");
+    expect(repository.getJob(enqueued.job.id)).toBeNull();
+    expect(repository.getStatus(start)).toEqual({
+      connected: false,
+      lastHeartbeatAt: null,
+      currentJob: null
+    });
+  });
+
+  it("reopens a file database with idempotent Panzhi migrations", () => {
+    const directory = mkdtempSync(join(tmpdir(), "panzhi-automation-db-"));
+    const databasePath = join(directory, "automation.sqlite");
+    try {
+      const first = createDatabase(databasePath);
+      first.close();
+
+      const second = createDatabase(databasePath);
+      const repository = new PanzhiAutomationRepository(second);
+      const enqueued = repository.enqueue("quick", start);
+      second.close();
+
+      const reopened = createDatabase(databasePath);
+      try {
+        expect(new PanzhiAutomationRepository(reopened).getJob(
+          enqueued.job.id
+        )).toMatchObject({ state: "queued", mode: "quick" });
+        expect(reopened.prepare(`
+          SELECT name
+          FROM sqlite_master
+          WHERE type = 'trigger' AND name LIKE 'panzhi_%'
+          ORDER BY name
+        `).all()).toHaveLength(5);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

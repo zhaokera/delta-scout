@@ -268,8 +268,7 @@ export class PanzhiAutomationRepository {
     bearerToken: string,
     now = new Date()
   ): PanzhiAutomationClaimResponse {
-    return this.runTransaction(() => {
-      const row = this.requireAuthorizedActiveRow(jobId, bearerToken, now);
+    return this.runAuthorizedMutation(jobId, bearerToken, now, (row) => {
       this.extendLease(row.id, now);
       return {
         job: toJob(this.requireRow(row.id)),
@@ -283,8 +282,7 @@ export class PanzhiAutomationRepository {
     bearerToken: string,
     now = new Date()
   ): PanzhiAutomationHeartbeatResponse {
-    return this.runTransaction(() => {
-      const row = this.requireAuthorizedActiveRow(jobId, bearerToken, now);
+    return this.runAuthorizedMutation(jobId, bearerToken, now, (row) => {
       const expiresAt = this.extendLease(row.id, now);
       return {
         job: toJob(this.requireRow(row.id)),
@@ -301,8 +299,7 @@ export class PanzhiAutomationRepository {
     now = new Date()
   ): PanzhiAutomationStateResponse {
     const parsedNext = PanzhiAutomationStateSchema.parse(next);
-    return this.runTransaction(() => {
-      const row = this.requireAuthorizedActiveRow(jobId, bearerToken, now);
+    return this.runAuthorizedMutation(jobId, bearerToken, now, (row) => {
       if (
         parsedNext === "success" ||
         parsedNext === "cancelled" ||
@@ -316,15 +313,21 @@ export class PanzhiAutomationRepository {
 
       const timestamp = now.toISOString();
       const terminal = parsedNext === "failed";
+      const clearsVerification =
+        patch.clearVerification === true ||
+        (
+          row.state === "awaiting_user_verification" &&
+          parsedNext === "applying_filters"
+        );
       const verificationDeadline =
         parsedNext === "awaiting_user_verification"
           ? row.verification_deadline_at ?? new Date(
               now.getTime() + VERIFICATION_DEADLINE_MS
             ).toISOString()
-          : patch.clearVerification
+          : clearsVerification
             ? null
             : row.verification_deadline_at;
-      const verificationNotified = patch.clearVerification
+      const verificationNotified = clearsVerification
         ? null
         : patch.verificationNotified
           ? timestamp
@@ -440,14 +443,31 @@ export class PanzhiAutomationRepository {
       bearerToken,
       row?.completed_bearer_digest ?? null
     );
-    if (
-      !row ||
-      !tokenMatches ||
-      row.state !== "success" ||
-      row.normalized_request_digest !== requestDigest ||
-      row.result_json === null
-    ) {
-      return null;
+    if (!row) {
+      throw new PanzhiAutomationRepositoryError(
+        "not_found",
+        "Panzhi automation job not found"
+      );
+    }
+    if (row.state !== "success") return null;
+    if (!tokenMatches) {
+      throw new PanzhiAutomationRepositoryError(
+        "unauthorized",
+        "The completed bearer token is invalid"
+      );
+    }
+    const canonicalDigest = assertCanonicalDigest(requestDigest);
+    if (row.normalized_request_digest !== canonicalDigest) {
+      throw new PanzhiAutomationRepositoryError(
+        "conflict",
+        "The completed request body does not match"
+      );
+    }
+    if (row.result_json === null) {
+      throw new PanzhiAutomationRepositoryError(
+        "conflict",
+        "Stored Panzhi snapshot result is missing"
+      );
     }
     try {
       return JSON.parse(row.result_json) as T;
@@ -619,6 +639,71 @@ export class PanzhiAutomationRepository {
       WHERE id = ?
     `).run(expiresAt, now.toISOString(), jobId);
     return expiresAt;
+  }
+
+  private runAuthorizedMutation<T>(
+    jobId: string,
+    bearerToken: string,
+    now: Date,
+    operation: (row: JobRow) => T
+  ): T {
+    const outcome = this.runTransaction(() => {
+      const row = this.findRow(jobId);
+      const matched = digestMatches(
+        bearerToken,
+        row?.lease_token_digest ?? null
+      );
+      if (
+        !row ||
+        !matched ||
+        isTerminalPanzhiAutomationState(row.state) ||
+        row.lease_token_digest === null
+      ) {
+        throw new PanzhiAutomationRepositoryError(
+          "unauthorized",
+          "The bearer token is invalid, expired, or no longer active"
+        );
+      }
+
+      const verificationDeadline = row.verification_deadline_at === null
+        ? Number.POSITIVE_INFINITY
+        : Date.parse(row.verification_deadline_at);
+      if (verificationDeadline < now.getTime()) {
+        const timestamp = now.toISOString();
+        this.database.prepare(`
+          UPDATE panzhi_browser_jobs
+          SET state = 'failed',
+              lease_token_digest = NULL,
+              lease_expires_at = NULL,
+              normalized_request_digest = NULL,
+              result_json = NULL,
+              error = 'captcha_required',
+              scan_run_id = NULL,
+              updated_at = ?,
+              finished_at = ?
+          WHERE id = ?
+        `).run(timestamp, timestamp, row.id);
+        return { kind: "verification_expired" } as const;
+      }
+
+      const leaseExpiresAt = row.lease_expires_at
+        ? Date.parse(row.lease_expires_at)
+        : Number.NEGATIVE_INFINITY;
+      if (leaseExpiresAt <= now.getTime()) {
+        throw new PanzhiAutomationRepositoryError(
+          "unauthorized",
+          "The bearer token is invalid, expired, or no longer active"
+        );
+      }
+      return { kind: "completed", value: operation(row) } as const;
+    });
+    if (outcome.kind === "verification_expired") {
+      throw new PanzhiAutomationRepositoryError(
+        "expired",
+        "Panzhi user verification expired"
+      );
+    }
+    return outcome.value;
   }
 
   private requireAuthorizedActiveRow(
