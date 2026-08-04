@@ -475,6 +475,23 @@ export class PanzhiBackgroundController {
     return true;
   }
 
+  async handleContentDelay(
+    tabId: number,
+    milliseconds: number
+  ): Promise<boolean> {
+    if (
+      !this.active ||
+      this.active.stored.tabId !== tabId ||
+      !Number.isInteger(milliseconds) ||
+      milliseconds < 0 ||
+      milliseconds > 10_000
+    ) {
+      return false;
+    }
+    await this.dependencies.sleep(milliseconds);
+    return true;
+  }
+
   private async executeTick(): Promise<void> {
     if (this.dependencies.now().getTime() < this.nextAttemptAt) return;
     try {
@@ -962,6 +979,34 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
   });
 }
 
+export function handlePanzhiRuntimeMessage(
+  controller: PanzhiBackgroundController,
+  message: unknown,
+  sender: ChromeRuntimeMessageSender
+): Promise<unknown> | undefined {
+  if (message === null || typeof message !== "object") return undefined;
+  const input = message as {
+    type?: unknown;
+    stage?: unknown;
+    milliseconds?: unknown;
+  };
+  if (
+    input.type === "panzhi-stage" &&
+    isRunnerStage(input.stage) &&
+    sender.tab?.id !== undefined
+  ) {
+    return controller.handleContentStage(sender.tab.id, input.stage);
+  }
+  if (
+    input.type === "panzhi-delay-v2" &&
+    typeof input.milliseconds === "number" &&
+    sender.tab?.id !== undefined
+  ) {
+    return controller.handleContentDelay(sender.tab.id, input.milliseconds);
+  }
+  return undefined;
+}
+
 if (typeof chrome !== "undefined") {
   const controller = createChromeController(chrome);
   const ensureAlarm = (): void => {
@@ -975,20 +1020,7 @@ if (typeof chrome !== "undefined") {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === ALARM_NAME) void controller.tick();
   });
-  chrome.runtime.onMessage.addListener((message, sender) => {
-    if (
-      message === null ||
-      typeof message !== "object" ||
-      (message as { type?: unknown }).type !== "panzhi-stage" ||
-      !isRunnerStage((message as { stage?: unknown }).stage) ||
-      sender.tab?.id === undefined
-    ) {
-      return undefined;
-    }
-    return controller.handleContentStage(
-      sender.tab.id,
-      (message as { stage: PanzhiPageStage }).stage
-    );
-  });
+  chrome.runtime.onMessage.addListener((message, sender) =>
+    handlePanzhiRuntimeMessage(controller, message, sender));
   ensureAlarm();
 }

@@ -40,11 +40,23 @@ interface PanzhiContentGlobal extends Window {
   __panzhiAutoRefreshContentBridge?: PanzhiContentBridgeState;
 }
 
+async function delayThroughBackground(milliseconds: number): Promise<void> {
+  const accepted = await chrome.runtime.sendMessage({
+    type: "panzhi-delay-v2",
+    milliseconds
+  });
+  if (accepted !== true) {
+    throw new Error("Panzhi background delay is unavailable");
+  }
+}
+
 function runVisiblePage(mode: PanzhiPageMode): Promise<PageRunnerResult> {
   if (running) return running;
   const defaults = createDefaultPageRunnerDependencies(document);
   const runner = new PanzhiPageRunner({
     ...defaults,
+    sleep: delayThroughBackground,
+    settlementDelay: delayThroughBackground,
     onStage: async (stage: PanzhiPageStage) => {
       await chrome.runtime.sendMessage({ type: "panzhi-stage", stage });
     }

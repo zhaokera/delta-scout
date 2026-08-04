@@ -52,11 +52,14 @@ function selectorFailureResult(
   };
 }
 
-function setNativeInputValue(input: HTMLInputElement, value: string): void {
+function assignNativeInputValue(input: HTMLInputElement, value: string): void {
   const view = input.ownerDocument.defaultView;
   const prototype = view?.HTMLInputElement.prototype ?? HTMLInputElement.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
   descriptor?.set?.call(input, value);
+}
+
+function dispatchNativeInputEvents(input: HTMLInputElement): void {
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
@@ -78,6 +81,7 @@ function observeActionUntilResultsSettle(
   readReady: () => ReadyState,
   timeoutMs: number,
   stabilityMs: number,
+  settlementDelay: (milliseconds: number) => Promise<void>,
   allowExistingEndMarker = false,
   allowStableInitialState = false
 ): Promise<SettlementOutcome> {
@@ -92,8 +96,9 @@ function observeActionUntilResultsSettle(
 
   return new Promise((resolve) => {
     let finished = false;
-    let timeout: number | undefined;
-    let stabilityTimer: number | undefined;
+    let timeoutGeneration = 0;
+    let stabilityGeneration = 0;
+    let stabilityPending = false;
     let observer: MutationObserver | null = null;
     let current: ResultState = initial;
     let sawLoading = initial.loadingVisible;
@@ -105,11 +110,26 @@ function observeActionUntilResultsSettle(
       if (finished) return;
       finished = true;
       observer?.disconnect();
-      if (timeout !== undefined) root.defaultView?.clearTimeout(timeout);
-      if (stabilityTimer !== undefined) {
-        root.defaultView?.clearTimeout(stabilityTimer);
-      }
+      timeoutGeneration += 1;
+      stabilityGeneration += 1;
+      stabilityPending = false;
       resolve(value);
+    };
+
+    const scheduleTimeout = (milliseconds: number): void => {
+      const generation = ++timeoutGeneration;
+      void settlementDelay(milliseconds).then(
+        () => {
+          if (finished || generation !== timeoutGeneration) return;
+          const blocker = detectVerificationBlocker(root);
+          finish(blocker.kind === "blocked" ? blocker : { kind: "timeout" });
+        },
+        (error: unknown) => {
+          if (!finished && generation === timeoutGeneration) {
+            finish({ kind: "action-error", error });
+          }
+        }
+      );
     };
 
     const evaluate = (): void => {
@@ -142,27 +162,33 @@ function observeActionUntilResultsSettle(
       }
       current = next;
 
-      if (changed && stabilityTimer !== undefined) {
-        root.defaultView?.clearTimeout(stabilityTimer);
-        stabilityTimer = undefined;
+      if (changed && stabilityPending) {
+        stabilityGeneration += 1;
+        stabilityPending = false;
       }
       if (
         hasCompletionEvidence &&
         ready.ready &&
         !next.loadingVisible &&
-        stabilityTimer === undefined
+        !stabilityPending
       ) {
         if (!completionWindowStarted) {
           completionWindowStarted = true;
-          if (timeout !== undefined) root.defaultView?.clearTimeout(timeout);
-          timeout = root.defaultView?.setTimeout(
-            () => finish({ kind: "timeout" }),
-            timeoutMs + stabilityMs
-          );
+          scheduleTimeout(timeoutMs + stabilityMs);
         }
-        stabilityTimer = root.defaultView?.setTimeout(
-          () => finish({ kind: "settled" }),
-          stabilityMs
+        stabilityPending = true;
+        const generation = ++stabilityGeneration;
+        void settlementDelay(stabilityMs).then(
+          () => {
+            if (!finished && generation === stabilityGeneration) {
+              finish({ kind: "settled" });
+            }
+          },
+          (error: unknown) => {
+            if (!finished && generation === stabilityGeneration) {
+              finish({ kind: "action-error", error });
+            }
+          }
         );
       }
     };
@@ -174,10 +200,7 @@ function observeActionUntilResultsSettle(
       characterData: true,
       subtree: true
     });
-    timeout = root.defaultView?.setTimeout(() => {
-      const blocker = detectVerificationBlocker(root);
-      finish(blocker.kind === "blocked" ? blocker : { kind: "timeout" });
-    }, timeoutMs);
+    scheduleTimeout(timeoutMs);
     Promise.resolve()
       .then(action)
       .then(evaluate)
@@ -242,27 +265,39 @@ export class PanzhiPageRunner {
     );
   }
 
-  private async setPrice(
-    which: "minPrice" | "maxPrice",
-    value: "1900" | "4000"
-  ): Promise<PageRunnerResult | null> {
+  private async setPriceRange(): Promise<PageRunnerResult | null> {
     const controls = locateRequiredControls(this.dependencies.document);
     if (controls.kind === "failure") {
       return selectorFailureResult("applying_filters", controls);
     }
-    const input = controls[which];
-    if (input.value === value) return null;
+    if (
+      controls.minPrice.value === "1900" &&
+      controls.maxPrice.value === "4000"
+    ) {
+      return null;
+    }
     const outcome = await observeActionUntilResultsSettle(
       this.dependencies.document,
-      () => setNativeInputValue(input, value),
+      () => {
+        assignNativeInputValue(controls.minPrice, "1900");
+        assignNativeInputValue(controls.maxPrice, "4000");
+        dispatchNativeInputEvents(controls.minPrice);
+        dispatchNativeInputEvents(controls.maxPrice);
+      },
       () => {
         const latest = locateRequiredControls(this.dependencies.document);
         return latest.kind === "failure"
           ? latest
-          : { kind: "ready-state", ready: latest[which].value === value };
+          : {
+              kind: "ready-state",
+              ready:
+                latest.minPrice.value === "1900" &&
+                latest.maxPrice.value === "4000"
+            };
       },
       this.dependencies.mutationTimeoutMs,
-      this.dependencies.resultStabilityMs
+      this.dependencies.resultStabilityMs,
+      this.dependencies.settlementDelay
     );
     if (outcome.kind === "blocked") {
       return this.verificationResult(outcome.blocker);
@@ -277,7 +312,7 @@ export class PanzhiPageRunner {
         code: "operation_timeout",
         message: outcome.error instanceof Error
           ? outcome.error.message
-          : `Panzhi ${which} action failed`
+          : "Panzhi price range action failed"
       };
     }
     if (outcome.kind === "timeout") {
@@ -285,7 +320,7 @@ export class PanzhiPageRunner {
         kind: "failure",
         stage: "applying_filters",
         code: "operation_timeout",
-        message: `Panzhi ${which} did not settle`
+        message: "Panzhi price range did not settle"
       };
     }
     await this.humanDelay();
@@ -319,7 +354,8 @@ export class PanzhiPageRunner {
         };
       },
       this.dependencies.mutationTimeoutMs,
-      this.dependencies.resultStabilityMs
+      this.dependencies.resultStabilityMs,
+      this.dependencies.settlementDelay
     );
     if (outcome.kind === "blocked") {
       return this.verificationResult(outcome.blocker);
@@ -370,8 +406,7 @@ export class PanzhiPageRunner {
     }
 
     const operations: Array<() => Promise<PageRunnerResult | null>> = [
-      () => this.setPrice("minPrice", "1900"),
-      () => this.setPrice("maxPrice", "4000"),
+      () => this.setPriceRange(),
       () => this.selectControl(this.control((controls) => controls.qq)),
       () => this.selectControl(this.control((controls) => controls.secondRealName)),
       () => this.selectControl(this.control((controls) => controls.requiredSkins[0])),
@@ -395,6 +430,7 @@ export class PanzhiPageRunner {
       () => ({ kind: "ready-state", ready: true }),
       this.dependencies.mutationTimeoutMs,
       this.dependencies.resultStabilityMs,
+      this.dependencies.settlementDelay,
       false,
       true
     );
@@ -462,6 +498,7 @@ export class PanzhiPageRunner {
         () => ({ kind: "ready-state", ready: true }),
         this.dependencies.mutationTimeoutMs,
         this.dependencies.resultStabilityMs,
+        this.dependencies.settlementDelay,
         true
       );
       if (outcome.kind === "blocked") {
@@ -585,6 +622,9 @@ export function createDefaultPageRunnerDependencies(
     now: () => new Date(),
     random: () => Math.random(),
     sleep: (milliseconds) => new Promise((resolve) => {
+      root.defaultView?.setTimeout(resolve, milliseconds);
+    }),
+    settlementDelay: (milliseconds) => new Promise((resolve) => {
       root.defaultView?.setTimeout(resolve, milliseconds);
     }),
     loadMore: async () => {

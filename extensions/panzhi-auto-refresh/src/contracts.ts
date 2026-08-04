@@ -98,6 +98,7 @@ export interface PageRunnerDependencies {
   now: () => Date;
   random: () => number;
   sleep: (milliseconds: number) => Promise<void>;
+  settlementDelay: (milliseconds: number) => Promise<void>;
   loadMore: () => Promise<void>;
   mutationTimeoutMs: number;
   resultStabilityMs: number;

@@ -79,7 +79,15 @@ function installLiveFilterBehavior(root: Document): void {
   for (const input of root.querySelectorAll<HTMLInputElement>(
     'input[placeholder="最低值"], input[placeholder="最高值"]'
   )) {
-    input.addEventListener("input", () => signalResultCycle(root));
+    input.addEventListener("input", () => {
+      const min = root.querySelector<HTMLInputElement>(
+        'input[placeholder="最低值"]'
+      );
+      const max = root.querySelector<HTMLInputElement>(
+        'input[placeholder="最高值"]'
+      );
+      if (min?.value && max?.value) signalResultCycle(root);
+    });
   }
 }
 
@@ -106,8 +114,11 @@ function dependencies(
     now: () => new Date("2026-08-04T08:00:00.000Z"),
     random: () => 0.5,
     sleep: async () => undefined,
+    settlementDelay: (milliseconds) => new Promise((resolve) => {
+      setTimeout(resolve, milliseconds);
+    }),
     loadMore: async () => signalResultCycle(root),
-    mutationTimeoutMs: 25,
+    mutationTimeoutMs: 500,
     resultStabilityMs: 2,
     onStage: async () => undefined,
     ...overrides
@@ -490,6 +501,79 @@ describe("Panzhi visible-page selectors", () => {
 });
 
 describe("Panzhi page collection runner", () => {
+  it("uses an injected quiet-window delay instead of a throttled page timer", async () => {
+    const root = loadFixture();
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    controls.minPrice.value = "1900";
+    controls.maxPrice.value = "4000";
+    for (const control of [
+      controls.qq,
+      controls.secondRealName,
+      ...controls.requiredSkins,
+      controls.allSemantics
+    ]) {
+      control.setAttribute("aria-pressed", "true");
+    }
+    const quietDelays: number[] = [];
+    let reachedCollecting!: () => void;
+    const collecting = new Promise<"collecting">((resolve) => {
+      reachedCollecting = () => resolve("collecting");
+    });
+    const run = new PanzhiPageRunner(dependencies(root, {
+      resultStabilityMs: 30,
+      settlementDelay: (milliseconds: number) => {
+        quietDelays.push(milliseconds);
+        return milliseconds === 30
+          ? Promise.resolve()
+          : new Promise<void>(() => undefined);
+      },
+      onStage: async (stage) => {
+        if (stage === "collecting") reachedCollecting();
+      }
+    })).run("quick");
+
+    const raced = await Promise.race([
+      collecting,
+      new Promise<"page-timer">((resolve) =>
+        setTimeout(() => resolve("page-timer"), 10))
+    ]);
+
+    expect(raced).toBe("collecting");
+    expect(quietDelays).toContain(30);
+    await run;
+  });
+
+  it("uses the injected delay for action timeouts in a background tab", async () => {
+    const root = loadFixture();
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    controls.minPrice.value = "1900";
+    controls.maxPrice.value = "4000";
+    for (const button of root.querySelectorAll<HTMLButtonElement>("button")) {
+      button.addEventListener("click", () => {
+        button.setAttribute("aria-pressed", "true");
+      });
+    }
+    const delays: number[] = [];
+
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      mutationTimeoutMs: 25,
+      settlementDelay: async (milliseconds) => {
+        delays.push(milliseconds);
+      }
+    })).run("quick");
+
+    expect(result).toMatchObject({
+      kind: "failure",
+      code: "operation_timeout",
+      stage: "applying_filters"
+    });
+    expect(delays).toContain(25);
+  });
+
   it("waits for a quiet window after a same-id price update", async () => {
     const root = loadFixture();
     const controls = locateRequiredControls(root);
@@ -519,7 +603,7 @@ describe("Panzhi page collection runner", () => {
     }, 15);
 
     const result = await new PanzhiPageRunner(dependencies(root, {
-      mutationTimeoutMs: 100,
+      mutationTimeoutMs: 1_000,
       resultStabilityMs: 30,
       loadMore: async () => {
         for (let index = 0; index < 58; index += 1) {
@@ -566,7 +650,7 @@ describe("Panzhi page collection runner", () => {
     }, 3);
 
     const result = await new PanzhiPageRunner(dependencies(root, {
-      mutationTimeoutMs: 50,
+      mutationTimeoutMs: 500,
       resultStabilityMs: 4
     })).run("quick");
 
@@ -618,7 +702,7 @@ describe("Panzhi page collection runner", () => {
       input.addEventListener("input", () => signalResultCycle(delayed, undefined, 3));
     }
     const delayedResult = await new PanzhiPageRunner(dependencies(delayed, {
-      mutationTimeoutMs: 50,
+      mutationTimeoutMs: 500,
       resultStabilityMs: 4
     })).run("quick");
     expect(delayedResult.kind).toBe("snapshot");
@@ -632,6 +716,7 @@ describe("Panzhi page collection runner", () => {
     installFilterBehavior(root);
     let load = 0;
     const result = await new PanzhiPageRunner(dependencies(root, {
+      mutationTimeoutMs: 1_000,
       loadMore: async () => {
         load += 1;
         for (let index = 0; index < 12; index += 1) {
@@ -694,6 +779,7 @@ describe("Panzhi page collection runner", () => {
     installFilterBehavior(root);
     let loads = 0;
     const result = await new PanzhiPageRunner(dependencies(root, {
+      mutationTimeoutMs: 1_000,
       loadMore: async () => {
         loads += 1;
         appendCard(root, `SA2DEEP${loads}`);
@@ -804,6 +890,7 @@ describe("Panzhi page collection runner", () => {
     installFilterBehavior(root);
     let loads = 0;
     const result = await new PanzhiPageRunner(dependencies(root, {
+      mutationTimeoutMs: 1_000,
       loadMore: async () => {
         loads += 1;
         for (let index = 0; index < 498; index += 1) {

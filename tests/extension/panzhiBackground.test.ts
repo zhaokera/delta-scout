@@ -14,6 +14,7 @@ import {
   type PanzhiAutomationJobView
 } from "../../extensions/panzhi-auto-refresh/src/api.js";
 import {
+  handlePanzhiRuntimeMessage,
   normalizeStoredPanzhiJob,
   parsePageRunnerResult,
   parseVerificationCheck,
@@ -926,6 +927,46 @@ describe("Panzhi MV3 worker lifecycle", () => {
     await expect(f.controller.handleContentStage(999, "collecting"))
       .resolves.toBe(false);
     expect(f.api.updateJobState).toHaveBeenCalledTimes(1);
+    runner.resolve(snapshotResult());
+    await pending;
+  });
+
+  it("provides precise delays only to the content runner in its owned tab", async () => {
+    const runner = deferred<PageRunnerResult>();
+    const f = makeFixture({ runnerResult: runner.promise });
+    const pending = f.controller.tick();
+    await vi.waitFor(() => expect(f.dependencies.runPage).toHaveBeenCalled());
+
+    await expect(f.controller.handleContentDelay(999, 350)).resolves.toBe(false);
+    await expect(f.controller.handleContentDelay(7, 350)).resolves.toBe(true);
+    expect(f.dependencies.sleep).toHaveBeenCalledWith(350);
+
+    runner.resolve(snapshotResult());
+    await pending;
+  });
+
+  it("routes bounded content delay messages through the MV3 runtime bridge", async () => {
+    const runner = deferred<PageRunnerResult>();
+    const f = makeFixture({ runnerResult: runner.promise });
+    const pending = f.controller.tick();
+    await vi.waitFor(() => expect(f.dependencies.runPage).toHaveBeenCalled());
+
+    await expect(handlePanzhiRuntimeMessage(
+      f.controller,
+      { type: "panzhi-delay-v2", milliseconds: 350 },
+      { tab: { id: 7 } }
+    )).resolves.toBe(true);
+    await expect(handlePanzhiRuntimeMessage(
+      f.controller,
+      { type: "panzhi-delay-v2", milliseconds: 10_001 },
+      { tab: { id: 7 } }
+    )).resolves.toBe(false);
+    expect(handlePanzhiRuntimeMessage(
+      f.controller,
+      { type: "panzhi-delay-v2", milliseconds: "350" },
+      { tab: { id: 7 } }
+    )).toBeUndefined();
+
     runner.resolve(snapshotResult());
     await pending;
   });
