@@ -320,6 +320,18 @@ export class RefreshScheduleRepository {
       SET last_finished_at = ?,
           last_mode = ?,
           last_state = ?,
+          observed_source_success_at = CASE
+            WHEN (
+              SELECT last_success_at FROM source_status WHERE source = ?
+            ) IS NULL THEN observed_source_success_at
+            WHEN observed_source_success_at IS NULL OR
+                 observed_source_success_at < (
+                   SELECT last_success_at FROM source_status WHERE source = ?
+                 ) THEN (
+                   SELECT last_success_at FROM source_status WHERE source = ?
+                 )
+            ELSE observed_source_success_at
+          END,
           consecutive_failures = ?,
           backoff_until = ?,
           last_error = ?,
@@ -329,6 +341,9 @@ export class RefreshScheduleRepository {
       at.toISOString(),
       mode,
       state,
+      source,
+      source,
+      source,
       failures,
       addMinutes(at, baseBackoffMinutes).toISOString(),
       error,

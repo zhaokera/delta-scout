@@ -220,18 +220,24 @@ export class PanzhiAutomationService {
     });
   }
 
+  authenticateRequest(jobId: string, bearerToken: string): void {
+    this.repository.authenticateJobToken(jobId, bearerToken);
+  }
+
   resume(jobId: string, bearerToken: string) {
-    this.requireAuthenticatedActiveJob(jobId, bearerToken);
-    const result = this.repository.resume(jobId, bearerToken, this.now());
+    const at = this.now();
+    this.requireAuthenticatedActiveJob(jobId, bearerToken, at);
+    const result = this.repository.resume(jobId, bearerToken, at);
     return { ...result, job: publicJob(result.job) };
   }
 
   heartbeat(jobId: string, bearerToken: string) {
-    this.requireAuthenticatedActiveJob(jobId, bearerToken);
+    const at = this.now();
+    this.requireAuthenticatedActiveJob(jobId, bearerToken, at);
     const result = this.repository.heartbeat(
       jobId,
       bearerToken,
-      this.now()
+      at
     );
     return { ...result, job: publicJob(result.job) };
   }
@@ -241,7 +247,12 @@ export class PanzhiAutomationService {
     bearerToken: string,
     update: PanzhiAutomationStateUpdate
   ) {
-    const current = this.requireAuthenticatedActiveJob(jobId, bearerToken);
+    const at = this.now();
+    const current = this.requireAuthenticatedActiveJob(
+      jobId,
+      bearerToken,
+      at
+    );
     if (
       (update.state === "failed" && !update.error) ||
       (update.state !== "failed" && update.error !== undefined)
@@ -258,7 +269,7 @@ export class PanzhiAutomationService {
       const renewed = this.repository.heartbeat(
         jobId,
         bearerToken,
-        this.now()
+        at
       );
       return { job: publicJob(renewed.job), shouldNotify: false };
     }
@@ -266,7 +277,6 @@ export class PanzhiAutomationService {
       update.state === "awaiting_user_verification";
     const shouldNotify = enteringVerification &&
       current.verificationNotifiedAt === null;
-    const now = this.now();
     const transition = () => this.repository.transition(
       jobId,
       bearerToken,
@@ -278,7 +288,7 @@ export class PanzhiAutomationService {
           update.state === "applying_filters" &&
           current.verificationNotifiedAt !== null
       },
-      now
+      at
     );
     const result = update.state === "failed"
       ? this.listings.runInTransaction(() => {
@@ -288,7 +298,7 @@ export class PanzhiAutomationService {
             current.mode,
             "failed",
             update.error!,
-            now,
+            at,
             this.random
           );
           return failed;
@@ -302,16 +312,20 @@ export class PanzhiAutomationService {
   }
 
   cancel(jobId: string, bearerToken: string) {
-    const current = this.requireAuthenticatedActiveJob(jobId, bearerToken);
-    const now = this.now();
+    const at = this.now();
+    const current = this.requireAuthenticatedActiveJob(
+      jobId,
+      bearerToken,
+      at
+    );
     const result = this.listings.runInTransaction(() => {
-      const cancelled = this.repository.cancel(jobId, bearerToken, now);
+      const cancelled = this.repository.cancel(jobId, bearerToken, at);
       this.schedule.markAutomationFailedWithoutAdvancing(
         "panzhi",
         current.mode,
         "failed",
         "automation_cancelled",
-        now,
+        at,
         this.random
       );
       return cancelled;
@@ -324,9 +338,12 @@ export class PanzhiAutomationService {
     bearerToken: string,
     input: unknown
   ): PanzhiAutomationSnapshotResponse {
-    const parsed = PanzhiBrowserSnapshotSchema.parse(input);
-    const digest = canonicalDigest(parsed);
+    const at = this.now();
     this.repository.authenticateJobToken(jobId, bearerToken);
+    const parsed = PanzhiBrowserSnapshotSchema.parse(input);
+    const effectiveMode = parsed.mode ?? "deep";
+    const normalizedSnapshot = { ...parsed, mode: effectiveMode };
+    const digest = canonicalDigest(normalizedSnapshot);
     const replay = this.repository.findSuccessfulReplay<
       PanzhiSnapshotPublishResult
     >(jobId, bearerToken, digest);
@@ -334,8 +351,7 @@ export class PanzhiAutomationService {
       return { ...replay, deduplicated: true };
     }
 
-    const job = this.requireActiveJob(jobId);
-    const effectiveMode = parsed.mode ?? "deep";
+    const job = this.requireActiveJob(jobId, at);
     const semanticError = job.mode !== effectiveMode
       ? new PanzhiAutomationServiceError(
         "body_mismatch",
@@ -353,22 +369,21 @@ export class PanzhiAutomationService {
           jobId,
           bearerToken,
           digest,
-          this.now()
+          at
         );
         throw semanticError;
       });
     }
 
-    const capturedAt = this.now();
     const acquired = this.admission.withAllSourcesLease(() =>
       this.listings.runInTransaction(() => {
         this.repository.getAuthorizedJobForSnapshot(
           jobId,
           bearerToken,
           digest,
-          capturedAt
+          at
         );
-        return this.publisher.publish(parsed, capturedAt, (result) => {
+        return this.publisher.publish(normalizedSnapshot, at, (result) => {
           if (result.published) {
             this.repository.completePublished({
               jobId,
@@ -376,14 +391,14 @@ export class PanzhiAutomationService {
               canonicalBodyDigest: digest,
               result,
               scanRunId: result.scanRunId,
-              now: capturedAt
+              now: at
             });
             this.schedule.markAutomationFinished(
               "panzhi",
               effectiveMode,
               result.state as ScanState,
               null,
-              capturedAt,
+              at,
               this.random
             );
           } else {
@@ -391,14 +406,14 @@ export class PanzhiAutomationService {
               jobId,
               bearerToken,
               error: "anomaly_guard",
-              now: capturedAt
+              now: at
             });
             this.schedule.markAutomationFailedWithoutAdvancing(
               "panzhi",
               effectiveMode,
               "partial",
               "anomaly_guard",
-              capturedAt,
+              at,
               this.random
             );
           }
@@ -461,13 +476,17 @@ export class PanzhiAutomationService {
 
   private requireAuthenticatedActiveJob(
     jobId: string,
-    bearerToken: string
+    bearerToken: string,
+    at: Date
   ): PanzhiAutomationJob {
     this.repository.authenticateJobToken(jobId, bearerToken);
-    return this.requireActiveJob(jobId);
+    return this.requireActiveJob(jobId, at);
   }
 
-  private requireActiveJob(jobId: string): PanzhiAutomationJob {
+  private requireActiveJob(
+    jobId: string,
+    at: Date
+  ): PanzhiAutomationJob {
     const job = this.repository.getJob(jobId);
     if (!job) {
       throw new PanzhiAutomationServiceError(
@@ -479,7 +498,7 @@ export class PanzhiAutomationService {
       if (
         job.error === "captcha_required" &&
         job.verificationDeadlineAt !== null &&
-        Date.parse(job.verificationDeadlineAt) < this.now().getTime()
+        Date.parse(job.verificationDeadlineAt) < at.getTime()
       ) {
         throw new PanzhiAutomationServiceError(
           "expired",
@@ -491,12 +510,11 @@ export class PanzhiAutomationService {
         "The Panzhi automation job is already terminal"
       );
     }
-    const now = this.now().getTime();
+    const operationTime = at.getTime();
     if (
       job.verificationDeadlineAt !== null &&
-      Date.parse(job.verificationDeadlineAt) < now
+      Date.parse(job.verificationDeadlineAt) < operationTime
     ) {
-      const at = this.now();
       this.listings.runInTransaction(() => {
         this.repository.failExpiredVerification(at);
         this.schedule.markAutomationFailedWithoutAdvancing(
@@ -515,9 +533,11 @@ export class PanzhiAutomationService {
     }
     if (
       job.state !== "queued" &&
-      (job.leaseExpiresAt === null || Date.parse(job.leaseExpiresAt) <= now)
+      (
+        job.leaseExpiresAt === null ||
+        Date.parse(job.leaseExpiresAt) <= operationTime
+      )
     ) {
-      const at = this.now();
       this.listings.runInTransaction(() => {
         this.repository.requeueExpiredLease(at);
         this.schedule.markAutomationFailedWithoutAdvancing(

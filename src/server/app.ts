@@ -108,6 +108,9 @@ const PanzhiAutomationClaimBodySchema = z.union([
   z.strictObject({}),
   z.strictObject({ jobId: z.uuid() })
 ]);
+const PanzhiAutomationResumeJobSchema = z.object({
+  jobId: z.uuid()
+}).passthrough();
 const PanzhiAutomationStateBodySchema = z.strictObject({
   state: z.enum([
     "applying_filters",
@@ -651,23 +654,32 @@ export function createApp(dependencies?: AppDependencies): Express {
       return;
     }
     try {
-      const body = PanzhiAutomationClaimBodySchema.parse(request.body);
       const rawAuthorization = request.get("authorization");
-      if ("jobId" in body) {
-        const token = readStrictBearerToken(rawAuthorization);
-        if (!token) {
+      if (rawAuthorization !== undefined) {
+        const resume = PanzhiAutomationResumeJobSchema.safeParse(request.body);
+        if (!resume.success) {
           throw new PanzhiAutomationServiceError(
             "unauthorized",
-            "A bearer token is required to resume a job"
+            "A valid resume job id is required"
           );
         }
-        response.json(panzhiAutomationService.resume(body.jobId, token));
+        const token = readStrictBearerToken(rawAuthorization);
+        panzhiAutomationService.authenticateRequest(
+          resume.data.jobId,
+          token
+        );
+        PanzhiAutomationClaimBodySchema.parse(request.body);
+        response.json(panzhiAutomationService.resume(
+          resume.data.jobId,
+          token
+        ));
         return;
       }
-      if (rawAuthorization !== undefined) {
+      const body = PanzhiAutomationClaimBodySchema.parse(request.body);
+      if ("jobId" in body) {
         throw new PanzhiAutomationServiceError(
-          "body_mismatch",
-          "A bearer token requires a resume job id"
+          "unauthorized",
+          "A bearer token is required to resume a job"
         );
       }
       const claimed = panzhiAutomationService.claim();
@@ -689,10 +701,15 @@ export function createApp(dependencies?: AppDependencies): Express {
         return;
       }
       try {
+        const token = readStrictBearerToken(request.get("authorization"));
+        panzhiAutomationService.authenticateRequest(
+          request.params.id,
+          token
+        );
         EmptyBodySchema.parse(request.body);
         response.json(panzhiAutomationService.heartbeat(
           request.params.id,
-          readStrictBearerToken(request.get("authorization"))
+          token
         ));
       } catch (error) {
         sendPanzhiAutomationError(response, error);
@@ -708,10 +725,15 @@ export function createApp(dependencies?: AppDependencies): Express {
         return;
       }
       try {
+        const token = readStrictBearerToken(request.get("authorization"));
+        panzhiAutomationService.authenticateRequest(
+          request.params.id,
+          token
+        );
         const body = PanzhiAutomationStateBodySchema.parse(request.body);
         response.json(panzhiAutomationService.updateState(
           request.params.id,
-          readStrictBearerToken(request.get("authorization")),
+          token,
           body
         ));
       } catch (error) {
@@ -726,9 +748,11 @@ export function createApp(dependencies?: AppDependencies): Express {
       return;
     }
     try {
+      const token = readStrictBearerToken(request.get("authorization"));
+      panzhiAutomationService.authenticateRequest(request.params.id, token);
       response.json(panzhiAutomationService.submitSnapshot(
         request.params.id,
-        readStrictBearerToken(request.get("authorization")),
+        token,
         request.body
       ));
     } catch (error) {
@@ -744,10 +768,15 @@ export function createApp(dependencies?: AppDependencies): Express {
         return;
       }
       try {
+        const token = readStrictBearerToken(request.get("authorization"));
+        panzhiAutomationService.authenticateRequest(
+          request.params.id,
+          token
+        );
         EmptyBodySchema.parse(request.body);
         response.json(panzhiAutomationService.cancel(
           request.params.id,
-          readStrictBearerToken(request.get("authorization"))
+          token
         ));
       } catch (error) {
         sendPanzhiAutomationError(response, error);

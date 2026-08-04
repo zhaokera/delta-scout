@@ -95,6 +95,7 @@ function snapshot(
 
 function fixture() {
   let current = new Date(baseTime);
+  let nowProvider = () => current;
   const database = createDatabase(":memory:");
   const listings = new ListingRepository(database);
   const automationRepository = new PanzhiAutomationRepository(database);
@@ -121,7 +122,7 @@ function fixture() {
     schedule,
     admission,
     tracker,
-    now: () => current,
+    now: () => nowProvider(),
     random: () => 0.5
   });
   const coordinator = {
@@ -149,6 +150,10 @@ function fixture() {
     admission,
     setNow: (next: Date) => {
       current = new Date(next);
+      nowProvider = () => current;
+    },
+    setNowProvider: (next: () => Date) => {
+      nowProvider = next;
     }
   };
 }
@@ -290,6 +295,60 @@ describe("Panzhi automation API", () => {
       .expect(204);
   });
 
+  it("authenticates job routes before validating malformed bodies", async () => {
+    const f = fixture();
+    const queued = f.automation.enqueue("deep");
+    const claimed = await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .send({})
+      .expect(202);
+    const token = claimed.body.bearerToken as string;
+
+    for (const authorization of [undefined, "Bearer wrong-token"]) {
+      const setAuthorization = <T extends request.Test>(test: T): T =>
+        authorization === undefined
+          ? test
+          : test.set("Authorization", authorization) as T;
+      await setAuthorization(request(f.app)
+        .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/heartbeat`))
+        .send({ unexpected: true })
+        .expect(401);
+      await setAuthorization(request(f.app)
+        .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/state`))
+        .send({ state: "not-a-state", extra: true })
+        .expect(401);
+      await setAuthorization(request(f.app)
+        .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/snapshot`))
+        .send({ malformed: true })
+        .expect(401);
+      await setAuthorization(request(f.app)
+        .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/cancel`))
+        .send({ unexpected: true })
+        .expect(401);
+    }
+
+    await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .set(bearer("wrong-token"))
+      .send({})
+      .expect(401);
+    await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .set(bearer("wrong-token"))
+      .send({ jobId: "not-a-uuid", extra: true })
+      .expect(401);
+    await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .set(bearer("wrong-token"))
+      .send({ jobId: queued.job.id, extra: true })
+      .expect(401);
+    await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .set(bearer(token))
+      .send({ jobId: queued.job.id, extra: true })
+      .expect(400);
+  });
+
   it("renews leases, emits one notification per verification block, clears its marker on recovery, and invalidates cancellation", async () => {
     const f = fixture();
     const queued = f.automation.enqueue("deep");
@@ -346,6 +405,61 @@ describe("Panzhi automation API", () => {
       .set(bearer(token))
       .send({})
       .expect(401);
+  });
+
+  it("uses one operation timestamp when a heartbeat crosses the verification deadline", async () => {
+    const f = fixture();
+    const queued = f.automation.enqueue("deep");
+    const claimed = await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .send({})
+      .expect(202);
+    const token = claimed.body.bearerToken as string;
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/state`)
+      .set(bearer(token))
+      .send({ state: "awaiting_user_verification" })
+      .expect(200);
+    f.database.prepare(`
+      UPDATE panzhi_browser_jobs
+      SET verification_deadline_at = ?, lease_expires_at = ?
+      WHERE id = ?
+    `).run(
+      "2026-08-05T02:00:00.000Z",
+      "2026-08-05T02:05:00.000Z",
+      queued.job.id
+    );
+    let clockReads = 0;
+    f.setNowProvider(() => new Date(
+      clockReads++ < 1
+        ? "2026-08-05T01:59:59.999Z"
+        : "2026-08-05T02:00:00.001Z"
+    ));
+
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/heartbeat`)
+      .set(bearer(token))
+      .send({})
+      .expect(200);
+    expect(clockReads).toBe(1);
+    expect(f.automationRepository.getJob(queued.job.id)).toMatchObject({
+      state: "awaiting_user_verification",
+      error: null
+    });
+
+    f.setNow(new Date("2026-08-05T02:00:00.001Z"));
+    await request(f.app)
+      .get("/api/sources/panzhi/automation/status")
+      .expect(200);
+    expect(f.automationRepository.getJob(queued.job.id)).toMatchObject({
+      state: "failed",
+      error: "captcha_required"
+    });
+    expect(f.schedule.list().find(({ source }) => source === "panzhi"))
+      .toMatchObject({
+        lastState: "failed",
+        lastError: "captcha_required"
+      });
   });
 
   it("recovers an expired lease in status and keeps one notification across reclaim until filters recover", async () => {
@@ -561,7 +675,7 @@ describe("Panzhi automation API", () => {
       .post("/api/sources/panzhi/automation/jobs/claim")
       .set(bearer(token))
       .send({})
-      .expect(409);
+      .expect(401);
 
     f.setNow(new Date("2026-08-04T02:02:00.001Z"));
     const expired = await request(f.app)
@@ -785,6 +899,72 @@ describe("Panzhi automation API", () => {
         new Date(at.getTime() + minutes * 60_000).toISOString()
       );
     }
+  });
+
+  it("does not let an older source success overwrite an automation failure", async () => {
+    const f = fixture();
+    f.publisher.publish(snapshot(["SYNC-BASELINE"]), baseTime);
+    const queued = f.automation.enqueue("deep");
+    const claimed = await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .send({})
+      .expect(202);
+    f.setNow(new Date("2026-08-04T02:01:00.000Z"));
+    await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${queued.job.id}/state`)
+      .set(bearer(claimed.body.bearerToken))
+      .send({ state: "failed", error: "extension_failed" })
+      .expect(200);
+    const failedSchedule = f.schedule.list().find(
+      ({ source }) => source === "panzhi"
+    )!;
+
+    f.schedule.synchronizeSourceStatuses(
+      f.listings.getSourceStatuses(new Date("2026-08-04T02:01:00.000Z"))
+    );
+    expect(f.schedule.list().find(({ source }) => source === "panzhi"))
+      .toMatchObject({
+        lastState: "failed",
+        lastError: "extension_failed",
+        backoffUntil: failedSchedule.backoffUntil
+      });
+
+    const newerSuccessAt = new Date("2026-08-04T02:20:00.000Z");
+    f.publisher.publish(snapshot(["SYNC-BASELINE", "SYNC-NEW"]), newerSuccessAt);
+    f.schedule.synchronizeSourceStatuses(
+      f.listings.getSourceStatuses(newerSuccessAt)
+    );
+    expect(f.schedule.list().find(({ source }) => source === "panzhi"))
+      .toMatchObject({
+        lastState: "success",
+        lastFinishedAt: newerSuccessAt.toISOString(),
+        lastError: null
+      });
+  });
+
+  it("treats omitted snapshot mode as deep for publishing and exact replay", async () => {
+    const f = fixture();
+    const { jobId, token } = await claimAndAdvanceToSubmitting(f);
+    const explicitDeep = snapshot(["DEFAULT-DEEP-REPLAY"]);
+    const { mode: _mode, ...omittedMode } = explicitDeep;
+
+    const first = await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${jobId}/snapshot`)
+      .set(bearer(token))
+      .send(omittedMode)
+      .expect(200);
+    expect(first.body).toMatchObject({
+      mode: "deep",
+      published: true,
+      deduplicated: false
+    });
+
+    const replay = await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${jobId}/snapshot`)
+      .set(bearer(token))
+      .send(explicitDeep)
+      .expect(200);
+    expect(replay.body).toEqual({ ...first.body, deduplicated: true });
   });
 
   it("publishes and completes a submitting job and schedule in one transaction, then replays canonically without new rows", async () => {
