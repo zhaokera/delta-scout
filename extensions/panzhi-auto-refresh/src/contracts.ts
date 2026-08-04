@@ -100,5 +100,6 @@ export interface PageRunnerDependencies {
   sleep: (milliseconds: number) => Promise<void>;
   loadMore: () => Promise<void>;
   mutationTimeoutMs: number;
+  resultStabilityMs: number;
   onStage: (stage: PanzhiPageStage) => void | Promise<void>;
 }

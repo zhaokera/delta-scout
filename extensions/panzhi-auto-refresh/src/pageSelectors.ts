@@ -34,6 +34,24 @@ export interface ExtractedCards {
   items: PanzhiSnapshotItem[];
 }
 
+export type SelectedStateResult =
+  | { kind: "selected-state"; selected: boolean }
+  | { kind: "unknown" }
+  | SelectorFailure;
+
+export interface ResultContainer {
+  kind: "result-container";
+  element: HTMLElement;
+}
+
+export interface ResultState {
+  kind: "result-state";
+  signature: string;
+  visibleIds: string[];
+  loadingVisible: boolean;
+  endMarkerVisible: boolean;
+}
+
 export type VerificationDetection =
   | { kind: "clear" }
   | { kind: "blocked"; blocker: VerificationBlocker };
@@ -66,27 +84,30 @@ export function normalizeVisibleText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
-export function isElementVisible(element: Element): boolean {
-  let current: Element | null = element;
-  while (current) {
-    if (current.hasAttribute("hidden")) return false;
-    if (current.getAttribute("aria-hidden") === "true") return false;
-    if (current instanceof HTMLElement) {
-      if (current.style.display === "none") return false;
-      if (current.style.visibility === "hidden") return false;
-      const computedStyle = current.ownerDocument.defaultView
-        ?.getComputedStyle(current);
-      if (computedStyle?.display === "none") return false;
-      if (
-        computedStyle?.visibility === "hidden" ||
-        computedStyle?.visibility === "collapse"
-      ) {
-        return false;
-      }
-    }
-    current = current.parentElement;
+export function isElementVisible(
+  element: Element,
+  cache: WeakMap<Element, boolean> = new WeakMap()
+): boolean {
+  const cached = cache.get(element);
+  if (cached !== undefined) return cached;
+  let visible =
+    !element.hasAttribute("hidden") &&
+    element.getAttribute("aria-hidden") !== "true";
+  if (visible && element instanceof HTMLElement) {
+    const computedStyle = element.ownerDocument.defaultView
+      ?.getComputedStyle(element);
+    visible =
+      element.style.display !== "none" &&
+      element.style.visibility !== "hidden" &&
+      computedStyle?.display !== "none" &&
+      computedStyle?.visibility !== "hidden" &&
+      computedStyle?.visibility !== "collapse";
   }
-  return true;
+  if (visible && element.parentElement) {
+    visible = isElementVisible(element.parentElement, cache);
+  }
+  cache.set(element, visible);
+  return visible;
 }
 
 function exactTextElements(root: ParentNode, label: string): HTMLElement[] {
@@ -292,37 +313,99 @@ function booleanAttribute(value: string | null): boolean | null {
   return null;
 }
 
-export function selectedState(element: HTMLElement): boolean | null {
-  const candidates: HTMLElement[] = [element];
-  if (element.parentElement) candidates.push(element.parentElement);
-  if (element.parentElement?.parentElement) {
-    candidates.push(element.parentElement.parentElement);
+function isSelectableInput(element: Element): element is HTMLInputElement {
+  return element instanceof HTMLInputElement &&
+    (element.type === "checkbox" || element.type === "radio");
+}
+
+function interactiveCarrier(element: HTMLElement): HTMLElement | null {
+  const selector = [
+    "button",
+    "label",
+    'input[type="checkbox"]',
+    'input[type="radio"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="option"]',
+    "[aria-selected]",
+    "[aria-pressed]",
+    "[aria-checked]",
+    "[data-selected]",
+    "[data-checked]"
+  ].join(",");
+  return element.closest<HTMLElement>(selector);
+}
+
+function associatedInputs(
+  element: HTMLElement,
+  carrier: HTMLElement | null
+): HTMLInputElement[] | SelectorFailure {
+  const inputs = new Set<HTMLInputElement>();
+  for (const candidate of new Set([element, carrier].filter(
+    (value): value is HTMLElement => value !== null
+  ))) {
+    if (isSelectableInput(candidate)) inputs.add(candidate);
+    for (const input of candidate.querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"], input[type="radio"]'
+    )) {
+      inputs.add(input);
+    }
   }
 
-  for (const candidate of candidates) {
-    if (candidate instanceof HTMLInputElement) {
-      if (candidate.type === "checkbox" || candidate.type === "radio") {
-        return candidate.checked;
+  const label = carrier instanceof HTMLLabelElement
+    ? carrier
+    : element.closest<HTMLLabelElement>("label");
+  if (label) {
+    if (label.htmlFor) {
+      const target = element.ownerDocument.getElementById(label.htmlFor);
+      if (!target || !isSelectableInput(target)) {
+        return failure("structural_drift", "Filter label association drifted");
       }
-    }
-    const nestedInput = candidate.querySelector<HTMLInputElement>(
-      'input[type="checkbox"], input[type="radio"]'
-    );
-    if (nestedInput) return nestedInput.checked;
-    for (const attribute of SELECTION_ATTRIBUTES) {
-      const state = booleanAttribute(candidate.getAttribute(attribute));
-      if (state !== null) return state;
-    }
-    const dataState = candidate.getAttribute("data-state");
-    if (dataState !== null) {
-      const state = booleanAttribute(dataState);
-      if (state !== null) return state;
-    }
-    if ([...candidate.classList].some((token) => SELECTED_CLASS_TOKENS.has(token))) {
-      return true;
+      inputs.add(target);
+    } else if (label.control && isSelectableInput(label.control)) {
+      inputs.add(label.control);
     }
   }
-  return null;
+
+  if (inputs.size > 1) {
+    return failure("structural_drift", "Filter control has ambiguous inputs");
+  }
+  return [...inputs];
+}
+
+function directSelectionEvidence(element: HTMLElement): boolean[] {
+  const evidence: boolean[] = [];
+  if (isSelectableInput(element)) evidence.push(element.checked);
+  for (const attribute of SELECTION_ATTRIBUTES) {
+    const state = booleanAttribute(element.getAttribute(attribute));
+    if (state !== null) evidence.push(state);
+  }
+  const dataState = booleanAttribute(element.getAttribute("data-state"));
+  if (dataState !== null) evidence.push(dataState);
+  if ([...element.classList].some((token) => SELECTED_CLASS_TOKENS.has(token))) {
+    evidence.push(true);
+  }
+  return evidence;
+}
+
+export function selectedState(element: HTMLElement): SelectedStateResult {
+  const carrier = interactiveCarrier(element);
+  const inputs = associatedInputs(element, carrier);
+  if (!Array.isArray(inputs)) return inputs;
+
+  const evidence: boolean[] = [];
+  for (const candidate of new Set([element, carrier].filter(
+    (value): value is HTMLElement => value !== null
+  ))) {
+    evidence.push(...directSelectionEvidence(candidate));
+  }
+  if (inputs.length === 1) evidence.push(inputs[0].checked);
+  if (new Set(evidence).size > 1) {
+    return failure("structural_drift", "Filter selected-state evidence conflicts");
+  }
+  return evidence.length === 0
+    ? { kind: "unknown" }
+    : { kind: "selected-state", selected: evidence[0] };
 }
 
 export function verifyRequiredFilters(
@@ -345,13 +428,14 @@ export function verifyRequiredFilters(
     ["全部都要有", controls.allSemantics]
   ] as const) {
     const state = selectedState(control);
-    if (state === null) {
+    if (state.kind === "failure") return state;
+    if (state.kind === "unknown") {
       return failure(
         "structural_drift",
         `No selected-state evidence for ${label}`
       );
     }
-    if (!state) {
+    if (!state.selected) {
       return failure("structural_drift", `Required filter is not selected: ${label}`);
     }
   }
@@ -402,12 +486,158 @@ export function detectVerificationBlocker(
   return { kind: "clear" };
 }
 
+function cardIdentity(anchor: HTMLAnchorElement): string | null {
+  const rawHref = anchor.getAttribute("href");
+  if (!rawHref) return null;
+  try {
+    const parsed = new URL(rawHref, "https://www.pzds.com");
+    const path = parsed.pathname.match(
+      /^\/goodsDetails\/([A-Za-z0-9_-]{1,80})\/6\/?$/
+    );
+    return parsed.origin === "https://www.pzds.com" && path ? path[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function visibleCardAnchors(
+  root: ParentNode,
+  cache: WeakMap<Element, boolean> = new WeakMap()
+): HTMLAnchorElement[] {
+  return [...root.querySelectorAll<HTMLAnchorElement>(
+    'a[href*="/goodsDetails/"]'
+  )].filter(
+    (anchor) => isElementVisible(anchor, cache) && cardIdentity(anchor) !== null
+  );
+}
+
+function resultLoadingVisible(element: HTMLElement): boolean {
+  return element.getAttribute("aria-busy") === "true" ||
+    [...element.querySelectorAll<HTMLElement>(
+      '[aria-busy="true"], [data-loading="true"], [role="status"]'
+    )].some((candidate) =>
+      isElementVisible(candidate) &&
+      (candidate.getAttribute("aria-busy") === "true" ||
+        candidate.getAttribute("data-loading") === "true" ||
+        /加载中|正在加载/.test(normalizeVisibleText(candidate.textContent)))
+    );
+}
+
+function smallestUniqueContainer(
+  candidates: Set<HTMLElement>
+): HTMLElement | null {
+  const smallest = [...candidates].filter(
+    (candidate) =>
+      ![...candidates].some(
+        (other) => other !== candidate && candidate.contains(other)
+      )
+  );
+  return smallest.length === 1 ? smallest[0] : null;
+}
+
+export function locateResultContainer(
+  root: Document
+): ResultContainer | SelectorFailure {
+  const visibility = new WeakMap<Element, boolean>();
+  const explicit = new Set(
+    [...root.querySelectorAll<HTMLElement>(
+      '[aria-label="商品列表"], [data-panzhi-results], [role="list"]'
+    )].filter(
+      (element) =>
+        isElementVisible(element, visibility) &&
+        (visibleCardAnchors(element, visibility).length > 0 ||
+          resultLoadingVisible(element))
+    )
+  );
+  if (explicit.size > 0) {
+    const element = smallestUniqueContainer(explicit);
+    return element
+      ? { kind: "result-container", element }
+      : failure("structural_drift", "Panzhi result container is ambiguous");
+  }
+
+  const anchors = visibleCardAnchors(root, visibility);
+  if (anchors.length < 2) {
+    return failure("missing_controls", "Missing unique Panzhi result container");
+  }
+  const inferred = new Set<HTMLElement>();
+  for (const anchor of anchors) {
+    let candidate = anchor.parentElement;
+    while (candidate && candidate !== root.body) {
+      if (visibleCardAnchors(candidate, visibility).length >= 2) {
+        inferred.add(candidate);
+        break;
+      }
+      candidate = candidate.parentElement;
+    }
+  }
+  const element = smallestUniqueContainer(inferred);
+  return element
+    ? { kind: "result-container", element }
+    : failure("structural_drift", "Panzhi result container is ambiguous");
+}
+
+function scopedVisibleTextContains(root: HTMLElement, pattern: RegExp): boolean {
+  return [...root.querySelectorAll<HTMLElement>("*")].some((element) => {
+    if (!pattern.test(normalizeVisibleText(element.textContent))) return false;
+    if (
+      [...element.children].some((child) =>
+        pattern.test(normalizeVisibleText(child.textContent))
+      )
+    ) {
+      return false;
+    }
+    return isElementVisible(element);
+  });
+}
+
+export function readResultState(root: Document): ResultState | SelectorFailure {
+  const located = locateResultContainer(root);
+  if (located.kind === "failure") return located;
+  const anchors = visibleCardAnchors(located.element);
+  const visibleIds = [...new Set(anchors.map((anchor) => cardIdentity(anchor)!))];
+  const loadingVisible = resultLoadingVisible(located.element);
+  const endMarkerVisible =
+    located.element.getAttribute("data-end") === "true" ||
+    located.element.getAttribute("data-panzhi-end") === "true" ||
+    scopedVisibleTextContains(located.element, /没有更多|已加载全部|已经到底/);
+  if (visibleIds.length === 0 && !loadingVisible) {
+    return failure("structural_drift", "Panzhi result container has no cards");
+  }
+  return {
+    kind: "result-state",
+    signature: visibleIds.join("\u001f"),
+    visibleIds,
+    loadingVisible,
+    endMarkerVisible
+  };
+}
+
+function visibleDescendantText(root: HTMLElement): string {
+  const parts: string[] = [];
+  const visit = (node: Node): void => {
+    if (node.nodeType === 3) {
+      if (node.parentElement && isElementVisible(node.parentElement)) {
+        const text = normalizeVisibleText(node.textContent);
+        if (text) parts.push(text);
+      }
+      return;
+    }
+    if (node instanceof Element && !isElementVisible(node)) return;
+    for (const child of node.childNodes) visit(child);
+  };
+  visit(root);
+  return normalizeVisibleText(parts.join(" "));
+}
+
 export function extractVisibleCards(
   root: Document
 ): ExtractedCards | SelectorFailure {
+  const located = locateResultContainer(root);
+  if (located.kind === "failure") return located;
   const items: PanzhiSnapshotItem[] = [];
   const seen = new Set<string>();
-  const anchors = root.querySelectorAll<HTMLAnchorElement>(
+  const anchors = located.element.querySelectorAll<HTMLAnchorElement>(
     'a[href*="/goodsDetails/"]'
   );
 
@@ -433,8 +663,8 @@ export function extractVisibleCards(
     if (seen.has(sourceListingId)) continue;
 
     const heading = anchor.querySelector<HTMLElement>("h1,h2,h3,h4,h5,h6");
-    const title = normalizeVisibleText(heading?.textContent).slice(0, 500);
-    const rawText = normalizeVisibleText(anchor.textContent).slice(0, 4_000);
+    const title = heading ? visibleDescendantText(heading).slice(0, 500) : "";
+    const rawText = visibleDescendantText(anchor).slice(0, 4_000);
     const priceMatch = rawText.match(/[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/);
     const priceCny = priceMatch
       ? Number(priceMatch[1].replace(/,/g, ""))

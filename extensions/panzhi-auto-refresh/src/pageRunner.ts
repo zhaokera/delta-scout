@@ -13,8 +13,10 @@ import {
   detectVerificationBlocker,
   extractVisibleCards,
   locateRequiredControls,
+  readResultState,
   selectedState,
   verifyRequiredFilters,
+  type ResultState,
   type SelectorFailure
 } from "./pageSelectors.js";
 
@@ -62,51 +64,124 @@ function setNativeInputValue(input: HTMLInputElement, value: string): void {
 type SettlementOutcome =
   | { kind: "settled" }
   | { kind: "blocked"; blocker: VerificationBlocker }
-  | { kind: "timeout" };
+  | { kind: "timeout" }
+  | { kind: "failure"; failure: SelectorFailure }
+  | { kind: "action-error"; error: unknown };
 
-function settlementState(
-  root: Document,
-  predicate: () => boolean
-): SettlementOutcome | { kind: "pending" } {
-  const blocker = detectVerificationBlocker(root);
-  if (blocker.kind === "blocked") return blocker;
-  return predicate() ? { kind: "settled" } : { kind: "pending" };
-}
+type ReadyState =
+  | { kind: "ready-state"; ready: boolean }
+  | SelectorFailure;
 
-function observeUntilSettledOrBlocked(
+function observeActionUntilResultsSettle(
   root: Document,
-  predicate: () => boolean,
-  timeoutMs: number
+  action: () => void | Promise<void>,
+  readReady: () => ReadyState,
+  timeoutMs: number,
+  stabilityMs: number,
+  allowExistingEndMarker = false,
+  allowStableInitialState = false
 ): Promise<SettlementOutcome> {
-  const immediate = settlementState(root, predicate);
-  if (immediate.kind !== "pending") return Promise.resolve(immediate);
+  const initial = readResultState(root);
+  if (initial.kind === "failure") {
+    return Promise.resolve({ kind: "failure", failure: initial });
+  }
+  const initialBlocker = detectVerificationBlocker(root);
+  if (initialBlocker.kind === "blocked") return Promise.resolve(initialBlocker);
   const MutationObserverConstructor = root.defaultView?.MutationObserver;
   if (!MutationObserverConstructor) return Promise.resolve({ kind: "timeout" });
 
   return new Promise((resolve) => {
     let finished = false;
     let timeout: number | undefined;
+    let stabilityTimer: number | undefined;
     let observer: MutationObserver | null = null;
+    let current: ResultState = initial;
+    let sawLoading = initial.loadingVisible;
+    let completionWindowStarted = false;
+    let hasCompletionEvidence =
+      (allowExistingEndMarker && initial.endMarkerVisible) ||
+      allowStableInitialState;
     const finish = (value: SettlementOutcome): void => {
       if (finished) return;
       finished = true;
       observer?.disconnect();
       if (timeout !== undefined) root.defaultView?.clearTimeout(timeout);
+      if (stabilityTimer !== undefined) {
+        root.defaultView?.clearTimeout(stabilityTimer);
+      }
       resolve(value);
     };
-    observer = new MutationObserverConstructor(() => {
-      const current = settlementState(root, predicate);
-      if (current.kind !== "pending") finish(current);
-    });
+
+    const evaluate = (): void => {
+      const blocker = detectVerificationBlocker(root);
+      if (blocker.kind === "blocked") {
+        finish(blocker);
+        return;
+      }
+      const ready = readReady();
+      if (ready.kind === "failure") {
+        finish({ kind: "failure", failure: ready });
+        return;
+      }
+      const next = readResultState(root);
+      if (next.kind === "failure") {
+        finish({ kind: "failure", failure: next });
+        return;
+      }
+      const changed =
+        next.signature !== current.signature ||
+        next.loadingVisible !== current.loadingVisible ||
+        next.endMarkerVisible !== current.endMarkerVisible;
+      if (next.loadingVisible) sawLoading = true;
+      if (
+        next.signature !== initial.signature ||
+        (!initial.endMarkerVisible && next.endMarkerVisible) ||
+        (sawLoading && !next.loadingVisible)
+      ) {
+        hasCompletionEvidence = true;
+      }
+      current = next;
+
+      if (changed && stabilityTimer !== undefined) {
+        root.defaultView?.clearTimeout(stabilityTimer);
+        stabilityTimer = undefined;
+      }
+      if (
+        hasCompletionEvidence &&
+        ready.ready &&
+        !next.loadingVisible &&
+        stabilityTimer === undefined
+      ) {
+        if (!completionWindowStarted) {
+          completionWindowStarted = true;
+          if (timeout !== undefined) root.defaultView?.clearTimeout(timeout);
+          timeout = root.defaultView?.setTimeout(
+            () => finish({ kind: "timeout" }),
+            timeoutMs + stabilityMs
+          );
+        }
+        stabilityTimer = root.defaultView?.setTimeout(
+          () => finish({ kind: "settled" }),
+          stabilityMs
+        );
+      }
+    };
+
+    observer = new MutationObserverConstructor(evaluate);
     observer.observe(root.documentElement, {
       attributes: true,
       childList: true,
+      characterData: true,
       subtree: true
     });
     timeout = root.defaultView?.setTimeout(() => {
-      const current = settlementState(root, predicate);
-      finish(current.kind === "pending" ? { kind: "timeout" } : current);
+      const blocker = detectVerificationBlocker(root);
+      finish(blocker.kind === "blocked" ? blocker : { kind: "timeout" });
     }, timeoutMs);
+    Promise.resolve()
+      .then(action)
+      .then(evaluate)
+      .catch((error: unknown) => finish({ kind: "action-error", error }));
   });
 }
 
@@ -177,17 +252,33 @@ export class PanzhiPageRunner {
     }
     const input = controls[which];
     if (input.value === value) return null;
-    setNativeInputValue(input, value);
-    const outcome = await observeUntilSettledOrBlocked(
+    const outcome = await observeActionUntilResultsSettle(
       this.dependencies.document,
+      () => setNativeInputValue(input, value),
       () => {
         const latest = locateRequiredControls(this.dependencies.document);
-        return latest.kind === "found" && latest[which].value === value;
+        return latest.kind === "failure"
+          ? latest
+          : { kind: "ready-state", ready: latest[which].value === value };
       },
-      this.dependencies.mutationTimeoutMs
+      this.dependencies.mutationTimeoutMs,
+      this.dependencies.resultStabilityMs
     );
     if (outcome.kind === "blocked") {
       return this.verificationResult(outcome.blocker);
+    }
+    if (outcome.kind === "failure") {
+      return selectorFailureResult("applying_filters", outcome.failure);
+    }
+    if (outcome.kind === "action-error") {
+      return {
+        kind: "failure",
+        stage: "applying_filters",
+        code: "operation_timeout",
+        message: outcome.error instanceof Error
+          ? outcome.error.message
+          : `Panzhi ${which} action failed`
+      };
     }
     if (outcome.kind === "timeout") {
       return {
@@ -209,19 +300,42 @@ export class PanzhiPageRunner {
       return selectorFailureResult("applying_filters", control);
     }
     const current = selectedState(control);
-    if (current) return null;
+    if (current.kind === "failure") {
+      return selectorFailureResult("applying_filters", current);
+    }
+    if (current.kind === "selected-state" && current.selected) return null;
 
-    control.click();
-    const outcome = await observeUntilSettledOrBlocked(
+    const outcome = await observeActionUntilResultsSettle(
       this.dependencies.document,
+      () => control.click(),
       () => {
         const latest = resolve();
-        return !("kind" in latest) && selectedState(latest) === true;
+        if ("kind" in latest) return latest;
+        const state = selectedState(latest);
+        if (state.kind === "failure") return state;
+        return {
+          kind: "ready-state",
+          ready: state.kind === "selected-state" && state.selected
+        };
       },
-      this.dependencies.mutationTimeoutMs
+      this.dependencies.mutationTimeoutMs,
+      this.dependencies.resultStabilityMs
     );
     if (outcome.kind === "blocked") {
       return this.verificationResult(outcome.blocker);
+    }
+    if (outcome.kind === "failure") {
+      return selectorFailureResult("applying_filters", outcome.failure);
+    }
+    if (outcome.kind === "action-error") {
+      return {
+        kind: "failure",
+        stage: "applying_filters",
+        code: "operation_timeout",
+        message: outcome.error instanceof Error
+          ? outcome.error.message
+          : "Panzhi filter action failed"
+      };
     }
     if (outcome.kind === "timeout") {
       return {
@@ -272,9 +386,33 @@ export class PanzhiPageRunner {
     }
 
     const verified = verifyRequiredFilters(this.dependencies.document);
-    return verified.kind === "failure"
-      ? selectorFailureResult("applying_filters", verified)
-      : null;
+    if (verified.kind === "failure") {
+      return selectorFailureResult("applying_filters", verified);
+    }
+    const stable = await observeActionUntilResultsSettle(
+      this.dependencies.document,
+      () => undefined,
+      () => ({ kind: "ready-state", ready: true }),
+      this.dependencies.mutationTimeoutMs,
+      this.dependencies.resultStabilityMs,
+      false,
+      true
+    );
+    if (stable.kind === "blocked") {
+      return this.verificationResult(stable.blocker);
+    }
+    if (stable.kind === "failure") {
+      return selectorFailureResult("applying_filters", stable.failure);
+    }
+    if (stable.kind !== "settled") {
+      return {
+        kind: "failure",
+        stage: "applying_filters",
+        code: "operation_timeout",
+        message: "Panzhi filtered results did not become quietly stable"
+      };
+    }
+    return null;
   }
 
   private collectCards(
@@ -317,24 +455,38 @@ export class PanzhiPageRunner {
       const blockedBeforeLoad = await this.blockedResult();
       if (blockedBeforeLoad) return blockedBeforeLoad;
       const previousSize = collected.size;
-      try {
-        await this.dependencies.loadMore();
-      } catch (error) {
-        const runnerError = error instanceof RunnerFailure
-          ? error
-          : new RunnerFailure(
-              "operation_timeout",
-              error instanceof Error ? error.message : "Panzhi load failed"
-            );
+      const attemptedActionCount = loadActionCount + 1;
+      const outcome = await observeActionUntilResultsSettle(
+        this.dependencies.document,
+        this.dependencies.loadMore,
+        () => ({ kind: "ready-state", ready: true }),
+        this.dependencies.mutationTimeoutMs,
+        this.dependencies.resultStabilityMs,
+        true
+      );
+      if (outcome.kind === "blocked") {
+        return this.verificationResult(outcome.blocker);
+      }
+      if (outcome.kind === "failure") {
+        return selectorFailureResult(
+          "collecting",
+          outcome.failure,
+          attemptedActionCount
+        );
+      }
+      if (outcome.kind === "timeout" || outcome.kind === "action-error") {
+        const error = outcome.kind === "action-error" ? outcome.error : null;
         return {
           kind: "failure",
           stage: "collecting",
-          code: runnerError.code,
-          message: runnerError.message,
-          loadActionCount
+          code: "operation_timeout",
+          message: error instanceof Error
+            ? error.message
+            : "Panzhi results did not produce a complete load observation",
+          loadActionCount: attemptedActionCount
         };
       }
-      loadActionCount += 1;
+      loadActionCount = attemptedActionCount;
       await this.humanDelay();
 
       const blockedAfterLoad = await this.blockedResult();
@@ -407,6 +559,8 @@ export class PanzhiPageRunner {
     const items = [...collected.values()].slice(0, maxCards);
 
     await this.stage("submitting");
+    const blockedAfterSubmittingStage = await this.blockedResult();
+    if (blockedAfterSubmittingStage) return blockedAfterSubmittingStage;
     return {
       kind: "snapshot",
       stage: "submitting",
@@ -420,28 +574,6 @@ export class PanzhiPageRunner {
       }
     };
   }
-}
-
-async function waitForMutation(
-  root: Document,
-  timeoutMs: number
-): Promise<void> {
-  const MutationObserverConstructor = root.defaultView?.MutationObserver;
-  if (!MutationObserverConstructor) return;
-  await new Promise<void>((resolve) => {
-    const observer = new MutationObserverConstructor(() => finish());
-    const finish = (): void => {
-      observer.disconnect();
-      root.defaultView?.clearTimeout(timeout);
-      resolve();
-    };
-    observer.observe(root.documentElement, {
-      attributes: true,
-      childList: true,
-      subtree: true
-    });
-    const timeout = root.defaultView?.setTimeout(finish, timeoutMs);
-  });
 }
 
 export function createDefaultPageRunnerDependencies(
@@ -460,14 +592,13 @@ export function createDefaultPageRunnerDependencies(
       if (!view) {
         throw new RunnerFailure("structural_drift", "Panzhi page has no window");
       }
-      const mutation = waitForMutation(root, 5_000);
       view.scrollTo({
         top: root.documentElement.scrollHeight,
         behavior: "smooth"
       });
-      await mutation;
     },
     mutationTimeoutMs: 5_000,
+    resultStabilityMs: 350,
     onStage: () => undefined
   };
 }

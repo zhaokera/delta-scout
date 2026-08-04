@@ -11,6 +11,7 @@ import {
   detectVerificationBlocker,
   extractVisibleCards,
   locateRequiredControls,
+  selectedState,
   verifyRequiredFilters
 } from "../../extensions/panzhi-auto-refresh/src/pageSelectors.js";
 
@@ -24,11 +25,35 @@ function loadFixture(name = "panzhi-filter-page.html"): Document {
   return document;
 }
 
-function installFilterBehavior(root: Document): void {
+function signalResultCycle(
+  root: Document,
+  mutate: () => void = () => undefined,
+  delayMs = 0
+): void {
+  const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
+  if (!list) throw new Error("missing fixture list");
+  list.setAttribute("aria-busy", "true");
+  setTimeout(() => {
+    mutate();
+    list.setAttribute("aria-busy", "false");
+  }, delayMs);
+}
+
+function installFilterBehavior(
+  root: Document,
+  skipButtonLabels: string[] = []
+): void {
   for (const button of root.querySelectorAll<HTMLButtonElement>("button")) {
+    if (skipButtonLabels.includes(button.textContent?.trim() ?? "")) continue;
     button.addEventListener("click", () => {
       button.setAttribute("aria-pressed", "true");
+      signalResultCycle(root);
     });
+  }
+  for (const input of root.querySelectorAll<HTMLInputElement>(
+    'input[placeholder="最低值"], input[placeholder="最高值"]'
+  )) {
+    input.addEventListener("input", () => signalResultCycle(root));
   }
 }
 
@@ -55,8 +80,9 @@ function dependencies(
     now: () => new Date("2026-08-04T08:00:00.000Z"),
     random: () => 0.5,
     sleep: async () => undefined,
-    loadMore: async () => undefined,
+    loadMore: async () => signalResultCycle(root),
     mutationTimeoutMs: 25,
+    resultStabilityMs: 2,
     onStage: async () => undefined,
     ...overrides
   };
@@ -152,6 +178,35 @@ describe("Panzhi visible-page selectors", () => {
           priceCny: 3999
         }
       ]
+    });
+  });
+
+  it("does not borrow selected state from an unrelated sibling input", () => {
+    const root = loadFixture();
+    const wrapper = root.createElement("div");
+    wrapper.innerHTML = `
+      <input type="checkbox" checked aria-label="另一个选项" />
+      <span>QQ</span>
+    `;
+    root.body.append(wrapper);
+    const target = wrapper.querySelector<HTMLElement>("span");
+    expect(target).not.toBeNull();
+    expect(selectedState(target!)).toEqual({ kind: "unknown" });
+
+    const conflicting = root.createElement("button");
+    conflicting.setAttribute("aria-pressed", "true");
+    conflicting.innerHTML = '<input type="checkbox" />目标';
+    expect(selectedState(conflicting)).toMatchObject({
+      kind: "failure",
+      code: "structural_drift"
+    });
+
+    const ambiguous = root.createElement("label");
+    ambiguous.innerHTML = `目标
+      <input type="checkbox" /><input type="checkbox" />`;
+    expect(selectedState(ambiguous)).toMatchObject({
+      kind: "failure",
+      code: "structural_drift"
     });
   });
 
@@ -288,6 +343,93 @@ describe("Panzhi visible-page selectors", () => {
 });
 
 describe("Panzhi page collection runner", () => {
+  it("waits for preselected filters to become idle before initializing cards", async () => {
+    const root = loadFixture();
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    controls.minPrice.value = "1900";
+    controls.maxPrice.value = "4000";
+    for (const control of [
+      controls.qq,
+      controls.secondRealName,
+      ...controls.requiredSkins,
+      controls.allSemantics
+    ]) {
+      control.setAttribute("aria-pressed", "true");
+    }
+    const list = root.querySelector<HTMLElement>("[aria-label='商品列表']")!;
+    list.setAttribute("aria-busy", "true");
+    setTimeout(() => {
+      for (const stale of list.querySelectorAll("a[href*='SA2VISIBLE1']")) {
+        stale.remove();
+      }
+      appendCard(root, "SA2FRESH");
+      list.setAttribute("aria-busy", "false");
+    }, 3);
+
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      mutationTimeoutMs: 50,
+      resultStabilityMs: 4
+    })).run("quick");
+
+    expect(result.kind).toBe("snapshot");
+    if (result.kind !== "snapshot") return;
+    const ids = result.snapshot.items.map(({ sourceListingId }) => sourceListingId);
+    expect(ids).toContain("SA2FRESH");
+    expect(ids).not.toContain("SA2VISIBLE1");
+  });
+
+  it("ignores unrelated mutations and waits for delayed result completion", async () => {
+    const unrelated = loadFixture();
+    const unrelatedControls = locateRequiredControls(unrelated);
+    expect(unrelatedControls.kind).toBe("found");
+    if (unrelatedControls.kind !== "found") return;
+    unrelatedControls.minPrice.value = "1900";
+    unrelatedControls.maxPrice.value = "4000";
+    for (const button of unrelated.querySelectorAll<HTMLButtonElement>("button")) {
+      button.addEventListener("click", () => {
+        button.setAttribute("aria-pressed", "true");
+        unrelated.querySelector("h1")?.setAttribute("data-noise", "changed");
+      });
+    }
+    expect(
+      await new PanzhiPageRunner(dependencies(unrelated)).run("quick")
+    ).toMatchObject({
+      kind: "failure",
+      code: "operation_timeout",
+      stage: "applying_filters"
+    });
+
+    const delayed = loadFixture();
+    let appended = false;
+    for (const button of delayed.querySelectorAll<HTMLButtonElement>("button")) {
+      button.addEventListener("click", () => {
+        button.setAttribute("aria-pressed", "true");
+        delayed.querySelector("h1")?.setAttribute("data-noise", "changed");
+        signalResultCycle(delayed, () => {
+          if (!appended) {
+            appendCard(delayed, "SA2DELAYED");
+            appended = true;
+          }
+        }, 3);
+      });
+    }
+    for (const input of delayed.querySelectorAll<HTMLInputElement>(
+      'input[placeholder="最低值"], input[placeholder="最高值"]'
+    )) {
+      input.addEventListener("input", () => signalResultCycle(delayed, undefined, 3));
+    }
+    const delayedResult = await new PanzhiPageRunner(dependencies(delayed, {
+      mutationTimeoutMs: 50,
+      resultStabilityMs: 4
+    })).run("quick");
+    expect(delayedResult.kind).toBe("snapshot");
+    if (delayedResult.kind !== "snapshot") return;
+    expect(delayedResult.snapshot.items.map(({ sourceListingId }) => sourceListingId))
+      .toContain("SA2DELAYED");
+  });
+
   it("stops quick mode at six observations and sixty unique cards", async () => {
     const root = loadFixture();
     installFilterBehavior(root);
@@ -317,6 +459,7 @@ describe("Panzhi page collection runner", () => {
     const result = await new PanzhiPageRunner(dependencies(root, {
       loadMore: async () => {
         loads += 1;
+        signalResultCycle(root);
       }
     })).run("deep");
 
@@ -326,6 +469,27 @@ describe("Panzhi page collection runner", () => {
     expect(result.snapshot.loadActionCount).toBe(3);
     expect(result.snapshot.stopReason).toBe("no_growth_twice");
     expect(result.snapshot.observedUniqueCount).toBe(2);
+  });
+
+  it("does not count unrelated load mutations as no-growth observations", async () => {
+    const root = loadFixture();
+    installFilterBehavior(root);
+    let loads = 0;
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      loadMore: async () => {
+        loads += 1;
+        root.querySelector("h1")?.setAttribute("data-load-noise", `${loads}`);
+      }
+    })).run("deep");
+
+    expect(loads).toBe(1);
+    expect(result).toMatchObject({
+      kind: "failure",
+      code: "operation_timeout",
+      stage: "collecting",
+      loadActionCount: 2
+    });
+    expect(result).not.toHaveProperty("snapshot");
   });
 
   it("fails closed at the deep load cap rather than claiming a natural end", async () => {
@@ -345,7 +509,7 @@ describe("Panzhi page collection runner", () => {
       code: "collection_limit",
       loadActionCount: 100
     });
-  });
+  }, 15_000);
 
   it("never returns a snapshot while verification is visible", async () => {
     const root = loadFixture();
@@ -363,6 +527,8 @@ describe("Panzhi page collection runner", () => {
               <p>请输入验证码</p>
             </section>`
           );
+        } else {
+          signalResultCycle(root);
         }
       },
       onStage: async (stage) => {
@@ -387,16 +553,11 @@ describe("Panzhi page collection runner", () => {
 
   it("prioritizes a blocker that appears while a filter click is settling", async () => {
     const root = loadFixture();
+    installFilterBehavior(root, ["QQ"]);
     const qq = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent?.trim() === "QQ"
     );
     expect(qq).toBeDefined();
-    for (const button of root.querySelectorAll<HTMLButtonElement>("button")) {
-      if (button === qq) continue;
-      button.addEventListener("click", () => {
-        button.setAttribute("aria-pressed", "true");
-      });
-    }
     qq?.addEventListener("click", () => {
       queueMicrotask(() => {
         root.body.insertAdjacentHTML(
@@ -473,6 +634,7 @@ describe("Panzhi page collection runner", () => {
         : "https://www.pzds.com/goodsList/391/6",
       loadMore: async () => {
         drifted = true;
+        signalResultCycle(root);
       }
     })).run("quick");
 
@@ -494,8 +656,39 @@ describe("Panzhi page collection runner", () => {
 
     const drift = loadFixture();
     installFilterBehavior(drift);
-    drift.querySelector("a[href*='SA2VISIBLE1'] span")!.textContent = "价格面议";
+    drift.querySelector(
+      "a[href*='SA2VISIBLE1'] span:not(.fixture-old-price)"
+    )!.textContent = "价格面议";
     expect(await new PanzhiPageRunner(dependencies(drift)).run("quick"))
       .toMatchObject({ kind: "failure", code: "structural_drift" });
+  });
+
+  it("rechecks verification after announcing submission", async () => {
+    const root = loadFixture();
+    installFilterBehavior(root);
+    const stages: string[] = [];
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      onStage: async (stage) => {
+        stages.push(stage);
+        if (stage === "submitting") {
+          root.body.insertAdjacentHTML(
+            "afterbegin",
+            `<section role="dialog"><h2>请完成安全验证</h2>
+              <p>请输入验证码</p></section>`
+          );
+        }
+      }
+    })).run("quick");
+
+    expect(stages.slice(-2)).toEqual([
+      "submitting",
+      "awaiting_user_verification"
+    ]);
+    expect(result).toMatchObject({
+      kind: "awaiting_user_verification",
+      blocker: "captcha",
+      resumeStage: "applying_filters"
+    });
+    expect(result).not.toHaveProperty("snapshot");
   });
 });
