@@ -285,6 +285,18 @@ export class RefreshScheduleRepository {
     `).run(at.toISOString(), mode, source);
   }
 
+  markAutomationDeepDue(source: "panzhi", at: Date): void {
+    const dueAt = at.toISOString();
+    this.database.prepare(`
+      UPDATE refresh_schedule
+      SET next_deep_at = CASE
+        WHEN next_deep_at > ? THEN ?
+        ELSE next_deep_at
+      END
+      WHERE source = ?
+    `).run(dueAt, dueAt, source);
+  }
+
   markFinished(
     source: SourceId,
     mode: RefreshMode,
@@ -511,6 +523,9 @@ export class RefreshScheduler {
       const enqueued = this.listings.runInTransaction(() => {
         const result = this.panzhiAutomation.enqueue(mode);
         this.schedule.markStarted(source, result.job.mode, startedAt);
+        if (mode === "deep" && result.job.mode === "quick") {
+          this.schedule.markAutomationDeepDue(source, startedAt);
+        }
         return result;
       });
       return {

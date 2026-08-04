@@ -285,6 +285,70 @@ describe("RefreshScheduleRepository", () => {
     });
   });
 
+  it("persists an early manual deep request while a quick job collects", () => {
+    const fixture = schedulerFixture();
+    seedCompletePanzhiBaseline(fixture);
+    const queued = fixture.scheduler.trigger("panzhi", "quick");
+    expect(queued.kind).toBe("queued");
+    const claimed = fixture.automation.claim()!;
+    fixture.automation.updateState(
+      claimed.job.id,
+      claimed.bearerToken,
+      { state: "applying_filters" }
+    );
+    fixture.automation.updateState(
+      claimed.job.id,
+      claimed.bearerToken,
+      { state: "collecting" }
+    );
+    const before = fixture.schedule.list().find(
+      ({ source }) => source === "panzhi"
+    )!;
+    const requestedAt = new Date("2026-08-02T00:01:00.000Z");
+    fixture.setNow(requestedAt);
+
+    const deferred = fixture.scheduler.trigger("panzhi", "deep");
+
+    expect(deferred).toEqual({
+      kind: "queued",
+      jobId: claimed.job.id,
+      source: "panzhi",
+      mode: "quick"
+    });
+    expect(fixture.schedule.list().find(({ source }) => source === "panzhi"))
+      .toMatchObject({
+        lastStartedAt: before.lastStartedAt,
+        lastMode: "quick",
+        nextQuickAt: before.nextQuickAt,
+        nextDeepAt: requestedAt.toISOString()
+      });
+
+    const completedAt = new Date("2026-08-02T00:01:01.000Z");
+    fixture.database.prepare(`
+      UPDATE panzhi_browser_jobs
+      SET state = 'cancelled', lease_token_digest = NULL,
+          lease_expires_at = NULL, finished_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      completedAt.toISOString(),
+      completedAt.toISOString(),
+      claimed.job.id
+    );
+    fixture.schedule.markAutomationFinished(
+      "panzhi",
+      "quick",
+      "success",
+      null,
+      completedAt,
+      () => 0.5
+    );
+
+    expect(fixture.schedule.nextDue(completedAt)).toEqual({
+      source: "panzhi",
+      mode: "deep"
+    });
+  });
+
   it("reconciles a persisted nonterminal Panzhi job as running on restart", () => {
     const fixture = schedulerFixture();
     const queued = fixture.automation.enqueue("deep");
