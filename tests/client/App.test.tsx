@@ -3291,8 +3291,10 @@ describe("App shell", () => {
 
       try {
         render(<App api={api} />);
-        expect(await screen.findByTestId("browser-refresh-state"))
-          .toHaveTextContent("任务已暂停");
+        await waitFor(() =>
+          expect(screen.getByTestId("browser-refresh-state"))
+            .toHaveTextContent("任务已暂停")
+        );
 
         if (operationKind === "cancel") {
           await user.click(screen.getByRole("button", {
@@ -3504,8 +3506,10 @@ describe("App shell", () => {
     const user = userEvent.setup();
 
     render(<App api={api} />);
-    expect(await screen.findByTestId("browser-refresh-state"))
-      .toHaveTextContent("任务已暂停");
+    await waitFor(() =>
+      expect(screen.getByTestId("browser-refresh-state"))
+        .toHaveTextContent("任务已暂停")
+    );
     await user.click(screen.getByRole("button", {
       name: "我还在处理，继续等待"
     }));
