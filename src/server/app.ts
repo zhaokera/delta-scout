@@ -1279,7 +1279,7 @@ export function createApp(dependencies?: AppDependencies): Express {
       });
       return;
     }
-    if (result.kind === "attention_required") {
+    if (result.kind === "queued") {
       response.status(202).json(result);
       return;
     }

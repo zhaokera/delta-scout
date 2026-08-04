@@ -2530,6 +2530,41 @@ describe("browser refresh API", () => {
     expect(response.status).toBe(202);
   });
 
+  it("returns the queued Panzhi browser job from a manual source refresh", async () => {
+    const f = setup();
+    const scheduler = {
+      snapshot: () => [],
+      trigger: vi.fn(() => ({
+        kind: "queued" as const,
+        jobId: "00000000-0000-4000-8000-000000000004",
+        source: "panzhi" as const,
+        mode: "deep" as const
+      }))
+    };
+    const app = createApp({
+      repository: f.repository,
+      coordinator: f.coordinator,
+      tracker: f.tracker,
+      admission: f.admission,
+      ...browserAppExtras(f.database, f.repository, f.admission),
+      scheduler
+    });
+
+    const response = await request(app)
+      .post("/api/refresh/source/panzhi")
+      .send({ mode: "quick" });
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({
+      kind: "queued",
+      jobId: "00000000-0000-4000-8000-000000000004",
+      source: "panzhi",
+      mode: "deep"
+    });
+    expect(response.body).not.toHaveProperty("runId");
+    expect(scheduler.trigger).toHaveBeenCalledWith("panzhi", "quick");
+  });
+
   it("keeps oversized ordinary JSON errors distinct from browser limits", async () => {
     const { app } = setup();
     const response = await request(app)

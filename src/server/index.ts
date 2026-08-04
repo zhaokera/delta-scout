@@ -81,13 +81,6 @@ const scheduleRepository = new RefreshScheduleRepository(
   database,
   startupTime
 );
-const scheduler = new RefreshScheduler(
-  scheduleRepository,
-  repository,
-  coordinator,
-  tracker,
-  admission
-);
 const panzhiAutomationRepository = new PanzhiAutomationRepository(database);
 const panzhiPublisher = new PanzhiSnapshotPublisher(repository);
 const panzhiAutomationService = new PanzhiAutomationService({
@@ -99,6 +92,14 @@ const panzhiAutomationService = new PanzhiAutomationService({
   tracker
 });
 panzhiAutomationService.maintain();
+const scheduler = new RefreshScheduler(
+  scheduleRepository,
+  repository,
+  coordinator,
+  tracker,
+  admission,
+  panzhiAutomationService
+);
 
 createApp({
   repository,

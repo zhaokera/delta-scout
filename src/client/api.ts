@@ -253,7 +253,12 @@ export interface ScoutApi {
     mode?: RefreshMode
   ): Promise<
     | { runId: number; state: "running"; source: SourceId; mode: RefreshMode }
-    | { kind: "attention_required"; source: "panzhi" }
+    | {
+        kind: "queued";
+        jobId: string;
+        source: "panzhi";
+        mode: RefreshMode;
+      }
   >;
   getRefreshSchedule?(): Promise<RefreshScheduleView[]>;
   getRefreshEvents?(
@@ -593,7 +598,12 @@ export const httpScoutApi: ScoutApi = {
           source: SourceId;
           mode: RefreshMode;
         }
-      | { kind: "attention_required"; source: "panzhi" }
+      | {
+          kind: "queued";
+          jobId: string;
+          source: "panzhi";
+          mode: RefreshMode;
+        }
     >(`/api/refresh/source/${source}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -6,6 +6,9 @@ import type {
 } from "./collector/coordinator.js";
 import type { RefreshAdmissionController } from "./refreshAdmission.js";
 import type {
+  PanzhiAutomationService
+} from "./panzhiAutomation/service.js";
+import type {
   ListingRepository,
   ScanState,
   SourceStatus
@@ -40,7 +43,12 @@ export interface RefreshScheduleView {
 
 export type RefreshTriggerResult =
   | { kind: "running"; runId: number; source: SourceId; mode: RefreshMode }
-  | { kind: "attention_required"; source: "panzhi" }
+  | {
+      kind: "queued";
+      jobId: string;
+      source: "panzhi";
+      mode: RefreshMode;
+    }
   | {
       kind: "conflict";
       activeKind: "all_sources" | "browser";
@@ -126,10 +134,47 @@ export class RefreshScheduleRepository {
           consecutive_failures = consecutive_failures + 1,
           backoff_until = ?
       WHERE last_state = 'running'
+        AND (
+          source <> 'panzhi'
+          OR NOT EXISTS (
+            SELECT 1
+            FROM panzhi_browser_jobs
+            WHERE state NOT IN ('success', 'failed', 'cancelled')
+          )
+        )
     `).run(
       now.toISOString(),
       addMinutes(now, 5).toISOString()
     );
+    database.prepare(`
+      UPDATE refresh_schedule
+      SET last_started_at = COALESCE(
+            last_started_at,
+            (
+              SELECT created_at
+              FROM panzhi_browser_jobs
+              WHERE state NOT IN ('success', 'failed', 'cancelled')
+              ORDER BY created_at, rowid
+              LIMIT 1
+            )
+          ),
+          last_mode = (
+            SELECT mode
+            FROM panzhi_browser_jobs
+            WHERE state NOT IN ('success', 'failed', 'cancelled')
+            ORDER BY created_at, rowid
+            LIMIT 1
+          ),
+          last_state = 'running',
+          last_error = NULL,
+          attention_required = 0
+      WHERE source = 'panzhi'
+        AND EXISTS (
+          SELECT 1
+          FROM panzhi_browser_jobs
+          WHERE state NOT IN ('success', 'failed', 'cancelled')
+        )
+    `).run();
   }
 
   list(): RefreshScheduleView[] {
@@ -202,6 +247,14 @@ export class RefreshScheduleRepository {
       FROM refresh_schedule
       WHERE enabled = 1
         AND last_state <> 'running'
+        AND (
+          source <> 'panzhi'
+          OR NOT EXISTS (
+            SELECT 1
+            FROM panzhi_browser_jobs
+            WHERE state NOT IN ('success', 'failed', 'cancelled')
+          )
+        )
         AND (backoff_until IS NULL OR backoff_until <= ?)
         AND (next_quick_at <= ? OR next_deep_at <= ?)
       ORDER BY
@@ -221,29 +274,15 @@ export class RefreshScheduleRepository {
   markStarted(source: SourceId, mode: RefreshMode, at: Date): void {
     this.database.prepare(`
       UPDATE refresh_schedule
-      SET last_started_at = ?, last_mode = ?, last_state = 'running',
+      SET last_started_at = CASE
+            WHEN last_state = 'running' AND last_started_at IS NOT NULL
+              THEN last_started_at
+            ELSE ?
+          END,
+          last_mode = ?, last_state = 'running',
           last_error = NULL, attention_required = 0
       WHERE source = ?
     `).run(at.toISOString(), mode, source);
-  }
-
-  markAttentionRequired(source: "panzhi", mode: RefreshMode, at: Date): void {
-    const defaults = DEFAULTS[source];
-    this.database.prepare(`
-      UPDATE refresh_schedule
-      SET last_mode = ?, last_state = 'attention_required',
-          attention_required = 1,
-          last_error = 'browser_snapshot_required',
-          next_quick_at = ?,
-          next_deep_at = CASE WHEN ? = 'deep' THEN ? ELSE next_deep_at END
-      WHERE source = ?
-    `).run(
-      mode,
-      addMinutes(at, defaults.quickMinutes).toISOString(),
-      mode,
-      addMinutes(at, defaults.deepMinutes).toISOString(),
-      source
-    );
   }
 
   markFinished(
@@ -406,9 +445,13 @@ export class RefreshScheduler {
   constructor(
     private readonly schedule: RefreshScheduleRepository,
     private readonly listings: ListingRepository,
-    private readonly coordinator: CollectionCoordinator,
+    private readonly coordinator: Pick<CollectionCoordinator, "refreshSource">,
     private readonly tracker: RefreshTracker,
     private readonly admission: RefreshAdmissionController,
+    private readonly panzhiAutomation: Pick<
+      PanzhiAutomationService,
+      "enqueue"
+    >,
     private readonly options: {
       now?: () => Date;
       random?: () => number;
@@ -465,8 +508,17 @@ export class RefreshScheduler {
   ): RefreshTriggerResult {
     const startedAt = this.now();
     if (source === "panzhi") {
-      this.schedule.markAttentionRequired(source, mode, startedAt);
-      return { kind: "attention_required", source };
+      const enqueued = this.listings.runInTransaction(() => {
+        const result = this.panzhiAutomation.enqueue(mode);
+        this.schedule.markStarted(source, result.job.mode, startedAt);
+        return result;
+      });
+      return {
+        kind: "queued",
+        jobId: enqueued.job.id,
+        source,
+        mode: enqueued.job.mode
+      };
     }
     const acquired = this.admission.withAllSourcesLease(() => {
       const runId = this.listings.startScopedScan(source, startedAt);
