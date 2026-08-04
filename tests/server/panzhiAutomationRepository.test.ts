@@ -633,7 +633,7 @@ describe("PanzhiAutomationRepository", () => {
     }
   });
 
-  it.each(["unpublish", "delete"] as const)(
+  it.each(["unpublish", "delete", "replace"] as const)(
     "prevents %s of a source result linked to a successful job",
     (operation) => {
       const { database, repository, claimed } = claimedRepository();
@@ -666,10 +666,19 @@ describe("PanzhiAutomationRepository", () => {
             SET published = 0
             WHERE run_id = ? AND source = 'panzhi'
           `).run(scanRunId);
-        } else {
+        } else if (operation === "delete") {
           database.prepare(`
             DELETE FROM scan_source_results
             WHERE run_id = ? AND source = 'panzhi'
+          `).run(scanRunId);
+        } else {
+          database.prepare(`
+            INSERT OR REPLACE INTO scan_source_results (
+              run_id, source, state, pages_scanned,
+              observed_item_count, eligible_count,
+              balanced_candidate_count, global_candidate_count,
+              published
+            ) VALUES (?, 'panzhi', 'success', 1, 1, 1, 0, 0, 0)
           `).run(scanRunId);
         }
       }).toThrow();

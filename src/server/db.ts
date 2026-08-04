@@ -298,6 +298,24 @@ export function createDatabase(path: string): DatabaseSync {
       END;
 
     CREATE TRIGGER IF NOT EXISTS
+      panzhi_published_source_result_insert_guard
+      BEFORE INSERT ON scan_source_results
+      WHEN NEW.source = 'panzhi'
+        AND NEW.published <> 1
+        AND EXISTS (
+          SELECT 1
+          FROM panzhi_browser_jobs
+          WHERE scan_run_id = NEW.run_id
+            AND state = 'success'
+        )
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'cannot replace a published Panzhi source result'
+        );
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS
       panzhi_published_source_result_update_guard
       BEFORE UPDATE OF run_id, source, published ON scan_source_results
       WHEN OLD.source = 'panzhi'
