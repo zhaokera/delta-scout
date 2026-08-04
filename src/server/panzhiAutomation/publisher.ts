@@ -5,7 +5,9 @@ import {
 } from "../panzhiBrowserSnapshot.js";
 import {
   type CommitScanRefreshContext,
-  ListingRepository
+  ListingRepository,
+  type SynchronousCallGuard,
+  SynchronousTransactionError
 } from "../repository.js";
 
 export type PanzhiSnapshotPublishState =
@@ -38,18 +40,39 @@ export class PanzhiSnapshotPublisherError extends Error {
   }
 }
 
-export type PanzhiSnapshotBeforeCommit = (
+export type PanzhiSnapshotBeforeCommit<Result = void> = (
   result: PanzhiSnapshotPublishResult
-) => void;
+) => Result;
+
+function isNativeAsyncFunction(operation: unknown): boolean {
+  if (typeof operation !== "function") return false;
+  return (
+    operation.constructor?.name === "AsyncFunction" ||
+    Object.prototype.toString.call(operation) === "[object AsyncFunction]"
+  );
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" && value !== null) ||
+    typeof value === "function"
+  ) && typeof (value as { then?: unknown }).then === "function";
+}
 
 export class PanzhiSnapshotPublisher {
   constructor(private readonly repository: ListingRepository) {}
 
-  publish(
+  publish<HookResult = void>(
     input: unknown,
     capturedAt: Date,
-    beforeCommit?: PanzhiSnapshotBeforeCommit
+    beforeCommit?: PanzhiSnapshotBeforeCommit<HookResult>,
+    ..._synchronousOnly: SynchronousCallGuard<HookResult>
   ): PanzhiSnapshotPublishResult {
+    // Completion hooks may only perform synchronous writes against the same
+    // SQLite connection. Network calls and messages cannot be rolled back.
+    if (beforeCommit && isNativeAsyncFunction(beforeCommit)) {
+      throw new SynchronousTransactionError("before_commit");
+    }
     const snapshot = PanzhiBrowserSnapshotSchema.parse(input);
     const built = buildPanzhiBrowserListings(snapshot, capturedAt);
     const mode = snapshot.mode ?? "deep";
@@ -133,7 +156,10 @@ export class PanzhiSnapshotPublisher {
             droppedByPrice: built.droppedByPrice,
             published
           };
-          beforeCommit?.(result);
+          const hookResult = beforeCommit?.(result);
+          if (isThenable(hookResult)) {
+            throw new SynchronousTransactionError("before_commit");
+          }
         }
       );
 

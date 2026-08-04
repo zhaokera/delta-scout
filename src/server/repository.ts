@@ -207,6 +207,38 @@ export class ManualListingReviewError extends Error {
   }
 }
 
+export type SynchronousTransactionTarget = "operation" | "before_commit";
+
+export type SynchronousCallGuard<T> = [T] extends [never]
+  ? []
+  : [Extract<T, PromiseLike<unknown>>] extends [never]
+    ? []
+    : [never];
+
+export class SynchronousTransactionError extends Error {
+  readonly code = "synchronous_transaction_required" as const;
+
+  constructor(readonly target: SynchronousTransactionTarget) {
+    super(`${target} must be synchronous and limited to same-database writes`);
+    this.name = "SynchronousTransactionError";
+  }
+}
+
+function isNativeAsyncFunction(operation: unknown): boolean {
+  if (typeof operation !== "function") return false;
+  return (
+    operation.constructor?.name === "AsyncFunction" ||
+    Object.prototype.toString.call(operation) === "[object AsyncFunction]"
+  );
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" && value !== null) ||
+    typeof value === "function"
+  ) && typeof (value as { then?: unknown }).then === "function";
+}
+
 const STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
 
 function countBySource(
@@ -229,7 +261,16 @@ export class ListingRepository {
 
   constructor(private readonly database: DatabaseSync) {}
 
-  runInTransaction<T>(operation: () => T): T {
+  runInTransaction<T>(
+    operation: () => T,
+    ..._synchronousOnly: SynchronousCallGuard<T>
+  ): T {
+    // Only synchronous writes to this repository's SQLite connection can be
+    // rolled back. Network calls, messages, and other external side effects
+    // must never run inside this transaction boundary.
+    if (isNativeAsyncFunction(operation)) {
+      throw new SynchronousTransactionError("operation");
+    }
     return this.runTransaction(operation);
   }
 
@@ -527,16 +568,15 @@ export class ListingRepository {
   hasCompletePublishedSourceSnapshot(source: SourceId): boolean {
     const parsedSource = SourceIdSchema.parse(source);
     const row = this.database.prepare(`
-      SELECT EXISTS (
-        SELECT 1
-        FROM scan_source_results
-        WHERE source = ?
-          AND state = 'success'
-          AND published = 1
-          AND stop_reason <> 'quick_window'
-      ) AS present
-    `).get(parsedSource) as { present: number };
-    return row.present === 1;
+      SELECT state
+      FROM scan_source_results
+      WHERE source = ?
+        AND published = 1
+        AND stop_reason <> 'quick_window'
+      ORDER BY run_id DESC
+      LIMIT 1
+    `).get(parsedSource) as { state: SourceState } | undefined;
+    return row?.state === "success";
   }
 
   failScan(
@@ -960,6 +1000,8 @@ export class ListingRepository {
       };
     });
 
+    let beforeCommitFailed = false;
+    let beforeCommitFailure: unknown;
     try {
       return this.runTransaction(() => {
       this.database.exec("DELETE FROM listings");
@@ -1304,16 +1346,25 @@ export class ListingRepository {
         `)
         .run(roundState, finishedAt.toISOString(), runId);
       this.pruneScanHistory();
-      beforeCommit?.({
-        runId,
-        state: roundState,
-        publishedSources: preparedUpdates
-          .filter(({ published }) => published)
-          .map(({ original }) => original.source)
-      });
+      try {
+        beforeCommit?.({
+          runId,
+          state: roundState,
+          publishedSources: preparedUpdates
+            .filter(({ published }) => published)
+            .map(({ original }) => original.source)
+        });
+      } catch (error) {
+        beforeCommitFailed = true;
+        beforeCommitFailure = error;
+        throw error;
+      }
       return roundState;
       });
     } catch (cause) {
+      if (beforeCommitFailed) {
+        throw beforeCommitFailure;
+      }
       throw new Error("无法提交带历史的刷新快照", { cause });
     }
   }
@@ -2085,6 +2136,21 @@ export class ListingRepository {
           ORDER BY id DESC
           LIMIT 50
         )
+        AND id NOT IN (
+          SELECT result.run_id
+          FROM scan_source_results AS result
+          WHERE result.published = 1
+            AND result.stop_reason <> 'quick_window'
+            AND result.run_id = (
+              SELECT latest.run_id
+              FROM scan_source_results AS latest
+              WHERE latest.source = result.source
+                AND latest.published = 1
+                AND latest.stop_reason <> 'quick_window'
+              ORDER BY latest.run_id DESC
+              LIMIT 1
+            )
+        )
     `);
   }
 
@@ -2103,6 +2169,9 @@ export class ListingRepository {
       );
       started = true;
       const result = operation();
+      if (isThenable(result)) {
+        throw new SynchronousTransactionError("operation");
+      }
       this.database.exec(
         savepoint === null
           ? "COMMIT"

@@ -8,6 +8,9 @@ import {
   PanzhiSnapshotPublisher,
   PanzhiSnapshotPublisherError
 } from "../../src/server/panzhiAutomation/publisher.js";
+import {
+  PanzhiAutomationRepositoryError
+} from "../../src/server/panzhiAutomation/repository.js";
 import { ListingRepository } from "../../src/server/repository.js";
 
 const firstCapture = new Date("2026-08-01T08:00:00.000Z");
@@ -15,6 +18,15 @@ const secondCapture = new Date("2026-08-01T09:00:00.000Z");
 const panzhiJobId = "00000000-0000-4000-8000-000000000001";
 
 type SnapshotItem = PanzhiBrowserSnapshot["items"][number];
+
+if (false) {
+  const repository = null as unknown as ListingRepository;
+  const publisher = null as unknown as PanzhiSnapshotPublisher;
+  // @ts-expect-error Transaction operations must not return promises.
+  repository.runInTransaction(async () => undefined);
+  // @ts-expect-error Completion hooks must not return promises.
+  publisher.publish({}, firstCapture, async () => undefined);
+}
 
 function item(
   sourceListingId: string,
@@ -307,6 +319,106 @@ describe("PanzhiSnapshotPublisher", () => {
     )).toEqual(["AFTER-EMPTY"]);
   });
 
+  it("rejects quick mode when the latest published non-quick result is partial", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    publisher.publish(snapshot([item("FULL-BEFORE-PARTIAL")]), firstCapture);
+    publisher.publish(snapshot([item("PARTIAL-LATEST")], {
+      stopReason: "captcha_required",
+      filterProof: {
+        ...snapshot([]).filterProof,
+        observedAt: secondCapture.toISOString()
+      }
+    }), secondCapture);
+    const runCount = count(database, "scan_runs");
+    let thrown: unknown;
+
+    try {
+      publisher.publish(snapshot([item("QUICK-AFTER-PARTIAL")], {
+        mode: "quick",
+        loadActionCount: 2,
+        stopReason: "quick_window"
+      }), new Date("2026-08-01T10:00:00.000Z"));
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      code: "panzhi_complete_snapshot_required"
+    });
+    expect(count(database, "scan_runs")).toBe(runCount);
+  });
+
+  it("keeps the trusted complete lineage after an unpublished anomaly", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    const trustedItems = Array.from({ length: 20 }, (_, index) =>
+      item(`LINEAGE-${String(index).padStart(2, "0")}`, 2_500 + index)
+    );
+    publisher.publish(snapshot(trustedItems, {
+      loadActionCount: 10
+    }), firstCapture);
+    const quarantined = publisher.publish(snapshot([
+      item("LINEAGE-LOW-1"),
+      item("LINEAGE-LOW-2")
+    ], {
+      loadActionCount: 2,
+      filterProof: {
+        ...snapshot([]).filterProof,
+        observedAt: secondCapture.toISOString()
+      }
+    }), secondCapture);
+
+    const quick = publisher.publish(snapshot([trustedItems[0]], {
+      mode: "quick",
+      loadActionCount: 2,
+      stopReason: "quick_window"
+    }), new Date("2026-08-01T10:00:00.000Z"));
+
+    expect(quarantined.published).toBe(false);
+    expect(quick).toMatchObject({
+      state: "success",
+      published: true,
+      preservedItemCount: 19
+    });
+  });
+
+  it("retains the latest complete baseline while pruning more than fifty quick scans", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    const baseline = publisher.publish(
+      snapshot([item("PRUNED-BASELINE")]),
+      firstCapture
+    );
+    for (let index = 0; index < 51; index += 1) {
+      const capturedAt = new Date(
+        secondCapture.getTime() + index * 60_000
+      );
+      publisher.publish(snapshot([item("PRUNED-BASELINE")], {
+        mode: "quick",
+        loadActionCount: 2,
+        stopReason: "quick_window",
+        filterProof: {
+          ...snapshot([]).filterProof,
+          observedAt: capturedAt.toISOString()
+        }
+      }), capturedAt);
+    }
+
+    expect(database.prepare(`
+      SELECT id FROM scan_runs WHERE id = ?
+    `).get(baseline.scanRunId)).toEqual({ id: baseline.scanRunId });
+    const nextQuick = publisher.publish(snapshot([item("PRUNED-BASELINE")], {
+      mode: "quick",
+      loadActionCount: 2,
+      stopReason: "quick_window"
+    }), new Date("2026-08-02T08:00:00.000Z"));
+    expect(nextQuick.published).toBe(true);
+  });
+
   it("uses one outer transaction and creates exactly one scoped Panzhi scan", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);
@@ -330,6 +442,119 @@ describe("PanzhiSnapshotPublisher", () => {
         requested_source: "panzhi"
       })
     ]);
+  });
+
+  it("rejects a native async repository operation before its body starts", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const unsafeRun = repository.runInTransaction.bind(repository) as (
+      operation: () => unknown
+    ) => unknown;
+    let started = false;
+    let thrown: unknown;
+
+    try {
+      unsafeRun(async () => {
+        started = true;
+        repository.startScopedScan("panzhi", firstCapture);
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(started).toBe(false);
+    expect(thrown).toMatchObject({
+      code: "synchronous_transaction_required",
+      target: "operation"
+    });
+    expect(count(database, "scan_runs")).toBe(0);
+  });
+
+  it("rolls back a repository operation that returns a thenable", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const unsafeRun = repository.runInTransaction.bind(repository) as (
+      operation: () => unknown
+    ) => unknown;
+    let thrown: unknown;
+
+    try {
+      unsafeRun(() => {
+        repository.startScopedScan("panzhi", firstCapture);
+        return Promise.resolve("not-sync");
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      code: "synchronous_transaction_required",
+      target: "operation"
+    });
+    expect(count(database, "scan_runs")).toBe(0);
+  });
+
+  it("rejects a native async publisher hook before its body starts", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    const unsafePublish = publisher.publish.bind(publisher) as (
+      input: unknown,
+      capturedAt: Date,
+      hook: () => unknown
+    ) => unknown;
+    let started = false;
+    let thrown: unknown;
+
+    try {
+      unsafePublish(snapshot([item("ASYNC-HOOK")]), firstCapture, async () => {
+        started = true;
+        database.prepare(`
+          UPDATE source_status SET error = 'async-started'
+          WHERE source = 'panzhi'
+        `).run();
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(started).toBe(false);
+    expect(thrown).toMatchObject({
+      code: "synchronous_transaction_required",
+      target: "before_commit"
+    });
+    expect(count(database, "scan_runs")).toBe(0);
+    expect(repository.getListings()).toEqual([]);
+  });
+
+  it("rolls back publisher writes when a sync-shaped hook returns a thenable", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    const unsafePublish = publisher.publish.bind(publisher) as (
+      input: unknown,
+      capturedAt: Date,
+      hook: () => unknown
+    ) => unknown;
+    let started = false;
+    let thrown: unknown;
+
+    try {
+      unsafePublish(snapshot([item("THENABLE-HOOK")]), firstCapture, () => {
+        started = true;
+        return Promise.resolve("not-sync");
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(started).toBe(true);
+    expect(thrown).toMatchObject({
+      code: "synchronous_transaction_required",
+      target: "before_commit"
+    });
+    expect(count(database, "scan_runs")).toBe(0);
+    expect(repository.getListings()).toEqual([]);
   });
 
   it("rolls back the complete publish and completion-hook job and schedule writes when the hook throws", () => {
@@ -479,6 +704,34 @@ describe("PanzhiSnapshotPublisher", () => {
     for (const [table, orderBy] of Object.entries(tables)) {
       expect(tableRows(database, table, orderBy)).toEqual(before[table]);
     }
+  });
+
+  it("rethrows a typed Panzhi completion error unchanged after rollback", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    const completionError = new PanzhiAutomationRepositoryError(
+      "conflict",
+      "completion failed"
+    );
+    let thrown: unknown;
+
+    try {
+      publisher.publish(
+        snapshot([item("TYPED-HOOK-ERROR")]),
+        firstCapture,
+        () => {
+          throw completionError;
+        }
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(completionError);
+    expect(thrown).toMatchObject({ code: "conflict" });
+    expect(count(database, "scan_runs")).toBe(0);
+    expect(repository.getListings()).toEqual([]);
   });
 
   it("calls the completion hook before commit with the final response and finished scan state", () => {
