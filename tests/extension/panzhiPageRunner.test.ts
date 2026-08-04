@@ -219,6 +219,30 @@ describe("Panzhi visible-page selectors", () => {
     });
   });
 
+  it("fails closed when a multi-card role list conflicts with one outside card", () => {
+    const root = loadFixture();
+    root.body.innerHTML = `<main>
+      <div>
+        <a href="/goodsDetails/SA2VISIBLE1/6">
+          <h4>主商品 A</h4><span>¥ 2888</span>
+        </a>
+      </div>
+      <aside role="list">
+        <a href="/goodsDetails/SA2RECOMMENDED1/6">
+          <h4>推荐商品一</h4><span>¥ 2666</span>
+        </a>
+        <a href="/goodsDetails/SA2RECOMMENDED2/6">
+          <h4>推荐商品二</h4><span>¥ 2777</span>
+        </a>
+      </aside>
+    </main>`;
+
+    expect(extractVisibleCards(root)).toMatchObject({
+      kind: "failure",
+      code: "structural_drift"
+    });
+  });
+
   it("changes the result signature when a visible same-id price changes", () => {
     const root = loadFixture();
     const before = readResultState(root);

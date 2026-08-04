@@ -589,6 +589,16 @@ export function locateResultContainer(
     const weakIds = visibleCardAnchors(weak, visibility)
       .map((anchor) => cardIdentity(anchor)!)
       .filter((id, index, ids) => ids.indexOf(id) === index);
+    const weakIdSet = new Set(weakIds);
+    const hasDifferentOutsideCard = anchors.some((anchor) =>
+      !weak.contains(anchor) && !weakIdSet.has(cardIdentity(anchor)!)
+    );
+    if (hasDifferentOutsideCard) {
+      return failure(
+        "structural_drift",
+        "Panzhi role list conflicts with an outside listing card"
+      );
+    }
     const sameCards = weakIds.length === inferredIds.length &&
       weakIds.every((id, index) => id === inferredIds[index]);
     const sameBranch = weak === element ||
