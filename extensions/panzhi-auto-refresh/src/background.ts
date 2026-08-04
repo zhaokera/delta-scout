@@ -283,11 +283,37 @@ export function parsePageRunnerResult(value: unknown): PageRunnerResult {
 }
 
 export interface ContentCommandBridge {
+  contentScriptFile: string;
   sendMessage(tabId: number, message: unknown): Promise<unknown>;
   executeScript(injection: {
     target: { tabId: number };
-    files: ["content.js"];
+    files: [string];
   }): Promise<unknown>;
+}
+
+export function resolvePackagedContentScript(manifest: unknown): string {
+  if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error("Panzhi extension must declare exactly one packaged content script");
+  }
+  const entries = (manifest as { content_scripts?: unknown }).content_scripts;
+  if (!Array.isArray(entries)) {
+    throw new Error("Panzhi extension must declare exactly one packaged content script");
+  }
+  const files = entries.flatMap((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return [];
+    }
+    const scripts = (entry as { js?: unknown }).js;
+    return Array.isArray(scripts) ? scripts : [];
+  });
+  if (
+    files.length !== 1 ||
+    typeof files[0] !== "string" ||
+    !/^(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+\.js$/.test(files[0])
+  ) {
+    throw new Error("Panzhi extension must declare exactly one packaged content script");
+  }
+  return files[0];
 }
 
 const contentInjectionByTab = new Map<number, Promise<void>>();
@@ -306,7 +332,7 @@ async function injectContentOnce(
   if (existing) return existing;
   const injection = bridge.executeScript({
     target: { tabId },
-    files: ["content.js"]
+    files: [bridge.contentScriptFile]
   }).then(() => undefined).finally(() => {
     if (contentInjectionByTab.get(tabId) === injection) {
       contentInjectionByTab.delete(tabId);
@@ -872,10 +898,11 @@ interface ChromeLike {
   scripting: {
     executeScript(injection: {
       target: { tabId: number };
-      files: ["content.js"];
+      files: [string];
     }): Promise<unknown>;
   };
   runtime: {
+    getManifest(): unknown;
     onInstalled: { addListener(listener: () => void): void };
     onStartup: { addListener(listener: () => void): void };
     onMessage: {
@@ -931,6 +958,9 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
     }
   };
   const contentBridge: ContentCommandBridge = {
+    contentScriptFile: resolvePackagedContentScript(
+      browser.runtime.getManifest()
+    ),
     sendMessage: (tabId, message) => browser.tabs.sendMessage(tabId, message),
     executeScript: (injection) => browser.scripting.executeScript(injection)
   };

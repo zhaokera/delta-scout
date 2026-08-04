@@ -20,6 +20,7 @@ import {
   parseVerificationCheck,
   PanzhiContentProtocolError,
   PanzhiBackgroundController,
+  resolvePackagedContentScript,
   sendContentCommandWithInjection,
   type PanzhiBackgroundDependencies,
   type StoredPanzhiJob
@@ -355,12 +356,36 @@ describe("Panzhi MV3 worker lifecycle", () => {
     });
   });
 
+  it("resolves the packaged content script from either extension install root", () => {
+    expect(resolvePackagedContentScript({
+      content_scripts: [{ js: ["dist/content.js"] }]
+    })).toBe("dist/content.js");
+    expect(resolvePackagedContentScript({
+      content_scripts: [{ js: ["content.js"] }]
+    })).toBe("content.js");
+  });
+
+  it.each([
+    undefined,
+    {},
+    { content_scripts: [] },
+    { content_scripts: [{ js: [] }] },
+    { content_scripts: [{ js: ["content.js", "extra.js"] }] },
+    { content_scripts: [{ js: ["content.js"] }, { js: ["other.js"] }] },
+    { content_scripts: [{ js: [42] }] }
+  ])("rejects an unsafe or ambiguous packaged content script manifest", (manifest) => {
+    expect(() => resolvePackagedContentScript(manifest)).toThrow(
+      "exactly one packaged content script"
+    );
+  });
+
   it("shares one packaged content injection across overlapping commands", async () => {
     const injection = deferred<void>();
     const bridge = {
       sendMessage: vi.fn()
         .mockResolvedValueOnce({ kind: "clear" })
         .mockResolvedValueOnce({ kind: "clear" }),
+      contentScriptFile: "dist/content.js",
       executeScript: vi.fn().mockReturnValue(injection.promise)
     };
 
@@ -375,7 +400,7 @@ describe("Panzhi MV3 worker lifecycle", () => {
     ]);
     expect(bridge.executeScript).toHaveBeenCalledWith({
       target: { tabId: 7 },
-      files: ["content.js"]
+      files: ["dist/content.js"]
     });
     expect(bridge.sendMessage).toHaveBeenCalledTimes(2);
   });
@@ -385,6 +410,7 @@ describe("Panzhi MV3 worker lifecycle", () => {
     const bridge = {
       sendMessage: vi.fn().mockImplementation(async () =>
         currentInjected ? "current" : "stale"),
+      contentScriptFile: "content.js",
       executeScript: vi.fn().mockImplementation(async () => {
         currentInjected = true;
       })
