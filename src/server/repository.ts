@@ -114,6 +114,9 @@ export interface ScanMetadata {
   pagesScanned: number;
   stopReason: string | null;
   error?: string | null;
+  observedItemCount?: number;
+  coverage?: "full" | "incremental";
+  observedListingKeys?: string[];
 }
 
 export type ScanState = "success" | "partial" | "failed";
@@ -689,6 +692,7 @@ export class ListingRepository {
       WHERE source = ?
         AND state = 'success'
         AND published = 1
+        AND stop_reason <> 'quick_window'
         AND NOT EXISTS (
           SELECT 1
           FROM browser_refresh_jobs
@@ -752,6 +756,17 @@ export class ListingRepository {
           nextGuard: undefined,
           stopReason: "error",
           error: update.error
+        };
+      }
+      if (update.metadata.coverage === "incremental") {
+        return {
+          original: update,
+          state: update.state,
+          published: true,
+          anomalyState: pending ? "suspect" : "none",
+          nextGuard: undefined,
+          stopReason: update.metadata.stopReason ?? "quick_window",
+          error: update.metadata.error ?? null
         };
       }
       if (update.state === "partial") {
@@ -857,6 +872,17 @@ export class ListingRepository {
         )
         .map(({ original }) => original.source)
     );
+    const incrementalObservedKeys = new Map<SourceId, Set<string>>(
+      freshUpdates
+        .filter(
+          ({ original, published }) =>
+            published && original.metadata.coverage === "incremental"
+        )
+        .map(({ original }) => [
+          original.source,
+          new Set(original.metadata.observedListingKeys ?? [])
+        ])
+    );
     const incomingBySource = new Map<SourceId, Listing[]>();
     const oldBySource = new Map<SourceId, Listing[]>();
     for (const source of ["jiaoyimao", "panzhi", "pxb7"] as const) {
@@ -935,7 +961,44 @@ export class ListingRepository {
         score: scoreByKey.get(marked.key) ?? null
       };
     });
+    const oldListingByKey = new Map(
+      oldListings.map((listing) => [listing.key, listing] as const)
+    );
     const derivedListings = normalizedListings.map((listing) => {
+      const incrementalKeys = incrementalObservedKeys.get(listing.source);
+      if (incrementalKeys) {
+        const previous = oldListingByKey.get(listing.key);
+        if (!incrementalKeys.has(listing.key)) {
+          return previous
+            ? {
+                ...listing,
+                scanStability: previous.scanStability,
+                consecutiveUnchangedScans:
+                  previous.consecutiveUnchangedScans
+              }
+            : listing;
+        }
+        if (!previous) {
+          return {
+            ...listing,
+            scanStability: "new" as const,
+            consecutiveUnchangedScans: 1
+          };
+        }
+        if (listingMaterialHash(previous) !== listingMaterialHash(listing)) {
+          return {
+            ...listing,
+            scanStability: "changed" as const,
+            consecutiveUnchangedScans: 1
+          };
+        }
+        return {
+          ...listing,
+          scanStability: "stable" as const,
+          consecutiveUnchangedScans:
+            previous.consecutiveUnchangedScans + 1
+        };
+      }
       if (partialSources.has(listing.source)) {
         return {
           ...listing,
@@ -954,6 +1017,7 @@ export class ListingRepository {
           WHERE sr.source = ?
             AND sr.state = 'success'
             AND sr.published = 1
+            AND sr.stop_reason <> 'quick_window'
             AND sr.run_id < ?
           ORDER BY sr.run_id DESC
           LIMIT 1
@@ -1080,6 +1144,7 @@ export class ListingRepository {
         WHERE source = ?
           AND state = 'success'
           AND published = 1
+          AND stop_reason <> 'quick_window'
           AND run_id < ?
         ORDER BY run_id DESC
         LIMIT 1
@@ -1171,15 +1236,18 @@ export class ListingRepository {
           const sourceListings = derivedListings.filter(
             ({ source }) => source === update.source
           );
+          const incrementalKeys = incrementalObservedKeys.get(update.source);
           const observedListings = listings.filter(
-            ({ source }) => source === update.source
+            ({ source, key }) =>
+              source === update.source &&
+              (!incrementalKeys || incrementalKeys.has(key))
           );
           insertResult.run(
             runId,
             update.source,
             prepared.state,
             update.metadata.pagesScanned,
-            update.itemCount,
+            update.metadata.observedItemCount ?? update.itemCount,
             observedListings.filter(
               ({ eligibility }) => eligibility === "eligible"
             ).length,
@@ -1192,10 +1260,15 @@ export class ListingRepository {
           );
           if (prepared.published) {
             if (prepared.state === "success") {
+              const historyListings = incrementalKeys
+                ? sourceListings.filter(({ key }) =>
+                    incrementalKeys.has(key)
+                  )
+                : sourceListings;
               const currentKeys = new Set(
                 sourceListings.map(({ key }) => key)
               );
-              for (const listing of sourceListings) {
+              for (const listing of historyListings) {
                 const snapshot = buildListingHistorySnapshot(listing);
                 const previous = previousTrustedObservation.get(
                   listing.key,
@@ -1248,44 +1321,55 @@ export class ListingRepository {
                   1
                 );
               }
-              const previousRun = previousTrustedRun.get(
-                update.source,
-                runId
-              ) as { run_id: number } | undefined;
-              const previousRows = previousRun
-                ? (previousActiveObservations.all(
-                    previousRun.run_id,
-                    update.source
-                  ) as unknown as Array<{
-                    listing_key: string;
-                    eligibility: Eligibility;
-                    material_hash: string;
-                    snapshot_json: string;
-                  }>)
-                : [];
-              for (const previous of previousRows) {
-                if (currentKeys.has(previous.listing_key)) continue;
-                insertObservation.run(
-                  runId,
-                  previous.listing_key,
+              if (!incrementalKeys) {
+                const previousRun = previousTrustedRun.get(
                   update.source,
-                  timestamp,
-                  previous.eligibility,
-                  previous.material_hash,
-                  "changed",
-                  0,
-                  previous.snapshot_json,
-                  JSON.stringify([
-                    {
-                      field: "availability",
-                      label: "在售状态",
-                      before: "在售",
-                      after: "已下架"
-                    }
-                  ]),
-                  "removed",
-                  1
-                );
+                  runId
+                ) as { run_id: number } | undefined;
+                const previousRows = previousRun
+                  ? (previousActiveObservations.all(
+                      previousRun.run_id,
+                      update.source
+                    ) as unknown as Array<{
+                      listing_key: string;
+                      eligibility: Eligibility;
+                      material_hash: string;
+                      snapshot_json: string;
+                    }>)
+                  : (oldBySource.get(update.source) ?? []).map(
+                      (listing) => ({
+                        listing_key: listing.key,
+                        eligibility: listing.eligibility,
+                        material_hash: listingMaterialHash(listing),
+                        snapshot_json: JSON.stringify(
+                          buildListingHistorySnapshot(listing)
+                        )
+                      })
+                    );
+                for (const previous of previousRows) {
+                  if (currentKeys.has(previous.listing_key)) continue;
+                  insertObservation.run(
+                    runId,
+                    previous.listing_key,
+                    update.source,
+                    timestamp,
+                    previous.eligibility,
+                    previous.material_hash,
+                    "changed",
+                    0,
+                    previous.snapshot_json,
+                    JSON.stringify([
+                      {
+                        field: "availability",
+                        label: "在售状态",
+                        before: "在售",
+                        after: "已下架"
+                      }
+                    ]),
+                    "removed",
+                    1
+                  );
+                }
               }
             } else {
               for (const listing of sourceListings) {

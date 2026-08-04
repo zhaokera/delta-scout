@@ -99,6 +99,7 @@ export const PanzhiBrowserSnapshotItemSchema = z
 
 export const PanzhiBrowserSnapshotSchema = z
   .strictObject({
+    mode: z.enum(["quick", "deep"]).optional(),
     filterProof: z.strictObject({
       currentUrl: PanzhiCatalogUrlSchema,
       gameLabel: z.literal("三角洲行动"),
@@ -121,10 +122,50 @@ export const PanzhiBrowserSnapshotSchema = z
     }),
     loadActionCount: z.number().int().min(2).max(100),
     observedUniqueCount: z.number().int().min(1).max(500),
-    stopReason: z.enum(["no_growth_twice", "captcha_required"]),
+    stopReason: z.enum([
+      "quick_window",
+      "no_growth_twice",
+      "captcha_required"
+    ]),
     items: z.array(PanzhiBrowserSnapshotItemSchema).min(1).max(500)
   })
   .superRefine((snapshot, context) => {
+    const mode = snapshot.mode ?? "deep";
+    if (
+      mode === "quick" &&
+      snapshot.stopReason !== "quick_window" &&
+      snapshot.stopReason !== "captcha_required"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["stopReason"],
+        message: "Expected a quick-window or captcha stop for quick mode"
+      });
+    }
+    if (
+      mode === "deep" &&
+      snapshot.stopReason === "quick_window"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["stopReason"],
+        message: "Quick-window stop is only valid in quick mode"
+      });
+    }
+    if (mode === "quick" && snapshot.loadActionCount > 6) {
+      context.addIssue({
+        code: "custom",
+        path: ["loadActionCount"],
+        message: "Quick mode must stop after at most six load actions"
+      });
+    }
+    if (mode === "quick" && snapshot.items.length > 60) {
+      context.addIssue({
+        code: "custom",
+        path: ["items"],
+        message: "Quick mode accepts at most sixty visible cards"
+      });
+    }
     const ids = new Set<string>();
     const urls = new Set<string>();
     for (const [index, item] of snapshot.items.entries()) {
@@ -166,6 +207,30 @@ export const PanzhiBrowserSnapshotSchema = z
 export type PanzhiBrowserSnapshot = z.infer<
   typeof PanzhiBrowserSnapshotSchema
 >;
+
+export function mergePanzhiQuickListings(
+  existing: Listing[],
+  observed: Listing[],
+  observedSourceListingIds = observed.map(
+    ({ sourceListingId }) => sourceListingId
+  )
+): Listing[] {
+  const observedIds = new Set(observedSourceListingIds);
+  const merged = new Map(
+    existing
+      .filter(({ source, sourceListingId }) =>
+        source === "panzhi" && !observedIds.has(sourceListingId)
+      )
+      .map((listing) => [listing.key, listing])
+  );
+  for (const listing of observed) {
+    if (listing.source !== "panzhi") continue;
+    merged.set(listing.key, listing);
+  }
+  return [...merged.values()].sort((left, right) =>
+    left.key.localeCompare(right.key)
+  );
+}
 
 function detailFromVisibleCard(rawText: string): ListingDetail {
   const hasQq = /(?:^|\s)QQ(?:\s|可|不|$)/i.test(rawText);

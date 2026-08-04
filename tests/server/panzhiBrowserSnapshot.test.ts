@@ -3,9 +3,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPanzhiBrowserListings,
+  mergePanzhiQuickListings,
   PanzhiBrowserSnapshotSchema,
   type PanzhiBrowserSnapshot
 } from "../../src/server/panzhiBrowserSnapshot.js";
+import { makeListing } from "../domain/listingFactory.js";
 
 const observedAt = "2026-08-01T08:00:00.000Z";
 
@@ -99,6 +101,53 @@ describe("Panzhi browser native-filter snapshot", () => {
     expect(PanzhiBrowserSnapshotSchema.parse(snapshot({
       stopReason: "captcha_required"
     })).stopReason).toBe("captcha_required");
+  });
+
+  it("accepts a bounded quick window and rejects an unbounded quick scan", () => {
+    expect(PanzhiBrowserSnapshotSchema.parse(snapshot({
+      mode: "quick",
+      loadActionCount: 3,
+      stopReason: "quick_window"
+    })).mode).toBe("quick");
+
+    expect(() => PanzhiBrowserSnapshotSchema.parse(snapshot({
+      mode: "quick",
+      loadActionCount: 7,
+      stopReason: "quick_window"
+    }))).toThrow();
+    expect(() => PanzhiBrowserSnapshotSchema.parse(snapshot({
+      mode: "quick",
+      stopReason: "no_growth_twice"
+    }))).toThrow();
+  });
+
+  it("merges a quick window over the previous complete snapshot", () => {
+    const oldListing = makeListing({
+      key: "panzhi:old",
+      source: "panzhi",
+      sourceListingId: "old"
+    });
+    const staleObserved = makeListing({
+      key: "panzhi:observed",
+      source: "panzhi",
+      sourceListingId: "observed",
+      priceCny: 3900
+    });
+    const refreshedObserved = {
+      ...staleObserved,
+      priceCny: 2500
+    };
+    const nowOutOfRange = makeListing({
+      key: "panzhi:out-of-range",
+      source: "panzhi",
+      sourceListingId: "out-of-range"
+    });
+
+    expect(mergePanzhiQuickListings(
+      [oldListing, staleObserved, nowOutOfRange],
+      [refreshedObserved],
+      ["observed", "out-of-range"]
+    )).toEqual([refreshedObserved, oldListing]);
   });
 
   it("normalizes Panzhi's qualified M7 shorthand without weakening the shared parser", () => {
