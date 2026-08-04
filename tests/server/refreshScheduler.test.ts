@@ -75,6 +75,8 @@ function schedulerFixture() {
     automationRepository,
     automation,
     admission,
+    coordinator,
+    tracker,
     scheduler,
     setNow: (next: Date) => {
       current = new Date(next);
@@ -357,7 +359,7 @@ describe("RefreshScheduleRepository", () => {
     )!;
     fixture.database.prepare(`
       UPDATE refresh_schedule
-      SET last_state = 'failed', last_mode = 'quick',
+      SET last_state = 'attention_required', last_mode = 'quick',
           last_error = 'scheduler_restarted', attention_required = 1
       WHERE source = 'panzhi'
     `).run();
@@ -378,6 +380,63 @@ describe("RefreshScheduleRepository", () => {
       });
     expect(restarted.nextDue(new Date("2026-08-03T00:00:00.000Z")))
       .not.toEqual(expect.objectContaining({ source: "panzhi" }));
+  });
+
+  it("migrates a legacy Panzhi attention row to an automatic due tick", async () => {
+    const fixture = schedulerFixture();
+    const startupAt = new Date("2026-08-02T00:05:00.000Z");
+    const legacyNextDeepAt = fixture.schedule.list().find(
+      ({ source }) => source === "panzhi"
+    )!.nextDeepAt;
+    fixture.database.prepare(`
+      UPDATE refresh_schedule
+      SET last_state = 'attention_required', attention_required = 1,
+          last_error = 'browser_snapshot_required',
+          next_quick_at = '2026-08-02T02:00:00.000Z'
+      WHERE source = 'panzhi'
+    `).run();
+    fixture.setNow(startupAt);
+
+    const restarted = new RefreshScheduleRepository(
+      fixture.database,
+      startupAt
+    );
+
+    expect(fixture.automationRepository.getCurrentJob()).toBeNull();
+    expect(restarted.list().find(({ source }) => source === "panzhi"))
+      .toMatchObject({
+        lastState: "idle",
+        attentionRequired: false,
+        lastError: null,
+        nextQuickAt: startupAt.toISOString(),
+        nextDeepAt: legacyNextDeepAt
+      });
+
+    const scheduler = new RefreshScheduler(
+      restarted,
+      fixture.listings,
+      fixture.coordinator,
+      fixture.tracker,
+      fixture.admission,
+      fixture.automation,
+      {
+        now: () => startupAt,
+        random: () => 0.5
+      }
+    );
+    await scheduler.tick();
+
+    expect(fixture.automationRepository.getCurrentJob()).toMatchObject({
+      mode: "deep",
+      state: "queued"
+    });
+    expect(restarted.list().find(({ source }) => source === "panzhi"))
+      .toMatchObject({
+        lastState: "running",
+        attentionRequired: false,
+        nextQuickAt: startupAt.toISOString(),
+        nextDeepAt: legacyNextDeepAt
+      });
   });
 
   it("advances only the successful automation mode cadence", () => {

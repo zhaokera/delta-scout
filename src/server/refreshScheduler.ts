@@ -146,6 +146,24 @@ export class RefreshScheduleRepository {
       now.toISOString(),
       addMinutes(now, 5).toISOString()
     );
+    const startupAt = now.toISOString();
+    database.prepare(`
+      UPDATE refresh_schedule
+      SET last_state = 'idle',
+          attention_required = 0,
+          last_error = NULL,
+          next_quick_at = CASE
+            WHEN next_quick_at > ? THEN ?
+            ELSE next_quick_at
+          END
+      WHERE source = 'panzhi'
+        AND last_state = 'attention_required'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM panzhi_browser_jobs
+          WHERE state NOT IN ('success', 'failed', 'cancelled')
+        )
+    `).run(startupAt, startupAt);
     database.prepare(`
       UPDATE refresh_schedule
       SET last_started_at = COALESCE(
