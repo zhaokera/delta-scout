@@ -6,7 +6,8 @@ import {
   type PanzhiFilterProof,
   type PanzhiPageMode,
   type PanzhiPageStage,
-  type PanzhiSnapshotItem
+  type PanzhiSnapshotItem,
+  type VerificationBlocker
 } from "./contracts.js";
 import {
   detectVerificationBlocker,
@@ -58,36 +59,54 @@ function setNativeInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function observeUntil(
+type SettlementOutcome =
+  | { kind: "settled" }
+  | { kind: "blocked"; blocker: VerificationBlocker }
+  | { kind: "timeout" };
+
+function settlementState(
+  root: Document,
+  predicate: () => boolean
+): SettlementOutcome | { kind: "pending" } {
+  const blocker = detectVerificationBlocker(root);
+  if (blocker.kind === "blocked") return blocker;
+  return predicate() ? { kind: "settled" } : { kind: "pending" };
+}
+
+function observeUntilSettledOrBlocked(
   root: Document,
   predicate: () => boolean,
   timeoutMs: number
-): Promise<boolean> {
-  if (predicate()) return Promise.resolve(true);
+): Promise<SettlementOutcome> {
+  const immediate = settlementState(root, predicate);
+  if (immediate.kind !== "pending") return Promise.resolve(immediate);
   const MutationObserverConstructor = root.defaultView?.MutationObserver;
-  if (!MutationObserverConstructor) return Promise.resolve(false);
+  if (!MutationObserverConstructor) return Promise.resolve({ kind: "timeout" });
 
   return new Promise((resolve) => {
     let finished = false;
-    const finish = (value: boolean): void => {
+    let timeout: number | undefined;
+    let observer: MutationObserver | null = null;
+    const finish = (value: SettlementOutcome): void => {
       if (finished) return;
       finished = true;
-      observer.disconnect();
-      root.defaultView?.clearTimeout(timeout);
+      observer?.disconnect();
+      if (timeout !== undefined) root.defaultView?.clearTimeout(timeout);
       resolve(value);
     };
-    const observer = new MutationObserverConstructor(() => {
-      if (predicate()) finish(true);
+    observer = new MutationObserverConstructor(() => {
+      const current = settlementState(root, predicate);
+      if (current.kind !== "pending") finish(current);
     });
     observer.observe(root.documentElement, {
       attributes: true,
       childList: true,
       subtree: true
     });
-    const timeout = root.defaultView?.setTimeout(
-      () => finish(predicate()),
-      timeoutMs
-    );
+    timeout = root.defaultView?.setTimeout(() => {
+      const current = settlementState(root, predicate);
+      finish(current.kind === "pending" ? { kind: "timeout" } : current);
+    }, timeoutMs);
   });
 }
 
@@ -125,11 +144,17 @@ export class PanzhiPageRunner {
   private async blockedResult(): Promise<PageRunnerResult | null> {
     const detection = detectVerificationBlocker(this.dependencies.document);
     if (detection.kind === "clear") return null;
+    return this.verificationResult(detection.blocker);
+  }
+
+  private async verificationResult(
+    blocker: VerificationBlocker
+  ): Promise<PageRunnerResult> {
     await this.stage("awaiting_user_verification");
     return {
       kind: "awaiting_user_verification",
       stage: "awaiting_user_verification",
-      blocker: detection.blocker,
+      blocker,
       resumeStage: "applying_filters"
     };
   }
@@ -153,7 +178,7 @@ export class PanzhiPageRunner {
     const input = controls[which];
     if (input.value === value) return null;
     setNativeInputValue(input, value);
-    const changed = await observeUntil(
+    const outcome = await observeUntilSettledOrBlocked(
       this.dependencies.document,
       () => {
         const latest = locateRequiredControls(this.dependencies.document);
@@ -161,7 +186,10 @@ export class PanzhiPageRunner {
       },
       this.dependencies.mutationTimeoutMs
     );
-    if (!changed) {
+    if (outcome.kind === "blocked") {
+      return this.verificationResult(outcome.blocker);
+    }
+    if (outcome.kind === "timeout") {
       return {
         kind: "failure",
         stage: "applying_filters",
@@ -184,7 +212,7 @@ export class PanzhiPageRunner {
     if (current) return null;
 
     control.click();
-    const changed = await observeUntil(
+    const outcome = await observeUntilSettledOrBlocked(
       this.dependencies.document,
       () => {
         const latest = resolve();
@@ -192,7 +220,10 @@ export class PanzhiPageRunner {
       },
       this.dependencies.mutationTimeoutMs
     );
-    if (!changed) {
+    if (outcome.kind === "blocked") {
+      return this.verificationResult(outcome.blocker);
+    }
+    if (outcome.kind === "timeout") {
       return {
         kind: "failure",
         stage: "applying_filters",
@@ -328,6 +359,16 @@ export class PanzhiPageRunner {
         finalVerification,
         loadActionCount
       );
+    }
+
+    if (this.dependencies.currentUrl() !== PANZHI_CATALOG_URL) {
+      return {
+        kind: "failure",
+        stage: "collecting",
+        code: "structural_drift",
+        message: "Panzhi catalog URL drifted during collection",
+        loadActionCount
+      };
     }
 
     if (mode === "deep" && noGrowthCount < 2) {

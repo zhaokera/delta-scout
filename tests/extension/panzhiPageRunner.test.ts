@@ -248,6 +248,43 @@ describe("Panzhi visible-page selectors", () => {
       blocker: "login"
     });
   });
+
+  it("ignores CSS-hidden blockers and cards but rejects CSS-hidden controls", () => {
+    const root = loadFixture();
+    root.head.insertAdjacentHTML(
+      "beforeend",
+      "<style>.fixture-hidden { display: none; }</style>"
+    );
+    root.querySelector("main")?.insertAdjacentHTML(
+      "afterbegin",
+      `<section class="fixture-hidden" role="dialog">
+        <h2>请完成安全验证</h2>
+        <p>请输入验证码</p>
+      </section>`
+    );
+    root.querySelector("[aria-label='商品列表']")?.insertAdjacentHTML(
+      "beforeend",
+      `<a class="fixture-hidden" href="/goodsDetails/SA2CSSHIDDEN/6">
+        <h4>CSS 隐藏商品</h4><span>¥ 3000</span>
+      </a>`
+    );
+
+    expect(detectVerificationBlocker(root)).toEqual({ kind: "clear" });
+    const extracted = extractVisibleCards(root);
+    expect(extracted.kind).toBe("cards");
+    if (extracted.kind !== "cards") return;
+    expect(extracted.items.map(({ sourceListingId }) => sourceListingId))
+      .toEqual(["SA2VISIBLE1", "SA2VISIBLE2"]);
+
+    const qq = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.trim() === "QQ"
+    );
+    qq?.classList.add("fixture-hidden");
+    expect(locateRequiredControls(root)).toMatchObject({
+      kind: "failure",
+      code: "missing_controls"
+    });
+  });
 });
 
 describe("Panzhi page collection runner", () => {
@@ -346,6 +383,105 @@ describe("Panzhi page collection runner", () => {
     const resumed = await runner.run("quick");
     expect(stages[0]).toBe("applying_filters");
     expect(resumed.kind).toBe("snapshot");
+  });
+
+  it("prioritizes a blocker that appears while a filter click is settling", async () => {
+    const root = loadFixture();
+    const qq = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.trim() === "QQ"
+    );
+    expect(qq).toBeDefined();
+    for (const button of root.querySelectorAll<HTMLButtonElement>("button")) {
+      if (button === qq) continue;
+      button.addEventListener("click", () => {
+        button.setAttribute("aria-pressed", "true");
+      });
+    }
+    qq?.addEventListener("click", () => {
+      queueMicrotask(() => {
+        root.body.insertAdjacentHTML(
+          "afterbegin",
+          `<section role="dialog" aria-label="安全验证">
+            <h2>拖动滑块完成验证</h2>
+            <div role="slider" aria-label="滑动验证"></div>
+          </section>`
+        );
+      });
+    });
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result).toMatchObject({
+      kind: "awaiting_user_verification",
+      blocker: "slider",
+      resumeStage: "applying_filters"
+    });
+    expect(result).not.toHaveProperty("snapshot");
+
+    const priceRoot = loadFixture();
+    installFilterBehavior(priceRoot);
+    priceRoot.querySelector<HTMLInputElement>(
+      'input[placeholder="最低值"]'
+    )?.addEventListener("input", () => {
+      queueMicrotask(() => {
+        priceRoot.body.insertAdjacentHTML(
+          "afterbegin",
+          `<section role="dialog"><h2>登录后继续</h2>
+            <label>密码<input type="password" /></label></section>`
+        );
+      });
+    });
+    const priceBlocked = await new PanzhiPageRunner(
+      dependencies(priceRoot)
+    ).run("quick");
+    expect(priceBlocked).toMatchObject({
+      kind: "awaiting_user_verification",
+      blocker: "login",
+      resumeStage: "applying_filters"
+    });
+  });
+
+  it("fails closed at the deep five-hundred-card cap", async () => {
+    const root = loadFixture();
+    installFilterBehavior(root);
+    let loads = 0;
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      loadMore: async () => {
+        loads += 1;
+        for (let index = 0; index < 498; index += 1) {
+          appendCard(root, `SA2CAP${String(index).padStart(3, "0")}`);
+        }
+      }
+    })).run("deep");
+
+    expect(loads).toBe(1);
+    expect(result).toMatchObject({
+      kind: "failure",
+      code: "collection_limit",
+      loadActionCount: 2
+    });
+    expect(result).not.toHaveProperty("snapshot");
+  });
+
+  it("rejects a catalog URL that drifts during collection", async () => {
+    const root = loadFixture();
+    installFilterBehavior(root);
+    let drifted = false;
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      currentUrl: () => drifted
+        ? "https://www.pzds.com/goodsList/391/6?unexpected=1"
+        : "https://www.pzds.com/goodsList/391/6",
+      loadMore: async () => {
+        drifted = true;
+      }
+    })).run("quick");
+
+    expect(result).toMatchObject({
+      kind: "failure",
+      code: "structural_drift",
+      stage: "collecting"
+    });
+    expect(result).not.toHaveProperty("snapshot");
   });
 
   it("returns typed failures for a missing page contract and malformed cards", async () => {

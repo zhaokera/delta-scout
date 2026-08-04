@@ -74,6 +74,15 @@ export function isElementVisible(element: Element): boolean {
     if (current instanceof HTMLElement) {
       if (current.style.display === "none") return false;
       if (current.style.visibility === "hidden") return false;
+      const computedStyle = current.ownerDocument.defaultView
+        ?.getComputedStyle(current);
+      if (computedStyle?.display === "none") return false;
+      if (
+        computedStyle?.visibility === "hidden" ||
+        computedStyle?.visibility === "collapse"
+      ) {
+        return false;
+      }
     }
     current = current.parentElement;
   }
@@ -82,8 +91,8 @@ export function isElementVisible(element: Element): boolean {
 
 function exactTextElements(root: ParentNode, label: string): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>("*")].filter((element) => {
-    if (!isElementVisible(element)) return false;
     if (normalizeVisibleText(element.textContent) !== label) return false;
+    if (!isElementVisible(element)) return false;
     return ![...element.children].some(
       (child) =>
         isElementVisible(child) &&
@@ -351,10 +360,17 @@ export function verifyRequiredFilters(
 }
 
 function visibleTextContains(root: Document, pattern: RegExp): boolean {
-  return [...root.querySelectorAll<HTMLElement>("body *")].some(
-    (element) =>
-      isElementVisible(element) && pattern.test(normalizeVisibleText(element.textContent))
-  );
+  return [...root.querySelectorAll<HTMLElement>("body *")].some((element) => {
+    if (!pattern.test(normalizeVisibleText(element.textContent))) return false;
+    if (
+      [...element.children].some((child) =>
+        pattern.test(normalizeVisibleText(child.textContent))
+      )
+    ) {
+      return false;
+    }
+    return isElementVisible(element);
+  });
 }
 
 export function detectVerificationBlocker(
