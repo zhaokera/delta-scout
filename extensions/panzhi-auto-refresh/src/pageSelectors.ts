@@ -638,6 +638,40 @@ function strictEmptyResultContainer(root: Document): HTMLElement | null {
   return branch;
 }
 
+function emptyFingerprintDiagnostic(root: Document): string {
+  const visibility = new WeakMap<Element, boolean>();
+  const counts = (scope: ParentNode, selector: string): string => {
+    const elements = [...scope.querySelectorAll<HTMLElement>(selector)];
+    const visible = elements.filter((element) =>
+      isElementVisible(element, visibility)
+    ).length;
+    return `${elements.length}/${visible}`;
+  };
+  const goods = [...root.querySelectorAll<HTMLElement>(
+    ".goods-list-with-game"
+  )];
+  const visibleGoods = goods.filter((element) =>
+    isElementVisible(element, visibility)
+  );
+  const branch = visibleGoods.length === 1 ? visibleGoods[0] : null;
+  const virtuals = branch
+    ? [...branch.querySelectorAll<HTMLElement>(".virtual-list")]
+    : [];
+  const virtual = virtuals.length === 1 ? virtuals[0] : null;
+  return [
+    `goods=${counts(root, ".goods-list-with-game")}`,
+    `virtual=${branch ? counts(branch, ".virtual-list") : "0/0"}`,
+    `phantom=${virtual ? counts(virtual, ".virtual-list-phantom") : "0/0"}`,
+    `container=${virtual ? counts(virtual, ".virtual-list-container") : "0/0"}`,
+    `emptyVirtual=${virtual ? counts(virtual, ".empty") : "0/0"}`,
+    `emptyBranch=${branch ? counts(branch, ".empty") : "0/0"}`,
+    `cardsBranch=${branch
+      ? branch.querySelectorAll('a[href*="/goodsDetails/"]').length
+      : 0}`,
+    `loadingBranch=${branch ? resultLoadingVisible(branch) : false}`
+  ].join(",");
+}
+
 function smallestUniqueContainer(
   candidates: Set<HTMLElement>
 ): HTMLElement | null {
@@ -757,6 +791,7 @@ function missingResultDiagnostic(
     `actionHints=${actionHints.join("|") || "none"}`,
     `statusHints=${statusHints.join("|") || "none"}`,
     `classHints=${classHints.join("|") || "none"}`,
+    `emptyFingerprint=${emptyFingerprintDiagnostic(root)}`,
     `samplePaths=${samplePaths.join("|") || "none"}`
   ].join("; ");
 }

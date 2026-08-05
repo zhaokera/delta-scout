@@ -483,6 +483,11 @@ describe("Panzhi visible-page selectors", () => {
       "classHints=goods-list|loading-state|goods-list-action"
     );
     expect(result.message).toContain(
+      "emptyFingerprint=goods=0/0,virtual=0/0,phantom=0/0," +
+      "container=0/0,emptyVirtual=0/0,emptyBranch=0/0," +
+      "cardsBranch=0,loadingBranch=false"
+    );
+    expect(result.message).toContain(
       "samplePaths=/goodsDetails/SA2ONLYONE/6|/goods-details/SA2CHANGED/6"
     );
     expect(result.message).not.toContain("do-not-report");
