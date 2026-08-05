@@ -167,6 +167,32 @@ describe("Panzhi visible-page selectors", () => {
     expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
   });
 
+  it("waits for the SPA result container after the filter controls render", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installLiveFilterBehavior(root);
+    const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
+    expect(list).not.toBeNull();
+    const listMarkup = list!.outerHTML;
+    list!.remove();
+    let readinessDelayCount = 0;
+
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      sleep: async (milliseconds) => {
+        if (milliseconds !== 250) return;
+        readinessDelayCount += 1;
+        if (readinessDelayCount === 1) {
+          root.querySelector("main")?.insertAdjacentHTML(
+            "beforeend",
+            listMarkup
+          );
+        }
+      }
+    })).run("quick");
+
+    expect(readinessDelayCount).toBe(1);
+    expect(result.kind).toBe("snapshot");
+  });
+
   it("locates, applies, and strictly verifies the approved native filters", async () => {
     const root = loadFixture();
     installFilterBehavior(root);

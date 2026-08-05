@@ -28,6 +28,8 @@ const DEEP_MAX_LOAD_ACTIONS = 100;
 const DEEP_MAX_CARDS = 500;
 const HUMAN_DELAY_MIN_MS = 350;
 const HUMAN_DELAY_MAX_MS = 850;
+const PAGE_READY_POLL_MS = 250;
+const PAGE_READY_MAX_ATTEMPTS = 60;
 
 class RunnerFailure extends Error {
   constructor(
@@ -215,6 +217,8 @@ export class PanzhiPageRunner {
     await this.stage("applying_filters");
     const blockedBeforeFilters = await this.blockedResult();
     if (blockedBeforeFilters) return blockedBeforeFilters;
+    const ready = await this.waitForPageContract();
+    if (ready) return ready;
 
     const applied = await this.applyRequiredFilters();
     if (applied) return applied;
@@ -262,6 +266,40 @@ export class PanzhiPageRunner {
     await this.dependencies.sleep(
       HUMAN_DELAY_MIN_MS +
         Math.round((HUMAN_DELAY_MAX_MS - HUMAN_DELAY_MIN_MS) * random)
+    );
+  }
+
+  private async waitForPageContract(): Promise<PageRunnerResult | null> {
+    let lastFailure: SelectorFailure | null = null;
+    for (let attempt = 0; attempt < PAGE_READY_MAX_ATTEMPTS; attempt += 1) {
+      const blocked = await this.blockedResult();
+      if (blocked) return blocked;
+      const controls = locateRequiredControls(this.dependencies.document);
+      const results = readResultState(this.dependencies.document);
+      if (controls.kind === "found" && results.kind === "result-state") {
+        return null;
+      }
+      const failures = [controls, results].filter(
+        (value): value is SelectorFailure => value.kind === "failure"
+      );
+      const structural = failures.find(
+        ({ code }) => code === "structural_drift"
+      );
+      if (structural) {
+        return selectorFailureResult("applying_filters", structural);
+      }
+      lastFailure = failures[0] ?? lastFailure;
+      if (attempt < PAGE_READY_MAX_ATTEMPTS - 1) {
+        await this.dependencies.sleep(PAGE_READY_POLL_MS);
+      }
+    }
+    return selectorFailureResult(
+      "applying_filters",
+      lastFailure ?? {
+        kind: "failure",
+        code: "missing_controls",
+        message: "Panzhi page contract did not become ready"
+      }
     );
   }
 
