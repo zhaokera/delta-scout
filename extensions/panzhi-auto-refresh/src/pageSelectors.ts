@@ -609,6 +609,42 @@ function smallestUniqueContainer(
   return smallest.length === 1 ? smallest[0] : null;
 }
 
+function missingResultDiagnostic(
+  root: Document,
+  visibleCanonicalLinks: number,
+  explicitCandidates: number
+): string {
+  const allLinks = [...root.querySelectorAll<HTMLAnchorElement>("a[href]")];
+  const goodsDetailLinks = allLinks.filter((anchor) =>
+    anchor.getAttribute("href")?.includes("/goodsDetails/")
+  );
+  const canonicalLinks = goodsDetailLinks.filter(
+    (anchor) => cardIdentity(anchor) !== null
+  );
+  const samplePaths = allLinks
+    .map((anchor) => {
+      const href = anchor.getAttribute("href");
+      if (!href) return null;
+      try {
+        const pathname = new URL(href, "https://www.pzds.com").pathname;
+        return /goods.*detail/i.test(pathname) ? pathname : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((pathname): pathname is string => pathname !== null)
+    .filter((pathname, index, paths) => paths.indexOf(pathname) === index)
+    .slice(0, 5);
+  return [
+    `allLinks=${allLinks.length}`,
+    `goodsDetailLinks=${goodsDetailLinks.length}`,
+    `canonicalLinks=${canonicalLinks.length}`,
+    `visibleCanonicalLinks=${visibleCanonicalLinks}`,
+    `explicitCandidates=${explicitCandidates}`,
+    `samplePaths=${samplePaths.join("|") || "none"}`
+  ].join("; ");
+}
+
 export function locateResultContainer(
   root: Document
 ): ResultContainer | SelectorFailure {
@@ -632,7 +668,14 @@ export function locateResultContainer(
 
   const anchors = visibleCardAnchors(root, visibility);
   if (anchors.length < 2) {
-    return failure("missing_controls", "Missing unique Panzhi result container");
+    return failure(
+      "missing_controls",
+      `Missing unique Panzhi result container; ${missingResultDiagnostic(
+        root,
+        anchors.length,
+        explicit.size
+      )}`
+    );
   }
   const inferred = new Set<HTMLElement>();
   for (const anchor of anchors) {

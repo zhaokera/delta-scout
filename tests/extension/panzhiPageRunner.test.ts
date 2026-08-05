@@ -364,6 +364,32 @@ describe("Panzhi visible-page selectors", () => {
     expect(after.signature).not.toBe(before.signature);
   });
 
+  it("reports bounded result-link diagnostics without query data", () => {
+    const root = loadFixture();
+    root.body.innerHTML = `<main><section>
+        <a href="/goodsDetails/SA2ONLYONE/6?token=do-not-report">商品一</a>
+        <a href="/goods-details/SA2CHANGED/6?signature=do-not-report">商品二</a>
+        <a href="/help?session=do-not-report">帮助</a>
+      </section></main>`;
+
+    const result = readResultState(root);
+
+    expect(result).toMatchObject({
+      kind: "failure",
+      code: "missing_controls"
+    });
+    if (result.kind !== "failure") return;
+    expect(result.message).toContain("allLinks=3");
+    expect(result.message).toContain("goodsDetailLinks=1");
+    expect(result.message).toContain("canonicalLinks=1");
+    expect(result.message).toContain("visibleCanonicalLinks=1");
+    expect(result.message).toContain("explicitCandidates=0");
+    expect(result.message).toContain(
+      "samplePaths=/goodsDetails/SA2ONLYONE/6|/goods-details/SA2CHANGED/6"
+    );
+    expect(result.message).not.toContain("do-not-report");
+  });
+
   it("does not borrow selected state from an unrelated sibling input", () => {
     const root = loadFixture();
     const wrapper = root.createElement("div");
