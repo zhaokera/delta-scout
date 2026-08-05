@@ -441,6 +441,7 @@ export class PanzhiBackgroundController {
   private heartbeatInFlight: Promise<void> | null = null;
   private active: ActiveJob | null = null;
   private pendingSnapshot: PendingSnapshot | null = null;
+  private tabResetJobId: string | null = null;
   private consecutiveFailures = 0;
   private nextAttemptAt = 0;
 
@@ -473,7 +474,9 @@ export class PanzhiBackgroundController {
             this.active?.stored.jobId === identity.jobId &&
             this.active.stored.bearerToken === identity.bearerToken
           ) {
+            const tabId = identity.tabId;
             await this.clearActive();
+            await this.resetTabAfterLeaseLoss(tabId);
           }
         }
       })
@@ -633,6 +636,9 @@ export class PanzhiBackgroundController {
         try {
           const resumed = await this.dependencies.api.resumeJob(stored);
           this.active = { stored, job: resumed.job };
+          this.tabResetJobId = resumed.job.state === "awaiting_user_verification"
+            ? null
+            : resumed.job.id;
           return this.active;
         } catch (error) {
           if (!isLeaseRejection(error) && !isTerminalConflict(error)) throw error;
@@ -652,7 +658,24 @@ export class PanzhiBackgroundController {
     };
     await this.dependencies.storage.write(stored);
     this.active = { stored, job: claimed.job };
+    this.tabResetJobId = claimed.job.id;
     return this.active;
+  }
+
+  private async resetTabAfterLeaseLoss(tabId: number): Promise<void> {
+    try {
+      const reset = await this.dependencies.tabs.update(tabId, {
+        url: PANZHI_CATALOG_URL,
+        active: false
+      });
+      if (!reset) {
+        this.dependencies.reportError(
+          new Error("Panzhi tab could not be reset after lease loss")
+        );
+      }
+    } catch (error) {
+      this.dependencies.reportError(error);
+    }
   }
 
   private async ensureValidTab(): Promise<void> {
@@ -674,11 +697,20 @@ export class PanzhiBackgroundController {
       this.active.stored = { ...this.active.stored, tabId: replacement.id };
       await this.dependencies.storage.write(this.active.stored);
     }
-    if (selected.url !== PANZHI_CATALOG_URL) {
-      selected = await this.dependencies.tabs.update(this.active.stored.tabId, {
-        url: PANZHI_CATALOG_URL,
-        active: false
-      });
+    const resetRequested = this.tabResetJobId === this.active.stored.jobId;
+    if (selected.url !== PANZHI_CATALOG_URL || resetRequested) {
+      const updated = await this.dependencies.tabs.update(
+        this.active.stored.tabId,
+        {
+          url: PANZHI_CATALOG_URL,
+          active: false
+        }
+      );
+      if (!updated) {
+        throw new Error("Panzhi catalog tab could not be reset");
+      }
+      selected = updated;
+      if (resetRequested) this.tabResetJobId = null;
     }
     await this.waitForReadyTab(this.active.stored.tabId, selected);
   }
@@ -844,6 +876,7 @@ export class PanzhiBackgroundController {
   private async clearActive(): Promise<void> {
     this.active = null;
     this.pendingSnapshot = null;
+    this.tabResetJobId = null;
     await this.dependencies.storage.clear();
   }
 }

@@ -544,6 +544,44 @@ describe("Panzhi MV3 worker lifecycle", () => {
     expect(f.api.claimJob).not.toHaveBeenCalled();
   });
 
+  it("reloads the reused canonical tab before newly claimed page work", async () => {
+    const runner = deferred<PageRunnerResult>();
+    const f = makeFixture({ runnerResult: runner.promise });
+    const pending = f.controller.tick();
+
+    await vi.waitFor(() => expect(f.dependencies.runPage).toHaveBeenCalled());
+    expect(f.tabs.update).toHaveBeenCalledWith(7, {
+      url: canonicalUrl,
+      active: false
+    });
+
+    runner.resolve(snapshotResult());
+    await pending;
+  });
+
+  it("reloads the owned tab when an overlapping heartbeat loses its lease", async () => {
+    const runner = deferred<PageRunnerResult>();
+    const f = makeFixture({ runnerResult: runner.promise });
+    const pending = f.controller.tick();
+    await vi.waitFor(() => expect(f.dependencies.runPage).toHaveBeenCalled());
+    vi.mocked(f.api.heartbeatJob).mockRejectedValueOnce(
+      new PanzhiAutomationApiError(401, "expired", "expired")
+    );
+    vi.mocked(f.tabs.update).mockImplementationOnce(async (tabId, properties) => {
+      runner.reject(new Error("page context reloaded"));
+      return { id: tabId, url: properties.url, lastAccessed: 100 };
+    });
+
+    f.controller.tick();
+
+    await vi.waitFor(() => expect(f.tabs.update).toHaveBeenCalledWith(7, {
+      url: canonicalUrl,
+      active: false
+    }));
+    await expect(pending).resolves.toBeUndefined();
+    expect(f.getStored()).toBeNull();
+  });
+
   it.each([401, 404])(
     "clears a rejected persisted lease on %s and reclaims immediately",
     async (status) => {
