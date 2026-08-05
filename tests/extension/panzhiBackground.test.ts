@@ -148,7 +148,7 @@ function makeFixture(options: {
       options.stored?.mode
     );
   const writes: StoredPanzhiJob[] = [];
-  const api: PanzhiAutomationApiPort = {
+  const api = {
     recordExtensionHeartbeat: vi.fn().mockResolvedValue(undefined),
     claimJob: vi.fn().mockImplementation(async () => {
       const result = options.claimResult === undefined ? claim() : options.claimResult;
@@ -166,6 +166,7 @@ function makeFixture(options: {
         : job(active.jobId, "opening_page", active.mode),
       leaseExpiresAt: "2026-08-04T08:02:00.000Z"
     })),
+    delayJob: vi.fn().mockResolvedValue(undefined),
     updateJobState: vi.fn().mockImplementation(async (_active, update) => {
       currentJob = job(
         _active.jobId,
@@ -180,6 +181,11 @@ function makeFixture(options: {
       };
     }),
     submitSnapshot: vi.fn().mockResolvedValue({ deduplicated: false })
+  } satisfies PanzhiAutomationApiPort & {
+    delayJob(
+      active: StoredPanzhiJob,
+      milliseconds: number
+    ): Promise<void>;
   };
   const existingTabs = options.existingTabs ?? [{
     id: 7,
@@ -290,6 +296,32 @@ describe("Panzhi MV3 worker lifecycle", () => {
     );
     await expect(protocolApi.claimJob()).rejects.toBeInstanceOf(
       PanzhiAutomationProtocolError
+    );
+  });
+
+  it("requests an authenticated local delay without using a worker timer", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ completed: true }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ));
+    const api = new PanzhiAutomationApi(fetcher);
+    const active = {
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick" as const
+    };
+
+    await expect(api.delayJob(active, 350)).resolves.toBeUndefined();
+
+    expect(fetcher).toHaveBeenCalledWith(
+      `http://127.0.0.1:4310/api/sources/panzhi/automation/jobs/${firstJobId}/delay`,
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: `Bearer ${active.bearerToken}`
+        }),
+        body: JSON.stringify({ milliseconds: 350 })
+      })
     );
   });
 
@@ -965,7 +997,11 @@ describe("Panzhi MV3 worker lifecycle", () => {
 
     await expect(f.controller.handleContentDelay(999, 350)).resolves.toBe(false);
     await expect(f.controller.handleContentDelay(7, 350)).resolves.toBe(true);
-    expect(f.dependencies.sleep).toHaveBeenCalledWith(350);
+    expect(f.api.delayJob).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: firstJobId, tabId: 7 }),
+      350
+    );
+    expect(f.dependencies.sleep).not.toHaveBeenCalled();
 
     runner.resolve(snapshotResult());
     await pending;

@@ -4,6 +4,7 @@ import express, {
   type RequestHandler,
   type Response
 } from "express";
+import { setTimeout as delay } from "node:timers/promises";
 import { z, ZodError } from "zod";
 import {
   selectBalancedCandidatePool,
@@ -120,6 +121,9 @@ const PanzhiAutomationStateBodySchema = z.strictObject({
     "failed"
   ]),
   error: z.string().trim().min(1).max(500).optional()
+});
+const PanzhiAutomationDelayBodySchema = z.strictObject({
+  milliseconds: z.number().int().min(0).max(10_000)
 });
 type PoolMode = z.infer<typeof PoolModeSchema>;
 
@@ -711,6 +715,28 @@ export function createApp(dependencies?: AppDependencies): Express {
           request.params.id,
           token
         ));
+      } catch (error) {
+        sendPanzhiAutomationError(response, error);
+      }
+    }
+  );
+
+  app.post(
+    `${PANZHI_AUTOMATION_PREFIX}/jobs/:id/delay`,
+    async (request, response) => {
+      if (!panzhiAutomationService) {
+        unavailablePanzhiAutomation(response);
+        return;
+      }
+      try {
+        const token = readStrictBearerToken(request.get("authorization"));
+        panzhiAutomationService.authenticateRequest(
+          request.params.id,
+          token
+        );
+        const body = PanzhiAutomationDelayBodySchema.parse(request.body);
+        await delay(body.milliseconds);
+        response.json({ completed: true });
       } catch (error) {
         sendPanzhiAutomationError(response, error);
       }

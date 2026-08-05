@@ -295,6 +295,33 @@ describe("Panzhi automation API", () => {
       .expect(204);
   });
 
+  it("provides only authenticated, bounded local delays for the owned job", async () => {
+    const f = fixture();
+    const queued = f.automation.enqueue("deep");
+    const claimed = await request(f.app)
+      .post("/api/sources/panzhi/automation/jobs/claim")
+      .send({})
+      .expect(202);
+    const token = claimed.body.bearerToken as string;
+    const path =
+      `/api/sources/panzhi/automation/jobs/${queued.job.id}/delay`;
+
+    await request(f.app)
+      .post(path)
+      .send({ milliseconds: 0 })
+      .expect(401);
+    await request(f.app)
+      .post(path)
+      .set(bearer(token))
+      .send({ milliseconds: 10_001 })
+      .expect(400);
+    await request(f.app)
+      .post(path)
+      .set(bearer(token))
+      .send({ milliseconds: 0 })
+      .expect(200, { completed: true });
+  });
+
   it("authenticates job routes before validating malformed bodies", async () => {
     const f = fixture();
     const queued = f.automation.enqueue("deep");

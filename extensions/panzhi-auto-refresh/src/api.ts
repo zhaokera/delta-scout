@@ -74,6 +74,10 @@ export interface PanzhiAutomationApiPort {
   heartbeatJob(
     active: PanzhiActiveJobIdentity
   ): Promise<PanzhiAutomationHeartbeatResponse>;
+  delayJob(
+    active: PanzhiActiveJobIdentity,
+    milliseconds: number
+  ): Promise<void>;
   updateJobState(
     active: PanzhiActiveJobIdentity,
     update: PanzhiAutomationStateUpdate
@@ -251,6 +255,20 @@ export class PanzhiAutomationApi implements PanzhiAutomationApiPort {
     };
   }
 
+  async delayJob(
+    active: PanzhiActiveJobIdentity,
+    milliseconds: number
+  ): Promise<void> {
+    const input = record(await this.jobRequest(active, "delay", {
+      milliseconds
+    }));
+    if (input.completed !== true) {
+      throw new PanzhiAutomationProtocolError(
+        "Panzhi delay response is invalid"
+      );
+    }
+  }
+
   async submitSnapshot(
     active: PanzhiActiveJobIdentity,
     snapshot: PanzhiPageSnapshot
@@ -266,7 +284,7 @@ export class PanzhiAutomationApi implements PanzhiAutomationApiPort {
 
   private jobRequest(
     active: PanzhiActiveJobIdentity,
-    action: "heartbeat" | "state" | "snapshot",
+    action: "heartbeat" | "delay" | "state" | "snapshot",
     body: unknown
   ): Promise<unknown> {
     return this.requestJson(

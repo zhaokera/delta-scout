@@ -514,7 +514,7 @@ export class PanzhiBackgroundController {
     ) {
       return false;
     }
-    await this.dependencies.sleep(milliseconds);
+    await this.dependencies.api.delayJob(this.active.stored, milliseconds);
     return true;
   }
 
