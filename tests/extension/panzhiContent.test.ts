@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 type ContentListener = (
@@ -45,4 +47,72 @@ describe("Panzhi content bridge installation", () => {
       type: "panzhi-check-verification-v2"
     })).resolves.toEqual({ kind: "clear" });
   });
+
+  it("deduplicates one run ID and supersedes an older run ID", async () => {
+    document.documentElement.innerHTML = readFileSync(resolve(
+      process.cwd(),
+      "tests/fixtures/panzhi-live-filter-page.html"
+    ), "utf8");
+    document.querySelector("[aria-label='商品列表']")?.remove();
+    const firstDelay = deferred<void>();
+    let delayCount = 0;
+    const addListener = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn().mockImplementation((message: unknown) => {
+          const input = message as { type?: unknown };
+          if (input.type === "panzhi-delay-v2") {
+            delayCount += 1;
+            return delayCount === 1
+              ? firstDelay.promise.then(() => true)
+              : Promise.resolve(true);
+          }
+          return Promise.resolve(true);
+        }),
+        onMessage: {
+          addListener,
+          removeListener: vi.fn()
+        }
+      }
+    });
+
+    await import("../../extensions/panzhi-auto-refresh/src/content.js");
+    const listener = addListener.mock.calls[0]?.[0] as ContentListener;
+    const first = listener({
+      type: "panzhi-run-v3",
+      mode: "quick",
+      runId: "run-a"
+    });
+    const duplicate = listener({
+      type: "panzhi-run-v3",
+      mode: "quick",
+      runId: "run-a"
+    });
+    expect(duplicate).toBe(first);
+    await vi.waitFor(() => expect(delayCount).toBe(1));
+
+    const replacement = listener({
+      type: "panzhi-run-v3",
+      mode: "quick",
+      runId: "run-b"
+    });
+    expect(replacement).not.toBe(first);
+    firstDelay.resolve();
+
+    await expect(first).resolves.toEqual({
+      kind: "superseded",
+      stage: "applying_filters"
+    });
+    await expect(replacement).resolves.toEqual(expect.objectContaining({
+      kind: "failure"
+    }));
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}

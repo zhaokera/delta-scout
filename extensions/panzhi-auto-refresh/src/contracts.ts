@@ -90,6 +90,10 @@ export type PageRunnerResult =
       code: PageRunnerFailureCode;
       message: string;
       loadActionCount?: number;
+    }
+  | {
+      kind: "superseded";
+      stage: "applying_filters" | "collecting" | "submitting";
     };
 
 export interface PageRunnerDependencies {
@@ -103,4 +107,5 @@ export interface PageRunnerDependencies {
   mutationTimeoutMs: number;
   resultStabilityMs: number;
   onStage: (stage: PanzhiPageStage) => void | Promise<void>;
+  isCurrentRun: () => boolean;
 }

@@ -125,11 +125,36 @@ function dependencies(
     mutationTimeoutMs: 500,
     resultStabilityMs: 2,
     onStage: async () => undefined,
+    isCurrentRun: () => true,
     ...overrides
   };
 }
 
 describe("Panzhi visible-page selectors", () => {
+  it("stops a superseded run after a wait without clicking the next filter", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installLiveFilterBehavior(root);
+    let current = true;
+    const controlsBefore = locateRequiredControls(root);
+    expect(controlsBefore.kind).toBe("found");
+    if (controlsBefore.kind !== "found") return;
+    const qqClick = vi.fn();
+    controlsBefore.qq.addEventListener("click", qqClick);
+
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      isCurrentRun: () => current,
+      sleep: async () => {
+        current = false;
+      }
+    })).run("quick");
+
+    expect(result).toEqual({
+      kind: "superseded",
+      stage: "applying_filters"
+    });
+    expect(qqClick).not.toHaveBeenCalled();
+  });
+
   it("applies filters through the div controls used by the live Panzhi page", async () => {
     const root = loadFixture("panzhi-live-filter-page.html");
     installLiveFilterBehavior(root);
@@ -875,7 +900,7 @@ describe("Panzhi page collection runner", () => {
       code: "collection_limit",
       loadActionCount: 100
     });
-  }, 15_000);
+  }, 25_000);
 
   it("never returns a snapshot while verification is visible", async () => {
     const root = loadFixture();

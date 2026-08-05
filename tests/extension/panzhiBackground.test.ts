@@ -137,6 +137,7 @@ function makeFixture(options: {
     | { kind: "clear" }
     | { kind: "blocked"; blocker: VerificationBlocker };
   random?: number;
+  runIds?: string[];
 } = {}) {
   let stored = options.stored ?? null;
   let currentTime = Date.parse("2026-08-04T08:00:00.000Z");
@@ -212,6 +213,7 @@ function makeFixture(options: {
     reload: vi.fn().mockResolvedValue(undefined)
   };
   const delays: number[] = [];
+  const runIds = [...(options.runIds ?? ["run-0001", "run-0002"])];
   const dependencies: PanzhiBackgroundDependencies = {
     api,
     tabs,
@@ -237,7 +239,9 @@ function makeFixture(options: {
       delays.push(milliseconds);
     }),
     now: () => new Date(currentTime),
-    random: () => options.random ?? 0.5
+    random: () => options.random ?? 0.5,
+    createRunId: vi.fn().mockImplementation(() =>
+      runIds.shift() ?? `run-${Date.now()}`)
   };
   const controller = new PanzhiBackgroundController(dependencies);
   return {
@@ -345,6 +349,14 @@ describe("Panzhi MV3 worker lifecycle", () => {
 
     const complete = snapshotResult(snapshot("STRICT-CARD"));
     expect(parsePageRunnerResult(complete)).toEqual(complete);
+    expect(parsePageRunnerResult({
+      kind: "superseded",
+      stage: "collecting"
+    })).toEqual({ kind: "superseded", stage: "collecting" });
+    expect(() => parsePageRunnerResult({
+      kind: "superseded",
+      stage: "awaiting_user_verification"
+    })).toThrow(PanzhiContentProtocolError);
     expect(() => parsePageRunnerResult({ kind: "snapshot" }))
       .toThrow(PanzhiContentProtocolError);
     expect(() => parsePageRunnerResult({
@@ -528,6 +540,11 @@ describe("Panzhi MV3 worker lifecycle", () => {
       mode: "quick",
       tabId: 7
     });
+    expect(f.dependencies.runPage).toHaveBeenCalledWith(
+      7,
+      "quick",
+      "run-0001"
+    );
     runner.resolve(snapshotResult());
     await pending;
   });
@@ -547,19 +564,38 @@ describe("Panzhi MV3 worker lifecycle", () => {
     expect(f.api.claimJob).not.toHaveBeenCalled();
   });
 
-  it("reloads the reused canonical tab before newly claimed page work", async () => {
+  it("reuses an already loaded canonical tab without reloading or navigating it", async () => {
     const runner = deferred<PageRunnerResult>();
     const f = makeFixture({ runnerResult: runner.promise });
     const pending = f.controller.tick();
 
     await vi.waitFor(() => expect(f.dependencies.runPage).toHaveBeenCalled());
-    expect(f.tabs.reload).toHaveBeenCalledWith(7);
+    expect(f.tabs.reload).not.toHaveBeenCalled();
     expect(f.tabs.update).not.toHaveBeenCalledWith(7, expect.objectContaining({
       url: canonicalUrl
     }));
 
     runner.resolve(snapshotResult());
     await pending;
+  });
+
+  it("hard reloads one canonical tab when recovering a non-verification lease", async () => {
+    const active = {
+      jobId: firstJobId,
+      bearerToken: claim().bearerToken,
+      mode: "quick" as const,
+      tabId: 7
+    };
+    const f = makeFixture({
+      stored: active,
+      resumeResult: claim(firstJobId, "collecting")
+    });
+
+    await f.controller.tick();
+
+    expect(f.tabs.reload).toHaveBeenCalledOnce();
+    expect(f.tabs.reload).toHaveBeenCalledWith(7);
+    expect(f.dependencies.runPage).toHaveBeenCalledOnce();
   });
 
   it("activates the owned Panzhi tab before page work can begin", async () => {

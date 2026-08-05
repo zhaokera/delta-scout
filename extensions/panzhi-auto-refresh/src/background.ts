@@ -229,6 +229,19 @@ function parseSnapshot(value: unknown): PanzhiPageSnapshot | null {
 }
 
 export function parsePageRunnerResult(value: unknown): PageRunnerResult {
+  const superseded = strictRecord(value, ["kind", "stage"]);
+  if (
+    superseded?.kind === "superseded" &&
+    (superseded.stage === "applying_filters" ||
+      superseded.stage === "collecting" ||
+      superseded.stage === "submitting")
+  ) {
+    return {
+      kind: "superseded",
+      stage: superseded.stage
+    };
+  }
+
   const awaiting = strictRecord(value, [
     "kind",
     "stage",
@@ -372,7 +385,11 @@ export interface PanzhiBackgroundDependencies {
   api: PanzhiAutomationApiPort;
   tabs: PanzhiTabsApi;
   storage: PanzhiJobStorage;
-  runPage(tabId: number, mode: PanzhiPageMode): Promise<PageRunnerResult>;
+  runPage(
+    tabId: number,
+    mode: PanzhiPageMode,
+    runId: string
+  ): Promise<PageRunnerResult>;
   checkVerification(tabId: number): Promise<VerificationCheck>;
   focusTab(tabId: number): Promise<void>;
   notifyVerification(blocker: VerificationBlocker): Promise<void>;
@@ -380,6 +397,7 @@ export interface PanzhiBackgroundDependencies {
   sleep(milliseconds: number): Promise<void>;
   now(): Date;
   random(): number;
+  createRunId(): string;
 }
 
 interface ActiveJob {
@@ -588,7 +606,8 @@ export class PanzhiBackgroundController {
     try {
       result = await this.dependencies.runPage(
         this.active.stored.tabId,
-        this.active.stored.mode
+        this.active.stored.mode,
+        this.dependencies.createRunId()
       );
     } catch (error) {
       if (error instanceof PanzhiContentProtocolError) {
@@ -659,7 +678,6 @@ export class PanzhiBackgroundController {
     };
     await this.dependencies.storage.write(stored);
     this.active = { stored, job: claimed.job };
-    this.tabResetJobId = claimed.job.id;
     return this.active;
   }
 
@@ -744,6 +762,9 @@ export class PanzhiBackgroundController {
 
   private async handlePageResult(result: PageRunnerResult): Promise<void> {
     if (!this.active) return;
+    if (result.kind === "superseded") {
+      throw new Error("Panzhi page run was superseded");
+    }
     if (result.kind === "awaiting_user_verification") {
       const response = await this.updateState({
         state: "awaiting_user_verification"
@@ -1014,10 +1035,11 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
       write: (active) => browser.storage.local.set({ [STORAGE_KEY]: active }),
       clear: () => browser.storage.local.remove(STORAGE_KEY)
     },
-    runPage: async (tabId, mode) =>
+    runPage: async (tabId, mode, runId) =>
       parsePageRunnerResult(await sendContentCommandWithInjection(tabId, {
-        type: "panzhi-run-v2",
-        mode
+        type: "panzhi-run-v3",
+        mode,
+        runId
       }, contentBridge)),
     checkVerification: async (tabId) =>
       parseVerificationCheck(await sendContentCommandWithInjection(tabId, {
@@ -1044,7 +1066,8 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
       setTimeout(resolve, milliseconds);
     }),
     now: () => new Date(),
-    random: () => Math.random()
+    random: () => Math.random(),
+    createRunId: () => crypto.randomUUID()
   });
 }
 

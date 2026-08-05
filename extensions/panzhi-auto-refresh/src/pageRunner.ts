@@ -68,6 +68,7 @@ function dispatchNativeInputEvents(input: HTMLInputElement): void {
 
 type SettlementOutcome =
   | { kind: "settled" }
+  | { kind: "superseded" }
   | { kind: "blocked"; blocker: VerificationBlocker }
   | { kind: "timeout" }
   | { kind: "failure"; failure: SelectorFailure }
@@ -85,8 +86,10 @@ function observeActionUntilResultsSettle(
   stabilityMs: number,
   settlementDelay: (milliseconds: number) => Promise<void>,
   allowExistingEndMarker = false,
-  allowStableInitialState = false
+  allowStableInitialState = false,
+  isCurrentRun: () => boolean = () => true
 ): Promise<SettlementOutcome> {
+  if (!isCurrentRun()) return Promise.resolve({ kind: "superseded" });
   const initial = readResultState(root);
   if (initial.kind === "failure") {
     return Promise.resolve({ kind: "failure", failure: initial });
@@ -123,6 +126,10 @@ function observeActionUntilResultsSettle(
       void settlementDelay(milliseconds).then(
         () => {
           if (finished || generation !== timeoutGeneration) return;
+          if (!isCurrentRun()) {
+            finish({ kind: "superseded" });
+            return;
+          }
           const blocker = detectVerificationBlocker(root);
           finish(blocker.kind === "blocked" ? blocker : { kind: "timeout" });
         },
@@ -135,6 +142,10 @@ function observeActionUntilResultsSettle(
     };
 
     const evaluate = (): void => {
+      if (!isCurrentRun()) {
+        finish({ kind: "superseded" });
+        return;
+      }
       const blocker = detectVerificationBlocker(root);
       if (blocker.kind === "blocked") {
         finish(blocker);
@@ -183,7 +194,9 @@ function observeActionUntilResultsSettle(
         void settlementDelay(stabilityMs).then(
           () => {
             if (!finished && generation === stabilityGeneration) {
-              finish({ kind: "settled" });
+              finish(isCurrentRun()
+                ? { kind: "settled" }
+                : { kind: "superseded" });
             }
           },
           (error: unknown) => {
@@ -204,17 +217,27 @@ function observeActionUntilResultsSettle(
     });
     scheduleTimeout(timeoutMs);
     Promise.resolve()
-      .then(action)
+      .then(() => {
+        if (!isCurrentRun()) {
+          finish({ kind: "superseded" });
+          return;
+        }
+        return action();
+      })
       .then(evaluate)
       .catch((error: unknown) => finish({ kind: "action-error", error }));
   });
 }
 
 export class PanzhiPageRunner {
+  private currentStage: "applying_filters" | "collecting" | "submitting" =
+    "applying_filters";
+
   constructor(private readonly dependencies: PageRunnerDependencies) {}
 
   async run(mode: PanzhiPageMode): Promise<PageRunnerResult> {
-    await this.stage("applying_filters");
+    const openingStage = await this.stage("applying_filters");
+    if (openingStage) return openingStage;
     const blockedBeforeFilters = await this.blockedResult();
     if (blockedBeforeFilters) return blockedBeforeFilters;
     const ready = await this.waitForPageContract();
@@ -235,15 +258,38 @@ export class PanzhiPageRunner {
       };
     }
 
-    await this.stage("collecting");
+    const collectingStage = await this.stage("collecting");
+    if (collectingStage) return collectingStage;
     return this.collect(mode);
   }
 
-  private async stage(stage: PanzhiPageStage): Promise<void> {
+  private supersededResult(): Extract<
+    PageRunnerResult,
+    { kind: "superseded" }
+  > {
+    return { kind: "superseded", stage: this.currentStage };
+  }
+
+  private cancellationResult(): Extract<
+    PageRunnerResult,
+    { kind: "superseded" }
+  > | null {
+    return this.dependencies.isCurrentRun() ? null : this.supersededResult();
+  }
+
+  private async stage(stage: PanzhiPageStage): Promise<PageRunnerResult | null> {
+    const superseded = this.cancellationResult();
+    if (superseded) return superseded;
+    if (stage !== "awaiting_user_verification") {
+      this.currentStage = stage;
+    }
     await this.dependencies.onStage(stage);
+    return this.cancellationResult();
   }
 
   private async blockedResult(): Promise<PageRunnerResult | null> {
+    const superseded = this.cancellationResult();
+    if (superseded) return superseded;
     const detection = detectVerificationBlocker(this.dependencies.document);
     if (detection.kind === "clear") return null;
     return this.verificationResult(detection.blocker);
@@ -252,7 +298,8 @@ export class PanzhiPageRunner {
   private async verificationResult(
     blocker: VerificationBlocker
   ): Promise<PageRunnerResult> {
-    await this.stage("awaiting_user_verification");
+    const verificationStage = await this.stage("awaiting_user_verification");
+    if (verificationStage) return verificationStage;
     return {
       kind: "awaiting_user_verification",
       stage: "awaiting_user_verification",
@@ -261,12 +308,15 @@ export class PanzhiPageRunner {
     };
   }
 
-  private async humanDelay(): Promise<void> {
+  private async humanDelay(): Promise<PageRunnerResult | null> {
+    const superseded = this.cancellationResult();
+    if (superseded) return superseded;
     const random = Math.min(1, Math.max(0, this.dependencies.random()));
     await this.dependencies.sleep(
       HUMAN_DELAY_MIN_MS +
         Math.round((HUMAN_DELAY_MAX_MS - HUMAN_DELAY_MIN_MS) * random)
     );
+    return this.cancellationResult();
   }
 
   private async waitForPageContract(): Promise<PageRunnerResult | null> {
@@ -337,8 +387,10 @@ export class PanzhiPageRunner {
       this.dependencies.resultStabilityMs,
       this.dependencies.settlementDelay,
       false,
-      true
+      true,
+      this.dependencies.isCurrentRun
     );
+    if (outcome.kind === "superseded") return this.supersededResult();
     if (outcome.kind === "blocked") {
       return this.verificationResult(outcome.blocker);
     }
@@ -363,7 +415,8 @@ export class PanzhiPageRunner {
         message: "Panzhi price range did not settle"
       };
     }
-    await this.humanDelay();
+    const delayed = await this.humanDelay();
+    if (delayed) return delayed;
     return this.blockedResult();
   }
 
@@ -395,8 +448,12 @@ export class PanzhiPageRunner {
       },
       this.dependencies.mutationTimeoutMs,
       this.dependencies.resultStabilityMs,
-      this.dependencies.settlementDelay
+      this.dependencies.settlementDelay,
+      false,
+      false,
+      this.dependencies.isCurrentRun
     );
+    if (outcome.kind === "superseded") return this.supersededResult();
     if (outcome.kind === "blocked") {
       return this.verificationResult(outcome.blocker);
     }
@@ -421,7 +478,8 @@ export class PanzhiPageRunner {
         message: "Panzhi filter did not become selected"
       };
     }
-    await this.humanDelay();
+    const delayed = await this.humanDelay();
+    if (delayed) return delayed;
     return this.blockedResult();
   }
 
@@ -472,8 +530,10 @@ export class PanzhiPageRunner {
       this.dependencies.resultStabilityMs,
       this.dependencies.settlementDelay,
       false,
-      true
+      true,
+      this.dependencies.isCurrentRun
     );
+    if (stable.kind === "superseded") return this.supersededResult();
     if (stable.kind === "blocked") {
       return this.verificationResult(stable.blocker);
     }
@@ -539,8 +599,13 @@ export class PanzhiPageRunner {
         this.dependencies.mutationTimeoutMs,
         this.dependencies.resultStabilityMs,
         this.dependencies.settlementDelay,
-        true
+        true,
+        false,
+        this.dependencies.isCurrentRun
       );
+      if (outcome.kind === "superseded") {
+        return this.supersededResult();
+      }
       if (outcome.kind === "blocked") {
         return this.verificationResult(outcome.blocker);
       }
@@ -564,7 +629,8 @@ export class PanzhiPageRunner {
         };
       }
       loadActionCount = attemptedActionCount;
-      await this.humanDelay();
+      const delayed = await this.humanDelay();
+      if (delayed) return delayed;
 
       const blockedAfterLoad = await this.blockedResult();
       if (blockedAfterLoad) return blockedAfterLoad;
@@ -635,7 +701,8 @@ export class PanzhiPageRunner {
     };
     const items = [...collected.values()].slice(0, maxCards);
 
-    await this.stage("submitting");
+    const submittingStage = await this.stage("submitting");
+    if (submittingStage) return submittingStage;
     const blockedAfterSubmittingStage = await this.blockedResult();
     if (blockedAfterSubmittingStage) return blockedAfterSubmittingStage;
     return {
@@ -679,6 +746,7 @@ export function createDefaultPageRunnerDependencies(
     },
     mutationTimeoutMs: 5_000,
     resultStabilityMs: 350,
-    onStage: () => undefined
+    onStage: () => undefined,
+    isCurrentRun: () => true
   };
 }
