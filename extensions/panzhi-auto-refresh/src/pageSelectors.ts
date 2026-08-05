@@ -676,6 +676,33 @@ function missingResultDiagnostic(
     .filter((token) => /^[A-Za-z0-9_-]{1,60}$/.test(token))
     .filter((token, index, tokens) => tokens.indexOf(token) === index)
     .slice(0, 8);
+  const baseOrigin = root.defaultView?.location.origin ?? "https://www.pzds.com";
+  const iframeHints = [...root.querySelectorAll<HTMLIFrameElement>("iframe")]
+    .slice(0, 2)
+    .map((frame) => {
+      const rawSource = frame.getAttribute("src") ?? "about:blank";
+      let locationHint = "invalid";
+      try {
+        const parsed = new URL(rawSource, baseOrigin);
+        locationHint = parsed.origin === baseOrigin
+          ? `same:${parsed.pathname}`
+          : `cross:${parsed.origin}${parsed.pathname}`;
+      } catch {
+        // Keep the invalid marker and never report the raw source.
+      }
+      let documentHint = "opaque";
+      try {
+        const frameDocument = frame.contentDocument;
+        if (frameDocument) {
+          documentHint = `${frameDocument.readyState},goods=${
+            frameDocument.querySelectorAll('a[href*="/goodsDetails/"]').length
+          }`;
+        }
+      } catch {
+        // A cross-origin frame is intentionally opaque.
+      }
+      return `${locationHint}:${documentHint}`;
+    });
   return [
     `allLinks=${allLinks.length}`,
     `goodsDetailLinks=${goodsDetailLinks.length}`,
@@ -685,6 +712,7 @@ function missingResultDiagnostic(
     `visibilityState=${root.visibilityState}`,
     `readyState=${root.readyState}`,
     `iframeCount=${root.querySelectorAll("iframe").length}`,
+    `iframeHints=${iframeHints.join("|") || "none"}`,
     `actionHints=${actionHints.join("|") || "none"}`,
     `statusHints=${statusHints.join("|") || "none"}`,
     `classHints=${classHints.join("|") || "none"}`,

@@ -390,6 +390,7 @@ describe("Panzhi visible-page selectors", () => {
     expect(result.message).toContain(`visibilityState=${root.visibilityState}`);
     expect(result.message).toContain(`readyState=${root.readyState}`);
     expect(result.message).toContain("iframeCount=1");
+    expect(result.message).toContain("iframeHints=same:/goods-frame:");
     expect(result.message).toContain("actionHints=立即筛选");
     expect(result.message).toContain("statusHints=加载失败");
     expect(result.message).toContain(
