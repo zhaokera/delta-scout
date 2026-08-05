@@ -5,6 +5,7 @@ import {
   type PageRunnerResult,
   type PanzhiFilterProof,
   type PanzhiPageMode,
+  type PanzhiPageSnapshot,
   type PanzhiPageStage,
   type PanzhiSnapshotItem,
   type VerificationBlocker
@@ -432,6 +433,10 @@ export class PanzhiPageRunner {
       return selectorFailureResult("applying_filters", current);
     }
     if (current.kind === "selected-state" && current.selected) return null;
+    const resultBeforeSelection = readResultState(this.dependencies.document);
+    if (resultBeforeSelection.kind === "failure") {
+      return selectorFailureResult("applying_filters", resultBeforeSelection);
+    }
 
     const outcome = await observeActionUntilResultsSettle(
       this.dependencies.document,
@@ -450,7 +455,7 @@ export class PanzhiPageRunner {
       this.dependencies.resultStabilityMs,
       this.dependencies.settlementDelay,
       false,
-      false,
+      resultBeforeSelection.emptyResultVisible,
       this.dependencies.isCurrentRun
     );
     if (outcome.kind === "superseded") return this.supersededResult();
@@ -568,6 +573,106 @@ export class PanzhiPageRunner {
     return null;
   }
 
+  private async submitSnapshot(
+    mode: PanzhiPageMode,
+    collected: Map<string, PanzhiSnapshotItem>,
+    maxCards: number,
+    loadActionCount: number,
+    stopReason: PanzhiPageSnapshot["stopReason"]
+  ): Promise<PageRunnerResult> {
+    const blockedBeforeSnapshot = await this.blockedResult();
+    if (blockedBeforeSnapshot) return blockedBeforeSnapshot;
+    const finalVerification = verifyRequiredFilters(this.dependencies.document);
+    if (finalVerification.kind === "failure") {
+      return selectorFailureResult(
+        "collecting",
+        finalVerification,
+        loadActionCount
+      );
+    }
+    if (this.dependencies.currentUrl() !== PANZHI_CATALOG_URL) {
+      return {
+        kind: "failure",
+        stage: "collecting",
+        code: "structural_drift",
+        message: "Panzhi catalog URL drifted during collection",
+        loadActionCount
+      };
+    }
+    if (stopReason === "empty_result") {
+      const emptyState = readResultState(this.dependencies.document);
+      if (emptyState.kind === "failure") {
+        return selectorFailureResult("collecting", emptyState, loadActionCount);
+      }
+      if (!emptyState.emptyResultVisible) {
+        return selectorFailureResult("collecting", {
+          kind: "failure",
+          code: "structural_drift",
+          message: "Strict Panzhi empty result changed before submission"
+        }, loadActionCount);
+      }
+    }
+
+    const observedAt = this.dependencies.now().toISOString();
+    const filterProof: PanzhiFilterProof = {
+      currentUrl: PANZHI_CATALOG_URL,
+      gameLabel: "三角洲行动",
+      minPriceInput: "1900",
+      maxPriceInput: "4000",
+      secondRealNameFilter: {
+        label: "可二次实名",
+        selected: true
+      },
+      operatorSkinFilter: {
+        fieldId: "22858",
+        fieldLabel: "特战干员外观",
+        fieldType: "CHECKBOX",
+        mappingField: "22858",
+        searchType: "ALL",
+        searchTypeLabel: "全部都要有",
+        selectedOptions: PANZHI_REQUIRED_OPERATOR_SKINS.map((skin) => ({
+          ...skin
+        }))
+      },
+      observedAt
+    };
+    const items = [...collected.values()].slice(0, maxCards);
+
+    const submittingStage = await this.stage("submitting");
+    if (submittingStage) return submittingStage;
+    const blockedAfterSubmittingStage = await this.blockedResult();
+    if (blockedAfterSubmittingStage) return blockedAfterSubmittingStage;
+    if (stopReason === "empty_result") {
+      const finalEmptyState = readResultState(this.dependencies.document);
+      if (finalEmptyState.kind === "failure") {
+        return selectorFailureResult(
+          "collecting",
+          finalEmptyState,
+          loadActionCount
+        );
+      }
+      if (!finalEmptyState.emptyResultVisible) {
+        return selectorFailureResult("collecting", {
+          kind: "failure",
+          code: "structural_drift",
+          message: "Strict Panzhi empty result changed before submission"
+        }, loadActionCount);
+      }
+    }
+    return {
+      kind: "snapshot",
+      stage: "submitting",
+      snapshot: {
+        mode,
+        filterProof,
+        loadActionCount,
+        observedUniqueCount: items.length,
+        stopReason,
+        items
+      }
+    };
+  }
+
   private async collect(mode: PanzhiPageMode): Promise<PageRunnerResult> {
     const maxActions = mode === "quick"
       ? QUICK_MAX_LOAD_ACTIONS
@@ -577,9 +682,24 @@ export class PanzhiPageRunner {
     let loadActionCount = 1;
     let noGrowthCount = 0;
 
+    const blockedBeforeInitialCollection = await this.blockedResult();
+    if (blockedBeforeInitialCollection) return blockedBeforeInitialCollection;
     const initialFailure = this.collectCards(collected, maxCards);
     if (initialFailure) {
       return selectorFailureResult("collecting", initialFailure, loadActionCount);
+    }
+    const initialState = readResultState(this.dependencies.document);
+    if (initialState.kind === "failure") {
+      return selectorFailureResult("collecting", initialState, loadActionCount);
+    }
+    if (initialState.emptyResultVisible) {
+      return this.submitSnapshot(
+        mode,
+        collected,
+        maxCards,
+        loadActionCount,
+        "empty_result"
+      );
     }
 
     while (
@@ -645,27 +765,6 @@ export class PanzhiPageRunner {
       noGrowthCount = collected.size === previousSize ? noGrowthCount + 1 : 0;
     }
 
-    const blockedBeforeSnapshot = await this.blockedResult();
-    if (blockedBeforeSnapshot) return blockedBeforeSnapshot;
-    const finalVerification = verifyRequiredFilters(this.dependencies.document);
-    if (finalVerification.kind === "failure") {
-      return selectorFailureResult(
-        "collecting",
-        finalVerification,
-        loadActionCount
-      );
-    }
-
-    if (this.dependencies.currentUrl() !== PANZHI_CATALOG_URL) {
-      return {
-        kind: "failure",
-        stage: "collecting",
-        code: "structural_drift",
-        message: "Panzhi catalog URL drifted during collection",
-        loadActionCount
-      };
-    }
-
     if (mode === "deep" && noGrowthCount < 2) {
       return {
         kind: "failure",
@@ -675,48 +774,13 @@ export class PanzhiPageRunner {
         loadActionCount
       };
     }
-
-    const observedAt = this.dependencies.now().toISOString();
-    const filterProof: PanzhiFilterProof = {
-      currentUrl: PANZHI_CATALOG_URL,
-      gameLabel: "三角洲行动",
-      minPriceInput: "1900",
-      maxPriceInput: "4000",
-      secondRealNameFilter: {
-        label: "可二次实名",
-        selected: true
-      },
-      operatorSkinFilter: {
-        fieldId: "22858",
-        fieldLabel: "特战干员外观",
-        fieldType: "CHECKBOX",
-        mappingField: "22858",
-        searchType: "ALL",
-        searchTypeLabel: "全部都要有",
-        selectedOptions: PANZHI_REQUIRED_OPERATOR_SKINS.map((skin) => ({
-          ...skin
-        }))
-      },
-      observedAt
-    };
-    const items = [...collected.values()].slice(0, maxCards);
-
-    const submittingStage = await this.stage("submitting");
-    if (submittingStage) return submittingStage;
-    const blockedAfterSubmittingStage = await this.blockedResult();
-    if (blockedAfterSubmittingStage) return blockedAfterSubmittingStage;
-    return {
-      kind: "snapshot",
-      stage: "submitting",
-      snapshot: {
-        mode,
-        filterProof,
-        loadActionCount,
-        observedUniqueCount: items.length,
-        stopReason: mode === "quick" ? "quick_window" : "no_growth_twice",
-        items
-      }
-    };
+    return this.submitSnapshot(
+      mode,
+      collected,
+      maxCards,
+      loadActionCount,
+      mode === "quick" ? "quick_window" : "no_growth_twice"
+    );
   }
 }
 

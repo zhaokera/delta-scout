@@ -1179,6 +1179,41 @@ describe("Panzhi automation API", () => {
     expect(after.nextDeepAt).toBe(before.nextDeepAt);
   });
 
+  it("completes a strict-empty quick job while preserving its baseline", async () => {
+    const f = fixture();
+    f.publisher.publish(snapshot(["EMPTY-JOB-BASELINE"]), baseTime);
+    const { jobId, token } = await claimAndAdvanceToSubmitting(f, "quick");
+
+    const response = await request(f.app)
+      .post(`/api/sources/panzhi/automation/jobs/${jobId}/snapshot`)
+      .set(bearer(token))
+      .send(snapshot([], {
+        mode: "quick",
+        loadActionCount: 1,
+        stopReason: "empty_result"
+      }))
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      state: "success",
+      observedItemCount: 0,
+      publishedItemCount: 1,
+      preservedItemCount: 1,
+      published: true,
+      deduplicated: false
+    });
+    expect(f.automationRepository.getJob(jobId)).toMatchObject({
+      state: "success",
+      error: null,
+      scanRunId: expect.any(Number)
+    });
+    expect(f.listings.getListings().filter(({ source }) =>
+      source === "panzhi"
+    )).toEqual([expect.objectContaining({
+      sourceListingId: "EMPTY-JOB-BASELINE"
+    })]);
+  });
+
   it("fails an anomaly-guard job atomically without advancing either due time and retains its trusted snapshot", async () => {
     const f = fixture();
     const trustedIds = Array.from(

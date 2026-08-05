@@ -120,21 +120,23 @@ export const PanzhiBrowserSnapshotSchema = z
       }),
       observedAt: DateTimeSchema
     }),
-    loadActionCount: z.number().int().min(2).max(100),
-    observedUniqueCount: z.number().int().min(1).max(500),
+    loadActionCount: z.number().int().min(1).max(100),
+    observedUniqueCount: z.number().int().min(0).max(500),
     stopReason: z.enum([
       "quick_window",
       "no_growth_twice",
-      "captcha_required"
+      "captcha_required",
+      "empty_result"
     ]),
-    items: z.array(PanzhiBrowserSnapshotItemSchema).min(1).max(500)
+    items: z.array(PanzhiBrowserSnapshotItemSchema).max(500)
   })
   .superRefine((snapshot, context) => {
     const mode = snapshot.mode ?? "deep";
     if (
       mode === "quick" &&
       snapshot.stopReason !== "quick_window" &&
-      snapshot.stopReason !== "captcha_required"
+      snapshot.stopReason !== "captcha_required" &&
+      snapshot.stopReason !== "empty_result"
     ) {
       context.addIssue({
         code: "custom",
@@ -166,6 +168,45 @@ export const PanzhiBrowserSnapshotSchema = z
         message: "Quick mode accepts at most sixty visible cards"
       });
     }
+    const isEmptyResult = snapshot.stopReason === "empty_result";
+    if (isEmptyResult) {
+      if (snapshot.loadActionCount !== 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["loadActionCount"],
+          message: "Strict empty result must use exactly one observation"
+        });
+      }
+      if (snapshot.observedUniqueCount !== 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["observedUniqueCount"],
+          message: "Strict empty result must observe zero unique cards"
+        });
+      }
+      if (snapshot.items.length !== 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["items"],
+          message: "Strict empty result must contain no cards"
+        });
+      }
+    } else {
+      if (snapshot.loadActionCount < 2) {
+        context.addIssue({
+          code: "custom",
+          path: ["loadActionCount"],
+          message: "Non-empty snapshots require at least two observations"
+        });
+      }
+      if (snapshot.observedUniqueCount < 1 || snapshot.items.length < 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["items"],
+          message: "Non-empty snapshots require at least one card"
+        });
+      }
+    }
     const ids = new Set<string>();
     const urls = new Set<string>();
     for (const [index, item] of snapshot.items.entries()) {
@@ -193,7 +234,7 @@ export const PanzhiBrowserSnapshotSchema = z
         message: "Observed count must match the unique card count"
       });
     }
-    if (!snapshot.items.some(({ priceCny }) =>
+    if (!isEmptyResult && !snapshot.items.some(({ priceCny }) =>
       isCandidatePriceCny(priceCny)
     )) {
       context.addIssue({

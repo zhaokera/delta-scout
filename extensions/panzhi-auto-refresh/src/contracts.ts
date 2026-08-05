@@ -68,7 +68,7 @@ export interface PanzhiPageSnapshot {
   filterProof: PanzhiFilterProof;
   loadActionCount: number;
   observedUniqueCount: number;
-  stopReason: "quick_window" | "no_growth_twice";
+  stopReason: "quick_window" | "no_growth_twice" | "empty_result";
   items: PanzhiSnapshotItem[];
 }
 

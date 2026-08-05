@@ -31,13 +31,29 @@ function signalResultCycle(
   mutate: () => void = () => undefined,
   delayMs = 0
 ): void {
-  const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
+  const list = root.querySelector<HTMLElement>(
+    "[aria-label='商品列表'], .goods-list-with-game .virtual-list"
+  );
   if (!list) throw new Error("missing fixture list");
   list.setAttribute("aria-busy", "true");
   setTimeout(() => {
     mutate();
     list.setAttribute("aria-busy", "false");
   }, delayMs);
+}
+
+function replaceLiveResultsWithStrictEmpty(root: Document): void {
+  const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
+  if (!list) throw new Error("missing fixture list");
+  list.outerHTML = `
+    <section class="goods-list-with-game">
+      <div class="virtual-list">
+        <div class="virtual-list-phantom"></div>
+        <div class="virtual-list-container"></div>
+        <div class="empty"></div>
+      </div>
+    </section>
+  `;
 }
 
 function installFilterBehavior(
@@ -387,6 +403,51 @@ describe("Panzhi visible-page selectors", () => {
     if (before.kind !== "result-state" || after.kind !== "result-state") return;
     expect(after.visibleIds).toEqual(before.visibleIds);
     expect(after.signature).not.toBe(before.signature);
+  });
+
+  it("accepts only the exact visible Panzhi virtual-list empty fingerprint", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(root);
+
+    expect(readResultState(root)).toEqual({
+      kind: "result-state",
+      signature: "empty",
+      visibleIds: [],
+      loadingVisible: false,
+      endMarkerVisible: true,
+      emptyResultVisible: true
+    });
+    expect(extractVisibleCards(root)).toEqual({ kind: "cards", items: [] });
+  });
+
+  it("does not accept generic, ambiguous, hidden, or loading markers as empty", () => {
+    const generic = loadFixture("panzhi-live-filter-page.html");
+    generic.querySelector("[aria-label='商品列表']")?.remove();
+    generic.body.insertAdjacentHTML("beforeend", '<div class="empty"></div>');
+    expect(readResultState(generic)).toMatchObject({ kind: "failure" });
+
+    const duplicate = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(duplicate);
+    const virtual = duplicate.querySelector<HTMLElement>(".virtual-list");
+    virtual?.parentElement?.append(virtual.cloneNode(true));
+    expect(readResultState(duplicate)).toMatchObject({ kind: "failure" });
+
+    const hidden = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(hidden);
+    hidden.querySelector<HTMLElement>(".empty")!.style.display = "none";
+    expect(readResultState(hidden)).toMatchObject({ kind: "failure" });
+
+    const loading = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(loading);
+    loading.querySelector<HTMLElement>(".virtual-list")!
+      .setAttribute("aria-busy", "true");
+    expect(readResultState(loading)).toMatchObject({
+      kind: "result-state",
+      visibleIds: [],
+      loadingVisible: true,
+      endMarkerVisible: false,
+      emptyResultVisible: false
+    });
   });
 
   it("reports bounded result-link diagnostics without query data", () => {
@@ -840,6 +901,61 @@ describe("Panzhi page collection runner", () => {
     expect(result.snapshot.loadActionCount).toBe(6);
     expect(result.snapshot.observedUniqueCount).toBe(60);
     expect(result.snapshot.items).toHaveLength(60);
+  });
+
+  it("submits a strict empty quick result without forcing another load", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(root);
+    installLiveFilterBehavior(root);
+    const loadMore = vi.fn(async () => signalResultCycle(root));
+
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      loadMore
+    })).run("quick");
+
+    expect(result.kind).toBe("snapshot");
+    if (result.kind !== "snapshot") return;
+    expect(result.snapshot).toMatchObject({
+      mode: "quick",
+      loadActionCount: 1,
+      observedUniqueCount: 0,
+      stopReason: "empty_result",
+      items: []
+    });
+    expect(loadMore).not.toHaveBeenCalled();
+  });
+
+  it("lets verification blockers take priority over a strict empty result", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(root);
+    root.body.insertAdjacentHTML("beforeend", "<div>请输入验证码</div>");
+
+    await expect(new PanzhiPageRunner(dependencies(root)).run("quick"))
+      .resolves.toEqual({
+        kind: "awaiting_user_verification",
+        stage: "awaiting_user_verification",
+        blocker: "captcha",
+        resumeStage: "applying_filters"
+      });
+  });
+
+  it("fails closed if the strict empty proof changes before submission", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(root);
+    installLiveFilterBehavior(root);
+
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      onStage: async (stage) => {
+        if (stage === "submitting") {
+          root.querySelector<HTMLElement>(".empty")?.classList.remove("empty");
+        }
+      }
+    })).run("quick");
+
+    expect(result).toMatchObject({
+      kind: "failure",
+      stage: "collecting"
+    });
   });
 
   it("stops deep mode after two consecutive no-growth observations", async () => {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "盼之自动刷新",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "使用一个现有盼之标签页完成本机候选台的自动刷新。",
   "permissions": [
     "alarms",

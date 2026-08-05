@@ -251,6 +251,76 @@ describe("PanzhiSnapshotPublisher", () => {
     ]);
   });
 
+  it("preserves the complete baseline when a quick snapshot is strictly empty", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    publisher.publish(snapshot([
+      item("EMPTY-BASE-A", 3_000),
+      item("EMPTY-BASE-B", 2_900),
+      item("EMPTY-BASE-C", 2_800)
+    ]), firstCapture);
+
+    const result = publisher.publish(snapshot([], {
+      mode: "quick",
+      loadActionCount: 1,
+      stopReason: "empty_result" as never,
+      filterProof: {
+        ...snapshot([]).filterProof,
+        observedAt: secondCapture.toISOString()
+      }
+    }), secondCapture);
+
+    expect(result).toMatchObject({
+      mode: "quick",
+      state: "success",
+      observedItemCount: 0,
+      publishedItemCount: 3,
+      preservedItemCount: 3,
+      droppedByPrice: 0,
+      published: true
+    });
+    expect(repository.getListings().map(({ sourceListingId }) =>
+      sourceListingId
+    )).toEqual(["EMPTY-BASE-A", "EMPTY-BASE-B", "EMPTY-BASE-C"]);
+  });
+
+  it("quarantines a deep strict-empty snapshot instead of clearing a large baseline", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    const publisher = new PanzhiSnapshotPublisher(repository);
+    const baseline = Array.from({ length: 20 }, (_, index) =>
+      item(`EMPTY-DEEP-${String(index).padStart(2, "0")}`, 2_500 + index)
+    );
+    publisher.publish(snapshot(baseline, { loadActionCount: 10 }), firstCapture);
+
+    const result = publisher.publish(snapshot([], {
+      mode: "deep",
+      loadActionCount: 1,
+      stopReason: "empty_result" as never,
+      filterProof: {
+        ...snapshot([]).filterProof,
+        observedAt: secondCapture.toISOString()
+      }
+    }), secondCapture);
+
+    expect(result).toMatchObject({
+      mode: "deep",
+      state: "quarantined",
+      observedItemCount: 0,
+      publishedItemCount: 0,
+      preservedItemCount: 0,
+      published: false
+    });
+    expect(repository.getListings()).toHaveLength(20);
+    expect(repository.getSourceStatuses().find(({ source }) =>
+      source === "panzhi"
+    )).toMatchObject({
+      state: "partial",
+      stopReason: "anomaly_guard"
+    });
+  });
+
   it("requires a complete baseline before quick mode without creating a scan", () => {
     const database = createDatabase(":memory:");
     const repository = new ListingRepository(database);

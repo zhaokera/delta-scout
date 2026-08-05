@@ -121,6 +121,27 @@ describe("Panzhi browser native-filter snapshot", () => {
     }))).toThrow();
   });
 
+  it("accepts only the exact strict-empty snapshot shape", () => {
+    const strictEmpty = {
+      ...snapshot(),
+      mode: "quick",
+      loadActionCount: 1,
+      observedUniqueCount: 0,
+      stopReason: "empty_result",
+      items: []
+    } as unknown as PanzhiBrowserSnapshot;
+
+    expect(PanzhiBrowserSnapshotSchema.parse(strictEmpty)).toEqual(strictEmpty);
+    for (const invalid of [
+      { ...strictEmpty, loadActionCount: 2 },
+      { ...strictEmpty, observedUniqueCount: 1 },
+      { ...strictEmpty, items: snapshot().items },
+      { ...strictEmpty, stopReason: "quick_window" }
+    ]) {
+      expect(() => PanzhiBrowserSnapshotSchema.parse(invalid)).toThrow();
+    }
+  });
+
   it("merges a quick window over the previous complete snapshot", () => {
     const oldListing = makeListing({
       key: "panzhi:old",

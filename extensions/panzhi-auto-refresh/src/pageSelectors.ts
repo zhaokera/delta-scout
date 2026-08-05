@@ -50,6 +50,7 @@ export interface ResultState {
   visibleIds: string[];
   loadingVisible: boolean;
   endMarkerVisible: boolean;
+  emptyResultVisible: boolean;
 }
 
 export type VerificationDetection =
@@ -597,6 +598,46 @@ function resultLoadingVisible(element: HTMLElement): boolean {
     );
 }
 
+function strictEmptyResultContainer(root: Document): HTMLElement | null {
+  const visibility = new WeakMap<Element, boolean>();
+  const branches = [...root.querySelectorAll<HTMLElement>(
+    ".goods-list-with-game"
+  )].filter((element) => isElementVisible(element, visibility));
+  if (branches.length !== 1) return null;
+
+  const branch = branches[0];
+  const virtualLists = [...branch.querySelectorAll<HTMLElement>(
+    ".virtual-list"
+  )];
+  if (
+    virtualLists.length !== 1 ||
+    !isElementVisible(virtualLists[0], visibility)
+  ) return null;
+  const virtualList = virtualLists[0];
+
+  for (const selector of [
+    ".virtual-list-phantom",
+    ".virtual-list-container"
+  ]) {
+    const matches = [...virtualList.querySelectorAll<HTMLElement>(selector)];
+    if (
+      matches.length !== 1 ||
+      !isElementVisible(matches[0], visibility)
+    ) return null;
+  }
+
+  const emptyMarkers = [...virtualList.querySelectorAll<HTMLElement>(".empty")];
+  if (
+    emptyMarkers.length !== 1 ||
+    !isElementVisible(emptyMarkers[0], visibility) ||
+    virtualList.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0
+  ) return null;
+  if (branch.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0) {
+    return null;
+  }
+  return branch;
+}
+
 function smallestUniqueContainer(
   candidates: Set<HTMLElement>
 ): HTMLElement | null {
@@ -724,6 +765,10 @@ export function locateResultContainer(
   root: Document
 ): ResultContainer | SelectorFailure {
   const visibility = new WeakMap<Element, boolean>();
+  const strictEmpty = strictEmptyResultContainer(root);
+  if (strictEmpty) {
+    return { kind: "result-container", element: strictEmpty };
+  }
   const explicit = new Set(
     [...root.querySelectorAll<HTMLElement>(
       '[aria-label="商品列表"], [data-panzhi-results]'
@@ -823,6 +868,7 @@ function scopedVisibleTextContains(root: HTMLElement, pattern: RegExp): boolean 
 export function readResultState(root: Document): ResultState | SelectorFailure {
   const located = locateResultContainer(root);
   if (located.kind === "failure") return located;
+  const structurallyEmptyResult = strictEmptyResultContainer(root);
   const anchors = visibleCardAnchors(located.element);
   const visibleCards = new Map<string, string>();
   for (const anchor of anchors) {
@@ -838,19 +884,25 @@ export function readResultState(root: Document): ResultState | SelectorFailure {
   }
   const visibleIds = [...visibleCards.keys()];
   const loadingVisible = resultLoadingVisible(located.element);
+  const emptyResultVisible =
+    structurallyEmptyResult === located.element && !loadingVisible;
   const endMarkerVisible =
+    emptyResultVisible ||
     located.element.getAttribute("data-end") === "true" ||
     located.element.getAttribute("data-panzhi-end") === "true" ||
     scopedVisibleTextContains(located.element, /没有更多|已加载全部|已经到底/);
-  if (visibleIds.length === 0 && !loadingVisible) {
+  if (visibleIds.length === 0 && !loadingVisible && !emptyResultVisible) {
     return failure("structural_drift", "Panzhi result container has no cards");
   }
   return {
     kind: "result-state",
-    signature: [...visibleCards.values()].join("\u001f"),
+    signature: emptyResultVisible
+      ? "empty"
+      : [...visibleCards.values()].join("\u001f"),
     visibleIds,
     loadingVisible,
-    endMarkerVisible
+    endMarkerVisible,
+    emptyResultVisible
   };
 }
 
@@ -925,6 +977,12 @@ export function extractVisibleCards(
   }
 
   if (items.length === 0) {
+    if (
+      strictEmptyResultContainer(root) === located.element &&
+      !resultLoadingVisible(located.element)
+    ) {
+      return { kind: "cards", items: [] };
+    }
     return failure("structural_drift", "No visible Panzhi listing cards found");
   }
   return { kind: "cards", items };

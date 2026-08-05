@@ -198,12 +198,11 @@ function parseSnapshot(value: unknown): PanzhiPageSnapshot | null {
     (snapshot.mode !== "quick" && snapshot.mode !== "deep") ||
     !Number.isInteger(snapshot.loadActionCount) ||
     typeof snapshot.loadActionCount !== "number" ||
-    snapshot.loadActionCount < 2 ||
+    snapshot.loadActionCount < 1 ||
     !Number.isInteger(snapshot.observedUniqueCount) ||
     typeof snapshot.observedUniqueCount !== "number" ||
-    snapshot.observedUniqueCount < 1 ||
+    snapshot.observedUniqueCount < 0 ||
     !Array.isArray(snapshot.items) ||
-    snapshot.items.length < 1 ||
     !parseFilterProof(snapshot.filterProof)
   ) return null;
   const expectedStop = snapshot.mode === "quick"
@@ -215,15 +214,26 @@ function parseSnapshot(value: unknown): PanzhiPageSnapshot | null {
   const parsedItems = ids.filter(
     (item): item is ParsedSnapshotItem => item !== null
   );
+  const isEmptyResult = snapshot.stopReason === "empty_result";
+  const validShape = isEmptyResult
+    ? snapshot.loadActionCount === 1 &&
+      snapshot.observedUniqueCount === 0 &&
+      snapshot.items.length === 0
+    : snapshot.stopReason === expectedStop &&
+      snapshot.loadActionCount >= 2 &&
+      snapshot.observedUniqueCount >= 1 &&
+      snapshot.items.length >= 1 &&
+      parsedItems.some(
+        ({ priceCny }) => priceCny >= 1_900 && priceCny <= 4_000
+      );
   if (
-    snapshot.stopReason !== expectedStop ||
+    !validShape ||
     snapshot.loadActionCount > maxLoads ||
     snapshot.items.length > maxItems ||
     snapshot.observedUniqueCount !== snapshot.items.length ||
     parsedItems.length !== snapshot.items.length ||
     new Set(parsedItems.map(({ id }) => id)).size !== parsedItems.length ||
-    new Set(parsedItems.map(({ url }) => url)).size !== parsedItems.length ||
-    !parsedItems.some(({ priceCny }) => priceCny >= 1_900 && priceCny <= 4_000)
+    new Set(parsedItems.map(({ url }) => url)).size !== parsedItems.length
   ) return null;
   return snapshot as unknown as PanzhiPageSnapshot;
 }

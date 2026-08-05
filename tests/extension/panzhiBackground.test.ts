@@ -349,6 +349,16 @@ describe("Panzhi MV3 worker lifecycle", () => {
 
     const complete = snapshotResult(snapshot("STRICT-CARD"));
     expect(parsePageRunnerResult(complete)).toEqual(complete);
+    const strictEmptySnapshot = {
+      ...complete.snapshot,
+      loadActionCount: 1,
+      observedUniqueCount: 0,
+      stopReason: "empty_result",
+      items: []
+    } as unknown as PanzhiPageSnapshot;
+    expect(parsePageRunnerResult(snapshotResult(strictEmptySnapshot))).toEqual(
+      snapshotResult(strictEmptySnapshot)
+    );
     expect(parsePageRunnerResult({
       kind: "superseded",
       stage: "collecting"
@@ -375,6 +385,16 @@ describe("Panzhi MV3 worker lifecycle", () => {
         items: []
       }
     })).toThrow(PanzhiContentProtocolError);
+    for (const invalidEmpty of [
+      { ...strictEmptySnapshot, loadActionCount: 2 },
+      { ...strictEmptySnapshot, observedUniqueCount: 1 },
+      { ...strictEmptySnapshot, items: complete.snapshot.items },
+      { ...strictEmptySnapshot, stopReason: "quick_window" }
+    ]) {
+      expect(() => parsePageRunnerResult(snapshotResult(
+        invalidEmpty as PanzhiPageSnapshot
+      ))).toThrow(PanzhiContentProtocolError);
+    }
     expect(() => parsePageRunnerResult({
       ...complete,
       snapshot: {
