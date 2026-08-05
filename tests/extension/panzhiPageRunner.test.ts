@@ -384,6 +384,8 @@ describe("Panzhi visible-page selectors", () => {
     expect(result.message).toContain("canonicalLinks=1");
     expect(result.message).toContain("visibleCanonicalLinks=1");
     expect(result.message).toContain("explicitCandidates=0");
+    expect(result.message).toContain(`visibilityState=${root.visibilityState}`);
+    expect(result.message).toContain(`readyState=${root.readyState}`);
     expect(result.message).toContain(
       "samplePaths=/goodsDetails/SA2ONLYONE/6|/goods-details/SA2CHANGED/6"
     );

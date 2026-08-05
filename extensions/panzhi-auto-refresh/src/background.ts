@@ -583,6 +583,7 @@ export class PanzhiBackgroundController {
     }
 
     if (!this.active) return;
+    await this.dependencies.focusTab(this.active.stored.tabId);
     let result: PageRunnerResult;
     try {
       result = await this.dependencies.runPage(
@@ -744,7 +745,6 @@ export class PanzhiBackgroundController {
         state: "awaiting_user_verification"
       });
       if (response?.shouldNotify && this.active) {
-        await this.dependencies.focusTab(this.active.stored.tabId);
         await this.dependencies.notifyVerification(result.blocker);
       }
       return;

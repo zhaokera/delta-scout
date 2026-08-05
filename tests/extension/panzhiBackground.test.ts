@@ -559,6 +559,21 @@ describe("Panzhi MV3 worker lifecycle", () => {
     await pending;
   });
 
+  it("activates the owned Panzhi tab before page work can begin", async () => {
+    const runner = deferred<PageRunnerResult>();
+    const f = makeFixture({ runnerResult: runner.promise });
+    const pending = f.controller.tick();
+
+    await vi.waitFor(() => expect(f.dependencies.runPage).toHaveBeenCalled());
+    expect(f.dependencies.focusTab).toHaveBeenCalledWith(7);
+    expect(f.dependencies.runPage).toHaveBeenCalledAfter(
+      vi.mocked(f.dependencies.focusTab)
+    );
+
+    runner.resolve(snapshotResult());
+    await pending;
+  });
+
   it("reloads the owned tab when an overlapping heartbeat loses its lease", async () => {
     const runner = deferred<PageRunnerResult>();
     const f = makeFixture({ runnerResult: runner.promise });

@@ -641,6 +641,8 @@ function missingResultDiagnostic(
     `canonicalLinks=${canonicalLinks.length}`,
     `visibleCanonicalLinks=${visibleCanonicalLinks}`,
     `explicitCandidates=${explicitCandidates}`,
+    `visibilityState=${root.visibilityState}`,
+    `readyState=${root.readyState}`,
     `samplePaths=${samplePaths.join("|") || "none"}`
   ].join("; ");
 }
