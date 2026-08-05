@@ -297,7 +297,9 @@ export class PanzhiPageRunner {
       },
       this.dependencies.mutationTimeoutMs,
       this.dependencies.resultStabilityMs,
-      this.dependencies.settlementDelay
+      this.dependencies.settlementDelay,
+      false,
+      true
     );
     if (outcome.kind === "blocked") {
       return this.verificationResult(outcome.blocker);

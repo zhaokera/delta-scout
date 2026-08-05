@@ -58,7 +58,10 @@ function installFilterBehavior(
   }
 }
 
-function installLiveFilterBehavior(root: Document): void {
+function installLiveFilterBehavior(
+  root: Document,
+  signalPriceImmediately = true
+): void {
   for (const option of root.querySelectorAll<HTMLElement>(".opt-item")) {
     option.addEventListener("click", () => {
       option.classList.add("opt-item_active");
@@ -80,6 +83,7 @@ function installLiveFilterBehavior(root: Document): void {
     'input[placeholder="最低值"], input[placeholder="最高值"]'
   )) {
     input.addEventListener("input", () => {
+      if (!signalPriceImmediately) return;
       const min = root.querySelector<HTMLInputElement>(
         'input[placeholder="最低值"]'
       );
@@ -145,6 +149,21 @@ describe("Panzhi visible-page selectors", () => {
       kind: "selected-state",
       selected: true
     });
+    expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
+  });
+
+  it("allows the live price fields to defer their result refresh to the next filter action", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installLiveFilterBehavior(root, false);
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result.kind).toBe("snapshot");
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    expect(controls.minPrice.value).toBe("1900");
+    expect(controls.maxPrice.value).toBe("4000");
     expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
   });
 
