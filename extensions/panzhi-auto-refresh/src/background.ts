@@ -699,7 +699,7 @@ export class PanzhiBackgroundController {
       await this.dependencies.storage.write(this.active.stored);
     }
     const resetRequested = this.tabResetJobId === this.active.stored.jobId;
-    if (selected.url !== PANZHI_CATALOG_URL || resetRequested) {
+    if (selected.url !== PANZHI_CATALOG_URL) {
       const updated = await this.dependencies.tabs.update(
         this.active.stored.tabId,
         {
@@ -712,6 +712,10 @@ export class PanzhiBackgroundController {
       }
       selected = updated;
       if (resetRequested) this.tabResetJobId = null;
+    } else if (resetRequested) {
+      await this.dependencies.tabs.reload(this.active.stored.tabId);
+      selected = await this.dependencies.tabs.get(this.active.stored.tabId);
+      this.tabResetJobId = null;
     }
     await this.waitForReadyTab(this.active.stored.tabId, selected);
   }
@@ -910,6 +914,7 @@ interface ChromeLike {
       tabId: number,
       updateProperties: { active?: boolean; url?: string }
     ): Promise<PanzhiBrowserTab>;
+    reload(tabId: number): Promise<void>;
     sendMessage(tabId: number, message: unknown): Promise<unknown>;
   };
   storage: {
@@ -988,7 +993,8 @@ function createChromeController(browser: ChromeLike): PanzhiBackgroundController
       } catch {
         return null;
       }
-    }
+    },
+    reload: (tabId) => browser.tabs.reload(tabId)
   };
   const contentBridge: ContentCommandBridge = {
     contentScriptFile: resolvePackagedContentScript(

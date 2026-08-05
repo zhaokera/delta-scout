@@ -18,6 +18,7 @@ export interface PanzhiTabsApi {
     tabId: number,
     updateProperties: { active?: boolean; url?: string }
   ): Promise<PanzhiBrowserTab | null>;
+  reload(tabId: number): Promise<void>;
 }
 
 interface RankedTab {

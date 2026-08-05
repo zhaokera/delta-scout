@@ -192,7 +192,9 @@ function makeFixture(options: {
     url: canonicalUrl,
     lastAccessed: 100
   }];
-  const tabs: PanzhiTabsApi = {
+  const tabs: PanzhiTabsApi & {
+    reload(tabId: number): Promise<void>;
+  } = {
     query: vi.fn().mockResolvedValue(existingTabs),
     create: vi.fn().mockResolvedValue({
       id: 8,
@@ -206,7 +208,8 @@ function makeFixture(options: {
       if (!candidate) return null;
       if (properties.url !== undefined) candidate.url = properties.url;
       return candidate;
-    })
+    }),
+    reload: vi.fn().mockResolvedValue(undefined)
   };
   const delays: number[] = [];
   const dependencies: PanzhiBackgroundDependencies = {
@@ -550,10 +553,10 @@ describe("Panzhi MV3 worker lifecycle", () => {
     const pending = f.controller.tick();
 
     await vi.waitFor(() => expect(f.dependencies.runPage).toHaveBeenCalled());
-    expect(f.tabs.update).toHaveBeenCalledWith(7, {
-      url: canonicalUrl,
-      active: false
-    });
+    expect(f.tabs.reload).toHaveBeenCalledWith(7);
+    expect(f.tabs.update).not.toHaveBeenCalledWith(7, expect.objectContaining({
+      url: canonicalUrl
+    }));
 
     runner.resolve(snapshotResult());
     await pending;

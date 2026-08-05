@@ -635,6 +635,47 @@ function missingResultDiagnostic(
     .filter((pathname): pathname is string => pathname !== null)
     .filter((pathname, index, paths) => paths.indexOf(pathname) === index)
     .slice(0, 5);
+  const actionLabels = new Set([
+    "查询",
+    "搜索",
+    "筛选",
+    "立即筛选",
+    "确定",
+    "确认",
+    "刷新",
+    "重试",
+    "加载更多",
+    "查看更多"
+  ]);
+  const actionHints = [...root.querySelectorAll<HTMLElement>(
+    'button,[role="button"]'
+  )]
+    .filter((element) => isElementVisible(element))
+    .map((element) => normalizeVisibleText(element.textContent))
+    .filter((label) => actionLabels.has(label))
+    .filter((label, index, labels) => labels.indexOf(label) === index)
+    .slice(0, 5);
+  const statusLabels = new Set([
+    "暂无数据",
+    "暂无商品",
+    "暂无相关商品",
+    "加载中",
+    "加载失败",
+    "网络异常",
+    "请稍后重试"
+  ]);
+  const statusHints = [...root.querySelectorAll<HTMLElement>("body *")]
+    .filter((element) => isElementVisible(element))
+    .map((element) => normalizeVisibleText(element.textContent))
+    .filter((label) => statusLabels.has(label))
+    .filter((label, index, labels) => labels.indexOf(label) === index)
+    .slice(0, 5);
+  const classHints = [...root.querySelectorAll<HTMLElement>("[class]")]
+    .flatMap((element) => [...element.classList])
+    .filter((token) => /(?:goods|product|result|list|loading|empty)/i.test(token))
+    .filter((token) => /^[A-Za-z0-9_-]{1,60}$/.test(token))
+    .filter((token, index, tokens) => tokens.indexOf(token) === index)
+    .slice(0, 8);
   return [
     `allLinks=${allLinks.length}`,
     `goodsDetailLinks=${goodsDetailLinks.length}`,
@@ -643,6 +684,10 @@ function missingResultDiagnostic(
     `explicitCandidates=${explicitCandidates}`,
     `visibilityState=${root.visibilityState}`,
     `readyState=${root.readyState}`,
+    `iframeCount=${root.querySelectorAll("iframe").length}`,
+    `actionHints=${actionHints.join("|") || "none"}`,
+    `statusHints=${statusHints.join("|") || "none"}`,
+    `classHints=${classHints.join("|") || "none"}`,
     `samplePaths=${samplePaths.join("|") || "none"}`
   ].join("; ");
 }

@@ -366,10 +366,13 @@ describe("Panzhi visible-page selectors", () => {
 
   it("reports bounded result-link diagnostics without query data", () => {
     const root = loadFixture();
-    root.body.innerHTML = `<main><section>
+    root.body.innerHTML = `<main><section class="goods-list loading-state">
         <a href="/goodsDetails/SA2ONLYONE/6?token=do-not-report">商品一</a>
         <a href="/goods-details/SA2CHANGED/6?signature=do-not-report">商品二</a>
         <a href="/help?session=do-not-report">帮助</a>
+        <button class="goods-list-action">立即筛选</button>
+        <p>加载失败</p>
+        <iframe src="/goods-frame?token=do-not-report"></iframe>
       </section></main>`;
 
     const result = readResultState(root);
@@ -386,6 +389,12 @@ describe("Panzhi visible-page selectors", () => {
     expect(result.message).toContain("explicitCandidates=0");
     expect(result.message).toContain(`visibilityState=${root.visibilityState}`);
     expect(result.message).toContain(`readyState=${root.readyState}`);
+    expect(result.message).toContain("iframeCount=1");
+    expect(result.message).toContain("actionHints=立即筛选");
+    expect(result.message).toContain("statusHints=加载失败");
+    expect(result.message).toContain(
+      "classHints=goods-list|loading-state|goods-list-action"
+    );
     expect(result.message).toContain(
       "samplePaths=/goodsDetails/SA2ONLYONE/6|/goods-details/SA2CHANGED/6"
     );
