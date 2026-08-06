@@ -693,24 +693,37 @@ function emptyFingerprintDiagnostic(root: Document): string {
     ? [...branch.querySelectorAll<HTMLElement>(".virtual-list")]
     : [];
   const virtual = virtuals.length === 1 ? virtuals[0] : null;
+  const gameLists = branch
+    ? [...branch.querySelectorAll<HTMLElement>(".game-list")]
+    : [];
+  const gameList = gameLists.length === 1 ? gameLists[0] : null;
+  const gameChildren = gameList
+    ? [...gameList.children].filter(
+        (element): element is HTMLElement => element instanceof HTMLElement
+      )
+    : [];
+  const visibleGameChildren = gameChildren.filter((element) =>
+    isElementVisible(element, visibility)
+  );
   const emptyInBranch = branch
     ? [...branch.querySelectorAll<HTMLElement>(".empty")]
     : [];
   const empty = emptyInBranch.length === 1 ? emptyInBranch[0] : null;
   return [
-    `g=${counts(root, ".goods-list-with-game")}`,
-    `v=${branch ? counts(branch, ".virtual-list") : "0/0"}`,
-    `p=${virtual ? counts(virtual, ".virtual-list-phantom") : "0/0"}`,
-    `c=${virtual ? counts(virtual, ".virtual-list-container") : "0/0"}`,
-    `ev=${virtual ? counts(virtual, ".empty") : "0/0"}`,
-    `eb=${branch ? counts(branch, ".empty") : "0/0"}`,
-    `cb=${branch
-      ? branch.querySelectorAll('a[href*="/goodsDetails/"]').length
+    `ag=${branch ? counts(branch, ".all_game_list") : "0/0"}`,
+    `lt=${branch ? counts(branch, ".list_title") : "0/0"}`,
+    `gl=${branch ? counts(branch, ".game-list") : "0/0"}`,
+    `gch=${gameChildren.length}/${visibleGameChildren.length}`,
+    `gc=${gameList
+      ? gameList.querySelectorAll('a[href*="/goodsDetails/"]').length
       : 0}`,
-    `lb=${branch && resultLoadingVisible(branch) ? 1 : 0}`,
-    `vb=${blocker(virtual, branch)}`,
-    `ebl=${blocker(empty, branch)}`,
-    `ep=${descriptor(empty?.parentElement ?? null)}`
+    `glb=${blocker(gameList, branch)}`,
+    `glp=${descriptor(gameList?.parentElement ?? null)}`,
+    `gk=${gameChildren.map(descriptor).slice(0, 3).join("|") || "none"}`,
+    `pv=${branch ? counts(branch, ".virtual-list") : "0/0"}`,
+    `pe=${branch ? counts(branch, ".empty") : "0/0"}`,
+    `pvb=${blocker(virtual, branch)}`,
+    `peb=${blocker(empty, branch)}`
   ].join(",");
 }
 
@@ -828,12 +841,12 @@ function missingResultDiagnostic(
     `explicitCandidates=${explicitCandidates}`,
     `visibilityState=${root.visibilityState}`,
     `readyState=${root.readyState}`,
+    `emptyFingerprint=${emptyFingerprintDiagnostic(root)}`,
     `iframeCount=${root.querySelectorAll("iframe").length}`,
     `iframeHints=${iframeHints.join("|") || "none"}`,
     `actionHints=${actionHints.join("|") || "none"}`,
     `statusHints=${statusHints.join("|") || "none"}`,
     `classHints=${classHints.join("|") || "none"}`,
-    `emptyFingerprint=${emptyFingerprintDiagnostic(root)}`,
     `samplePaths=${samplePaths.join("|") || "none"}`
   ].join("; ");
 }

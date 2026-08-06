@@ -483,8 +483,8 @@ describe("Panzhi visible-page selectors", () => {
       "classHints=goods-list|loading-state|goods-list-action"
     );
     expect(result.message).toContain(
-      "emptyFingerprint=g=0/0,v=0/0,p=0/0,c=0/0,ev=0/0,eb=0/0," +
-      "cb=0,lb=0,vb=na,ebl=na,ep=na"
+      "emptyFingerprint=ag=0/0,lt=0/0,gl=0/0,gch=0/0,gc=0," +
+      "glb=na,glp=na,gk=none,pv=0/0,pe=0/0,pvb=na,peb=na"
     );
     expect(result.message).toContain(
       "samplePaths=/goodsDetails/SA2ONLYONE/6|/goods-details/SA2CHANGED/6"
@@ -507,9 +507,34 @@ describe("Panzhi visible-page selectors", () => {
     expect(result).toMatchObject({ kind: "failure" });
     if (result.kind !== "failure") return;
     expect(result.message).toContain(
-      "emptyFingerprint=g=1/1,v=1/0,p=1/0,c=1/0,ev=0/0,eb=1/0," +
-      "cb=0,lb=0,vb=d:div.virtual-list,ebl=d:div.empty," +
-      "ep=section.goods-list-with-game"
+      "emptyFingerprint=ag=0/0,lt=0/0,gl=0/0,gch=0/0,gc=0," +
+      "glb=na,glp=na,gk=none,pv=1/0,pe=1/0," +
+      "pvb=d:div.virtual-list,peb=d:div.empty"
+    );
+  });
+
+  it("reports the bounded visible main-list shape separately from popovers", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(root);
+    const branch = root.querySelector<HTMLElement>(".goods-list-with-game")!;
+    branch.insertAdjacentHTML("afterbegin", `
+      <div class="all_game_list">
+        <div class="list_title"></div>
+        <div class="game-list"><div class="game-empty-state"></div></div>
+      </div>
+    `);
+    const virtual = branch.querySelector<HTMLElement>(".virtual-list")!;
+    branch.append(virtual.querySelector<HTMLElement>(".empty")!);
+    virtual.setAttribute("aria-hidden", "true");
+
+    const result = readResultState(root);
+
+    expect(result).toMatchObject({ kind: "failure" });
+    if (result.kind !== "failure") return;
+    expect(result.message).toContain(
+      "emptyFingerprint=ag=1/1,lt=1/1,gl=1/1,gch=1/1,gc=0," +
+      "glb=none,glp=div.all_game_list,gk=div.game-empty-state," +
+      "pv=1/0,pe=1/1,pvb=a:div.virtual-list,peb=none"
     );
   });
 
