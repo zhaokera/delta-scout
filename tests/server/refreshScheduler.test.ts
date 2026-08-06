@@ -116,6 +116,8 @@ function sourceStatus(
     lastSuccessAt,
     itemCount: 100,
     pagesScanned: 10,
+    observedItemCount: 100,
+    latestPublished: true,
     stopReason: "end_of_pages",
     error,
     stale: false,
@@ -190,7 +192,31 @@ describe("RefreshScheduleRepository", () => {
       .toMatchObject({
         lastState: "partial",
         lastFinishedAt: "2026-08-02T01:00:00.000Z",
-        lastError: "detail_limit_reached"
+        lastError: "detail_limit_reached",
+        nextQuickAt: "2026-08-02T01:05:00.000Z"
+      });
+  });
+
+  it("schedules a five-minute top-up after reaching the detail budget", () => {
+    const database = createDatabase(":memory:");
+    const schedule = new RefreshScheduleRepository(database, baseTime);
+
+    schedule.markStarted("jiaoyimao", "quick", baseTime);
+    schedule.markFinished(
+      "jiaoyimao",
+      "quick",
+      "partial",
+      "detail_limit_reached",
+      baseTime,
+      () => 0.5
+    );
+
+    expect(schedule.list().find(({ source }) => source === "jiaoyimao"))
+      .toMatchObject({
+        lastState: "partial",
+        consecutiveFailures: 0,
+        backoffUntil: null,
+        nextQuickAt: "2026-08-02T00:05:00.000Z"
       });
   });
 

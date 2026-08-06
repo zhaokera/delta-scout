@@ -20,6 +20,13 @@ async function fixture(name: string): Promise<string> {
 }
 
 describe("PXB native hard filters", () => {
+  it("declares a six-page non-destructive quick window", () => {
+    expect(pxb7Adapter.quickRefresh).toEqual({
+      maxPages: 6,
+      mergePreviousSnapshot: true
+    });
+  });
+
   it("uses the declared account and secondary real-name hard filters", () => {
     expect(PXB_REQUIRED_ACCOUNT_FILTERS).toEqual([
       expect.objectContaining({ attrId: "103711" }),

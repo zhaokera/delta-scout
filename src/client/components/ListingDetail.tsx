@@ -483,7 +483,7 @@ export function ListingDetail({
               M7 综合价值 {scorePart(listing.score.parts.m7)} / {VALUE_SCORE_MAX.m7}
             </p>
             <p>
-              角色红皮 {scorePart(listing.score.parts.redSkins)} / {VALUE_SCORE_MAX.redSkins}
+              付费红皮价值 {scorePart(listing.score.parts.redSkins)} / {VALUE_SCORE_MAX.redSkins}
             </p>
             <p>巨浪 {scorePart(listing.score.parts.julang)} / {VALUE_SCORE_MAX.julang}</p>
             <p>价格 {scorePart(listing.score.parts.price)} / {VALUE_SCORE_MAX.price}</p>

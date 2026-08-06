@@ -10,6 +10,11 @@ import {
   SAFETY_SCORE_MAX,
   VALUE_SCORE_MAX
 } from "../../domain/scoreAllocation";
+import {
+  DEFAULT_PAID_RED_SKIN_VALUE_CNY,
+  PREMIUM_PAID_RED_SKIN_VALUE_CNY,
+  RED_SKIN_VALUE_CNY_PER_POINT
+} from "../../domain/redSkinValue";
 
 const HARD_GATES = [
   ["登录与区服", "QQ 登录 · 官方服"],
@@ -20,7 +25,11 @@ const HARD_GATES = [
 
 const VALUE_RULES = [
   ["M7 棱镜攻势", VALUE_SCORE_MAX.m7, "品质只参与价值评分，不再硬性入池"],
-  ["角色红皮", VALUE_SCORE_MAX.redSkins, "数量与目标红皮价值"],
+  [
+    "角色红皮",
+    VALUE_SCORE_MAX.redSkins,
+    `黑·天际线、维什戴尔各 ¥${PREMIUM_PAID_RED_SKIN_VALUE_CNY}；其他已识别红皮各 ¥${DEFAULT_PAID_RED_SKIN_VALUE_CNY}；每 ¥${RED_SKIN_VALUE_CNY_PER_POINT} 折 1 分`
+  ],
   ["巨浪", VALUE_SCORE_MAX.julang, "拥有状态与品质"],
   ["报价", VALUE_SCORE_MAX.price, "同一预算区间的价格竞争力"],
   ["总资产", VALUE_SCORE_MAX.assets, `每 1M 资产按约 ¥${ASSET_VALUE_CNY_PER_M} 估值`]

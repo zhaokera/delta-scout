@@ -293,6 +293,14 @@ function extractDetail(
 export const jiaoyimaoAdapter: SourceAdapter = {
   source: "jiaoyimao",
   entryUrl: FILTERED_CATALOG_URL,
+  // The public detail endpoint commonly asks for another verification after
+  // roughly ten result pages. Quick refreshes stop before that cliff, publish
+  // the newly verified rows, and retain unseen rows from the previous trusted
+  // snapshot. Deep/browser-assisted refreshes still scan to the natural end.
+  quickRefresh: {
+    maxPages: 10,
+    mergePreviousSnapshot: true
+  },
   strictPaginationProgress: true,
   allowPagesWithoutNewItems: true,
   maxConsecutivePagesWithoutNewItems: 3,

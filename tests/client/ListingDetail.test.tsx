@@ -130,7 +130,7 @@ describe("ListingDetail", () => {
       screen.getByText("验号时间 仅作参考 · 不参与评分")
     ).toBeInTheDocument();
     expect(screen.getByText("M7 综合价值 15 / 15")).toBeInTheDocument();
-    expect(screen.getByText("角色红皮 20 / 25")).toBeInTheDocument();
+    expect(screen.getByText("付费红皮价值 20 / 25")).toBeInTheDocument();
     expect(screen.getByText("巨浪 15 / 15")).toBeInTheDocument();
     expect(screen.getByText("价格 18 / 20")).toBeInTheDocument();
     expect(screen.getByText("资产 9 / 25")).toBeInTheDocument();

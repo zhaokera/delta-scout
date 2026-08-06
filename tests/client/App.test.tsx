@@ -47,6 +47,8 @@ function makeSourceStatus(
     lastSuccessAt: "2026-07-28T10:00:00.000Z",
     pagesScanned: 5,
     itemCount: 30,
+    observedItemCount: 30,
+    latestPublished: true,
     eligibleCount: 3,
     candidateCount: 3,
     balancedCandidateCount: 3,
@@ -55,6 +57,13 @@ function makeSourceStatus(
     completion: "complete",
     error: null,
     stale: false,
+    snapshotState: "current",
+    collection: {
+      method: "public_api",
+      methodLabel: "公开列表接口",
+      proofLabel: "原生筛选参数与本地硬条件二次校验",
+      nativeFilters: ["QQ 登录", "可二次实名", "¥1,900–¥4,000", "双红皮全部满足"]
+    },
     anomaly: { state: "clear" },
     ...overrides
   };
@@ -811,7 +820,7 @@ describe("App shell", () => {
     expect(
       await screen.findByRole("heading", { name: "全部合格 1" })
     ).toBeInTheDocument();
-    expect(screen.getByText("9 页")).toBeInTheDocument();
+    expect(screen.getByText(/^9 页 ·/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /PZ-CURRENT.*¥2,888/ })
     ).toBeInTheDocument();
@@ -839,8 +848,8 @@ describe("App shell", () => {
     expect(
       screen.getByRole("heading", { name: "全部合格 1" })
     ).toBeInTheDocument();
-    expect(screen.getByText("9 页")).toBeInTheDocument();
-    expect(screen.queryByText("1 页")).not.toBeInTheDocument();
+    expect(screen.getByText(/^9 页 ·/)).toBeInTheDocument();
+    expect(screen.queryByText(/^1 页 ·/)).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /PZ-CURRENT.*¥2,888/ })
     ).toBeInTheDocument();
@@ -1518,7 +1527,10 @@ describe("App shell", () => {
           stopReason: "entry_failed",
           completion: "failed",
           error: "network_error",
-          stale: true
+          stale: true,
+          observedItemCount: 0,
+          latestPublished: false,
+          snapshotState: "retained"
         }),
         makeSourceStatus({
           source: "pxb7",
@@ -1536,22 +1548,26 @@ describe("App shell", () => {
 
     render(<App api={api} />);
 
-    const complete = (await screen.findByText("交易猫")).closest("article");
+    expect(
+      await screen.findByText("2 / 3 平台为最新快照")
+    ).toBeInTheDocument();
+
+    const complete = screen.getByText("交易猫").closest("article");
     expect(complete).not.toBeNull();
     expect(within(complete!).getByText("完整")).toBeInTheDocument();
-    expect(within(complete!).getByText("5 页")).toBeInTheDocument();
-    expect(within(complete!).getByText("30 商品")).toBeInTheDocument();
-    expect(within(complete!).getByText("3 合格")).toBeInTheDocument();
-    expect(within(complete!).getByText("3 入选")).toBeInTheDocument();
+    expect(within(complete!).getByText("平台返回")).toBeInTheDocument();
+    expect(within(complete!).getByText("本地合格")).toBeInTheDocument();
+    expect(within(complete!).getByText("TOP 30")).toBeInTheDocument();
+    expect(within(complete!).getByText("公开列表接口")).toBeInTheDocument();
 
     const failed = screen.getByText("盼之代售").closest("article");
     expect(failed).not.toBeNull();
-    expect(within(failed!).getByText("本轮 0 页")).toBeInTheDocument();
+    expect(within(failed!).getByText("本轮返回 0 条")).toBeInTheDocument();
     expect(
-      within(failed!).getByText("保留旧快照 16 条")
+      within(failed!).getByText("可信快照 16 条")
     ).toBeInTheDocument();
     expect(
-      within(failed!).getByText("不参与当前候选")
+      within(failed!).getByText("继续参与统一排名")
     ).toBeInTheDocument();
 
     const partial = screen.getByText("螃蟹账号").closest("article");

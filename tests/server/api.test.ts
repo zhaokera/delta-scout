@@ -1302,7 +1302,7 @@ describe("listing API", () => {
     });
   });
 
-  it("keeps failed-source snapshots in the complete eligible view but not the pool", async () => {
+  it("keeps failed-source trusted snapshots in the eligible view and pool", async () => {
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => {
       release = resolve;
@@ -1393,8 +1393,9 @@ describe("listing API", () => {
       expect.objectContaining({
         source: "jiaoyimao",
         state: "blocked",
-        eligibleCount: 0,
-        candidateCount: 0
+        eligibleCount: 1,
+        candidateCount: 1,
+        snapshotState: "retained"
       }),
       expect.objectContaining({
         source: "panzhi",
@@ -1405,11 +1406,23 @@ describe("listing API", () => {
       expect.objectContaining({
         source: "pxb7",
         state: "failed",
-        eligibleCount: 0,
-        candidateCount: 0
+        eligibleCount: 1,
+        candidateCount: 1,
+        snapshotState: "retained",
+        collection: expect.objectContaining({
+          method: "public_api",
+          nativeFilters: expect.arrayContaining([
+            "可二次实名",
+            "双红皮全部满足"
+          ])
+        })
       })
     ]);
-    expect(pool.body.map(({ key }: Listing) => key)).toEqual(["panzhi:1"]);
+    expect(pool.body.map(({ key }: Listing) => key)).toEqual([
+      "jiaoyimao:1",
+      "panzhi:1",
+      "pxb7:1"
+    ]);
     expect(allEligible.body.map(({ key }: Listing) => key)).toEqual([
       "jiaoyimao:1",
       "panzhi:1",
@@ -2765,6 +2778,7 @@ describe("browser refresh API", () => {
 describe("Panzhi browser-native filter snapshot API", () => {
   function panzhiSnapshot() {
     return {
+      mode: "deep",
       filterProof: {
         currentUrl: "https://www.pzds.com/goodsList/391/6",
         gameLabel: "三角洲行动",
@@ -2871,6 +2885,89 @@ describe("Panzhi browser-native filter snapshot API", () => {
       ]
     });
     expect(f.admission.snapshot()).toEqual({ activeKind: "none" });
+  });
+
+  it("publishes a quick window by merging it with the last complete snapshot", async () => {
+    const f = setup();
+    const preserved = listingFor("panzhi", 91, {
+      key: "panzhi:SA2PRESERVED",
+      sourceListingId: "SA2PRESERVED",
+      url: "https://www.pzds.com/goodsDetails/SA2PRESERVED/6"
+    });
+    const baselineRunId = f.repository.startScopedScan(
+      "panzhi",
+      browserBaseTime
+    );
+    f.repository.commitScanRefresh(
+      baselineRunId,
+      [preserved],
+      [{
+        source: "panzhi",
+        state: "success",
+        attemptedAt: browserBaseTime,
+        itemCount: 1,
+        metadata: {
+          pagesScanned: 20,
+          stopReason: "no_growth_twice",
+          error: null,
+          observedItemCount: 1,
+          coverage: "full",
+          observedListingKeys: [preserved.key]
+        }
+      }],
+      browserBaseTime
+    );
+    const payload = panzhiSnapshot();
+    payload.mode = "quick";
+    payload.loadActionCount = 3;
+    payload.stopReason = "quick_window";
+
+    const response = await request(f.app)
+      .post("/api/sources/panzhi/browser-snapshot")
+      .send(payload)
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      source: "panzhi",
+      mode: "quick",
+      state: "success",
+      observedItemCount: 2,
+      publishedItemCount: 2,
+      preservedItemCount: 1,
+      droppedByPrice: 1
+    });
+    expect(
+      f.repository.getListings()
+        .filter(({ source }) => source === "panzhi")
+        .map(({ sourceListingId }) => sourceListingId)
+        .sort()
+    ).toEqual(["SA2INRANGE", "SA2PRESERVED"]);
+    expect(
+      f.repository.getSourceStatuses().find(
+        ({ source }) => source === "panzhi"
+      )
+    ).toMatchObject({
+      state: "success",
+      itemCount: 2,
+      pagesScanned: 20,
+      stopReason: "quick_window"
+    });
+  });
+
+  it("requires a complete baseline before accepting a quick window", async () => {
+    const f = setup();
+    const payload = panzhiSnapshot();
+    payload.mode = "quick";
+    payload.loadActionCount = 3;
+    payload.stopReason = "quick_window";
+
+    await request(f.app)
+      .post("/api/sources/panzhi/browser-snapshot")
+      .send(payload)
+      .expect(409, {
+        error: "panzhi_complete_snapshot_required",
+        message: "首次使用盼之时需要先完成一次完整快照"
+      });
   });
 
   it("rejects a snapshot without the exact native 1900-4000 proof", async () => {

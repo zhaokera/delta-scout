@@ -123,16 +123,23 @@ type RefreshSourceResult =
       kind: "fresh";
       source: SourceId;
       listings: Listing[];
-      statusUpdate: SourceRefreshStatusUpdate;
+      statusUpdate: Extract<
+        SourceRefreshStatusUpdate,
+        { state: "success" | "partial" }
+      >;
     }
   | {
       kind: "failed";
       source: SourceId;
-      statusUpdate: SourceRefreshStatusUpdate;
+      statusUpdate: Extract<
+        SourceRefreshStatusUpdate,
+        { state: "blocked" | "failed" }
+      >;
     };
 
 type StopReason =
   | "end_of_pages"
+  | "quick_window"
   | "no_new_items"
   | "pagination_stalled"
   | "repeated_request"
@@ -271,7 +278,7 @@ export class CollectionCoordinator {
     adapter: SourceAdapter,
     refreshStartedAt: Date,
     mode: RefreshMode,
-    previousById: ReadonlyMap<string, Listing>,
+    previousListings: readonly Listing[],
     onProgress?: ProgressListener
   ): Promise<RefreshSourceResult> {
     if (adapter.requiresBrowserSnapshot) {
@@ -288,6 +295,15 @@ export class CollectionCoordinator {
     }
     const limits =
       this.limitsBySource.get(adapter.source) ?? this.limits;
+    const quickRefresh =
+      mode === "quick" && previousListings.length > 0
+        ? adapter.quickRefresh
+        : undefined;
+    const previousById = new Map(
+      previousListings
+        .filter(({ sourceListingId }) => sourceListingId !== null)
+        .map((listing) => [listing.sourceListingId!, listing] as const)
+    );
     const entry = await this.fetcher.fetchPage(
       { url: adapter.entryUrl },
       adapter.source
@@ -620,6 +636,13 @@ export class CollectionCoordinator {
         break;
       }
       if (
+        quickRefresh &&
+        pages >= quickRefresh.maxPages
+      ) {
+        stopReason = "quick_window";
+        break;
+      }
+      if (
         newItemCount === 0 &&
         !adapter.allowPagesWithoutNewItems
       ) {
@@ -646,9 +669,24 @@ export class CollectionCoordinator {
       observedCapturedAt.getTime() < refreshStartedAt.getTime()
         ? new Date(refreshStartedAt.getTime())
         : observedCapturedAt;
-    const listings = collected.map((record) =>
+    const observedListings = collected.map((record) =>
       buildListing(record, capturedAt)
     );
+    const mergePreviousSnapshot =
+      stopReason === "quick_window" &&
+      quickRefresh?.mergePreviousSnapshot === true;
+    const listings = mergePreviousSnapshot
+      ? [
+          ...new Map([
+            ...previousListings.map(
+              (listing) => [listing.key, listing] as const
+            ),
+            ...observedListings.map(
+              (listing) => [listing.key, listing] as const
+            )
+          ]).values()
+        ]
+      : observedListings;
     return {
       kind: "fresh",
       source: adapter.source,
@@ -661,7 +699,10 @@ export class CollectionCoordinator {
         metadata: {
           pagesScanned: pages,
           stopReason: stopReason ?? "end_of_pages",
-          error: sourceError
+          error: sourceError,
+          observedItemCount: observedListings.length,
+          coverage: mergePreviousSnapshot ? "incremental" : "full",
+          observedListingKeys: observedListings.map(({ key }) => key)
         }
       }
     };
@@ -762,20 +803,14 @@ export class CollectionCoordinator {
       });
       try {
         await this.fetcher.beginSource?.(adapter.source);
-        const previousById = new Map(
-          retainedListings
-            .filter(
-              (listing) =>
-                listing.source === adapter.source &&
-                listing.sourceListingId !== null
-            )
-            .map((listing) => [listing.sourceListingId!, listing] as const)
+        const previousListings = retainedListings.filter(
+          (listing) => listing.source === adapter.source
         );
         result = await this.collectSource(
           adapter,
           refreshStartedAt,
           mode,
-          previousById,
+          previousListings,
           (event) => {
             if (event.type === "detail_progress") {
               sourceDetails = event.details;
@@ -805,7 +840,10 @@ export class CollectionCoordinator {
           ? result.statusUpdate.metadata.pagesScanned
           : 0;
       const sourceSummaries =
-        result.kind === "fresh" ? result.listings.length : 0;
+        result.kind === "fresh"
+          ? (result.statusUpdate.metadata.observedItemCount ??
+            result.listings.length)
+          : 0;
       onProgress?.({
         type: "source_complete",
         phase: "list",
@@ -875,7 +913,20 @@ export class CollectionCoordinator {
       return "failed";
     }
 
-    const freshWithDuplicates = markPossibleDuplicates(freshListings);
+    const replacedSources = new Set(
+      freshOutcomes.map(({ source }) => source)
+    );
+    const combinedListings = [
+      ...retainedListings.filter(
+        (listing) => !replacedSources.has(listing.source)
+      ),
+      ...freshListings
+    ].map((listing) => ({
+      ...listing,
+      score: null,
+      possibleDuplicateKeys: []
+    }));
+    const allWithDuplicates = markPossibleDuplicates(combinedListings);
     onProgress?.({
       type: "score",
       phase: "score",
@@ -885,27 +936,12 @@ export class CollectionCoordinator {
       details: totalDetails,
       message: "正在统一评分"
     });
-    const scored = scoreEligibleListings(freshWithDuplicates, this.now());
+    const scored = scoreEligibleListings(allWithDuplicates, this.now());
     const scores = new Map(scored.map((listing) => [listing.key, listing.score]));
-    const freshDerived = freshWithDuplicates.map((listing) => ({
+    const nextListings = allWithDuplicates.map((listing) => ({
       ...listing,
       score: scores.get(listing.key) ?? null
     }));
-    const replacedSources = new Set(
-      freshOutcomes.map(({ source }) => source)
-    );
-    const retainedWithoutDerivedData = retainedListings
-      .filter((listing) => !replacedSources.has(listing.source))
-      .map((listing) => ({
-        ...listing,
-        score: null,
-        possibleDuplicateKeys: []
-      }));
-
-    const nextListings = [
-      ...retainedWithoutDerivedData,
-      ...freshDerived
-    ];
     onProgress?.({
       type: "commit",
       phase: "commit",

@@ -18,10 +18,10 @@ describe("scoreEligibleListings", () => {
     const [result] = scoreEligibleListings([makeListing()], now);
 
     expect(result.score).toEqual({
-      total: 61,
-      exactTotal: 61.3,
+      total: 71,
+      exactTotal: 70.9,
       preferenceAdjustment: 0,
-      value: 51.66541353383458,
+      value: 63.66541353383458,
       safety: 10,
       dataQuality: 100,
       riskLevel: "low",
@@ -31,7 +31,7 @@ describe("scoreEligibleListings", () => {
       },
       parts: {
         m7: 10,
-        redSkins: 5,
+        redSkins: 17,
         julang: 15,
         price: 8.365413533834587,
         assets: 13.3,
@@ -224,7 +224,7 @@ describe("scoreEligibleListings", () => {
     expect(rare.score?.riskLevel).toBe(plain.score?.riskLevel);
   });
 
-  it("caps red-skin value at five and scores Julang separately", () => {
+  it("caps red-skin value at 25 points and scores Julang separately", () => {
     const [result] = scoreEligibleListings([
       makeListing({
         m7PrismQuality: "C",
@@ -237,7 +237,7 @@ describe("scoreEligibleListings", () => {
     expect(result.score?.parts.redSkins).toBe(25);
     expect(result.score?.parts.julang).toBe(15);
     expect(result.score?.valueReasons.join(" ")).toContain(
-      "5 个已识别角色红皮"
+      "付费红皮估值约 ¥1600"
     );
     expect(result.score?.valueReasons.join(" ")).toContain("巨浪已拥有");
   });
@@ -394,8 +394,8 @@ describe("scoreEligibleListings", () => {
     expect(scoredFields[1]).toEqual(scoredFields[0]);
     expect(scoredFields[2]).toEqual(scoredFields[0]);
     expect(scoredFields[0]).toMatchObject({
-      total: 61,
-      exactTotal: 61.3,
+      total: 71,
+      exactTotal: 70.9,
       safety: 10,
       dataQuality: 100,
       risk: "low",
@@ -435,7 +435,7 @@ describe("scoreEligibleListings", () => {
       })
     ], now);
 
-    expect(result.score?.value).toBeCloseTo(17.2952380952);
+    expect(result.score?.value).toBeCloseTo(29.2952380952);
     expect(result.score?.safety).toBe(10);
     expect(result.score?.dataQuality).toBe(80);
     expect(result.score?.total).toBe(
@@ -486,7 +486,7 @@ describe("scoreEligibleListings", () => {
     ], now);
 
     expect(result.score?.parts.m7).toBe(0);
-    expect(result.score?.parts.redSkins).toBe(10);
+    expect(result.score?.parts.redSkins).toBe(22);
     expect(result.score?.valueReasons.join(" ")).toContain("M7 未发现");
   });
 

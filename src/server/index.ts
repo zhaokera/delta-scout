@@ -9,6 +9,9 @@ import {
 } from "./browserRefresh/service.js";
 import { CollectionCoordinator } from "./collector/coordinator.js";
 import { PublicPageFetcher } from "./collector/fetcher.js";
+import {
+  PRODUCTION_COLLECTION_LIMITS_BY_SOURCE
+} from "./collector/productionLimits.js";
 import { sourceAdapters } from "./collector/sources.js";
 import { createDatabase } from "./db.js";
 import {
@@ -64,18 +67,7 @@ const coordinator = new CollectionCoordinator({
     minimumIntervalMsBySource: { pxb7: 600 }
   }),
   repository,
-  limitsBySource: {
-    jiaoyimao: {
-      maxPages: 650,
-      maxSummaries: 10_100,
-      maxDetails: 120
-    },
-    pxb7: {
-      maxPages: 650,
-      maxSummaries: 10_100,
-      maxDetails: 10_100
-    }
-  }
+  limitsBySource: PRODUCTION_COLLECTION_LIMITS_BY_SOURCE
 });
 const scheduleRepository = new RefreshScheduleRepository(
   database,

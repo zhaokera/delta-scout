@@ -1237,7 +1237,7 @@ describe("ListingRepository", () => {
     );
   });
 
-  it("rescales the retained trusted snapshot with fresh sources while an anomaly is quarantined", () => {
+  it("rescales every retained trusted snapshot with fresh sources while an anomaly is quarantined", () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const trusted = sourceListings("panzhi", 44, "trusted").map(
       (listing) => ({ ...listing, score: null })
@@ -1285,7 +1285,7 @@ describe("ListingRepository", () => {
 
     expect(repository.getListing(trusted[0].key)?.score).not.toBeNull();
     expect(repository.getListing(fresh.key)?.score).not.toBeNull();
-    expect(repository.getListing(failedRetained.key)?.score).toBeNull();
+    expect(repository.getListing(failedRetained.key)?.score).not.toBeNull();
   });
 
   it("does not publish an anomalously low partial scan or start confirmation", () => {
@@ -1853,6 +1853,56 @@ describe("ListingRepository", () => {
         scanTime.getTime() + 50 * 1_000
       ).toISOString()
     });
+  });
+
+  it("preserves scan runs referenced by successful Panzhi browser jobs while pruning history", () => {
+    const database = createDatabase(":memory:");
+    const repository = new ListingRepository(database);
+    let linkedRunId = 0;
+
+    for (let index = 0; index < 51; index += 1) {
+      const when = new Date(scanTime.getTime() + index * 1_000);
+      const runId = repository.startScan(when);
+      repository.commitScanRefresh(
+        runId,
+        [],
+        [
+          successUpdate("jiaoyimao", 0),
+          successUpdate("panzhi", 0),
+          successUpdate("pxb7", 0)
+        ],
+        when
+      );
+      if (index !== 0) continue;
+
+      linkedRunId = runId;
+      database.prepare(`
+        INSERT INTO panzhi_browser_jobs (
+          id, mode, state, completed_bearer_digest,
+          normalized_request_digest, result_json, scan_run_id,
+          created_at, updated_at, finished_at
+        ) VALUES (?, 'quick', 'success', ?, ?, '{}', ?, ?, ?, ?)
+      `).run(
+        "00000000-0000-4000-8000-000000000001",
+        "a".repeat(64),
+        "b".repeat(64),
+        runId,
+        when.toISOString(),
+        when.toISOString(),
+        when.toISOString()
+      );
+    }
+
+    expect(
+      database.prepare(
+        "SELECT COUNT(*) AS count FROM scan_runs WHERE is_baseline = 0"
+      ).get()
+    ).toEqual({ count: 51 });
+    expect(
+      database.prepare(
+        "SELECT id FROM scan_runs WHERE id = ?"
+      ).get(linkedRunId)
+    ).toEqual({ id: linkedRunId });
   });
 
   it("idempotently reparses, reclassifies, and rescores stored listings without fabricating history", () => {

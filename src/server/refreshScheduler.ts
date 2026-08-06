@@ -243,7 +243,9 @@ export class RefreshScheduleRepository {
         status.lastSuccessAt,
         addMinutes(
           new Date(status.lastSuccessAt),
-          schedule.quickIntervalMinutes
+          status.error === "detail_limit_reached"
+            ? 5
+            : schedule.quickIntervalMinutes
         ).toISOString(),
         status.lastAttemptAt ?? status.lastSuccessAt,
         status.state,
@@ -339,7 +341,9 @@ export class RefreshScheduleRepository {
     };
     const nextQuick = addMinutes(
       at,
-      jitter(row.quickIntervalMinutes)
+      error === "detail_limit_reached"
+        ? 5
+        : jitter(row.quickIntervalMinutes)
     ).toISOString();
     const nextDeep = mode === "deep"
       ? addMinutes(at, jitter(row.deepIntervalMinutes)).toISOString()

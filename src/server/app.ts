@@ -127,6 +127,35 @@ const PanzhiAutomationDelayBodySchema = z.strictObject({
 });
 type PoolMode = z.infer<typeof PoolModeSchema>;
 
+const SOURCE_COLLECTION_PROFILES: Record<
+  SourceId,
+  {
+    method: "hybrid_browser_bridge" | "browser_snapshot" | "public_api";
+    methodLabel: string;
+    proofLabel: string;
+    nativeFilters: string[];
+  }
+> = {
+  jiaoyimao: {
+    method: "hybrid_browser_bridge",
+    methodLabel: "公开接口 + 登录浏览器接管",
+    proofLabel: "筛选 URL 与详情验号双重核验",
+    nativeFilters: ["QQ 官服", "可二次实名", "¥1,900–¥4,000", "双红皮"]
+  },
+  panzhi: {
+    method: "browser_snapshot",
+    methodLabel: "登录浏览器原生筛选快照",
+    proofLabel: "提交筛选控件 ID、全部满足语义与可见卡片",
+    nativeFilters: ["QQ 官服", "可二次实名", "¥1,900–¥4,000", "双红皮全部满足"]
+  },
+  pxb7: {
+    method: "public_api",
+    methodLabel: "公开列表接口",
+    proofLabel: "原生筛选参数与本地硬条件二次校验",
+    nativeFilters: ["QQ 登录", "可二次实名", "¥1,900–¥4,000", "双红皮全部满足"]
+  }
+};
+
 const BROWSER_ERROR_MESSAGES: Record<
   BrowserRefreshServiceErrorCode,
   string
@@ -440,7 +469,8 @@ function readCurrentListingSnapshot(
   const activeSources = new Set(
     statuses
       .filter(
-        ({ state }) => state === "success" || state === "partial"
+        ({ lastSuccessAt, itemCount }) =>
+          lastSuccessAt !== null && itemCount > 0
       )
       .map(({ source }) => source)
   );
@@ -502,6 +532,14 @@ function derivedSourceStatuses(
   }
   return snapshot.statuses.map((status) => ({
     ...status,
+    collection: SOURCE_COLLECTION_PROFILES[status.source],
+    snapshotState:
+      status.lastSuccessAt === null || status.itemCount === 0
+        ? "none"
+        : status.latestPublished &&
+            (status.state === "success" || status.state === "partial")
+          ? "current"
+          : "retained",
     eligibleCount: eligibleCounts.get(status.source) ?? 0,
     candidateCount:
       (mode === "balanced" ? balancedCounts : globalCounts).get(

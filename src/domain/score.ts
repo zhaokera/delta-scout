@@ -16,6 +16,10 @@ import {
   SAFETY_SCORE_MAX,
   VALUE_SCORE_MAX
 } from "./scoreAllocation.js";
+import {
+  RED_SKIN_VALUE_CNY_PER_POINT,
+  redSkinValuation
+} from "./redSkinValue.js";
 
 type AssetValuationInput = Pick<
   Listing,
@@ -216,10 +220,12 @@ function scoreOne(
   const m7 = combinedM7 > VALUE_SCORE_MAX.m7
     ? VALUE_SCORE_MAX.m7
     : combinedM7;
-  const scoredRedSkinCount =
-    listing.redSkins.length > 5 ? 5 : listing.redSkins.length;
-  const redSkins =
-    scoredRedSkinCount * (VALUE_SCORE_MAX.redSkins / 5);
+  const redSkinValue = redSkinValuation(listing);
+  const uncappedRedSkinPoints =
+    redSkinValue.estimatedCny / RED_SKIN_VALUE_CNY_PER_POINT;
+  const redSkins = uncappedRedSkinPoints > VALUE_SCORE_MAX.redSkins
+    ? VALUE_SCORE_MAX.redSkins
+    : uncappedRedSkinPoints;
   const julang = listing.julangStatus === "owned"
     ? VALUE_SCORE_MAX.julang
     : 0;
@@ -256,7 +262,9 @@ function scoreOne(
           .map((finish) => M7_RARE_FINISH_LABELS[finish])
           .join(" · ")}，价值 ${m7RareFinish.toFixed(1)}/${M7_RARE_FINISH_POINTS}`
       : `M7 稀有模板未发现，价值 0.0/${M7_RARE_FINISH_POINTS}`,
-    `${listing.redSkins.length} 个已识别角色红皮，价值 ${redSkins.toFixed(1)}/${VALUE_SCORE_MAX.redSkins}`,
+    redSkinValue.items.length > 0
+      ? `付费红皮估值约 ¥${redSkinValue.estimatedCny}（${redSkinValue.items.map(({ label, valueCny }) => `${label} ¥${valueCny}`).join("；")}），价值 ${redSkins.toFixed(1)}/${VALUE_SCORE_MAX.redSkins}`
+      : `未发现可计价角色红皮，价值 0.0/${VALUE_SCORE_MAX.redSkins}`,
     `${julangReason}，价值 ${julang.toFixed(1)}/${VALUE_SCORE_MAX.julang}`,
     `价格位置 ${priceAffordability.toFixed(1)}/${PRICE_AFFORDABILITY_SCORE_MAX}；资产回收率 ${recoveryRate === null ? "待核验" : `${(recoveryRate * 100).toFixed(0)}%`}，性价比 ${recoveryPoints.toFixed(1)}/${ASSET_RECOVERY_SCORE_MAX}；价格综合 ${price.toFixed(1)}/${VALUE_SCORE_MAX.price}`,
     assetValueResult.sourceM === null

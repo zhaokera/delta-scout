@@ -13,8 +13,18 @@ function sourceState(status: SourceStatusView): {
   if (status.anomaly.state === "suspect") {
     return { label: "数据骤降待确认", tone: "warn" };
   }
+  if (status.snapshotState === "retained") {
+    return { label: "沿用可信快照", tone: "warn" };
+  }
   if (status.completion === "complete") {
     return { label: "完整", tone: "ok" };
+  }
+  if (
+    status.completion === "partial" &&
+    status.error === "detail_limit_reached" &&
+    status.stopReason === "end_of_pages"
+  ) {
+    return { label: "列表完整 · 详情补全中", tone: "warn" };
   }
   if (status.completion === "partial") {
     return { label: "部分完成", tone: "warn" };
@@ -39,6 +49,7 @@ function sourceState(status: SourceStatusView): {
 
 const STOP_REASON_LABELS: Record<string, string> = {
   end_of_pages: "已到公开末页",
+  quick_window: "快速增量已合并",
   no_new_items: "本页无新增商品",
   pagination_stalled: "分页未推进，结果不完整",
   repeated_request: "重复请求保护停止",
@@ -82,14 +93,32 @@ export function SourceStrip({
   jiaoyimaoRefreshDisabled?: boolean;
   onJiaoyimaoRefresh?: () => void;
 }) {
+  const currentCount = statuses.filter(
+    ({ snapshotState }) => snapshotState === "current"
+  ).length;
+  const retainedCount = statuses.filter(
+    ({ snapshotState }) => snapshotState === "retained"
+  ).length;
   return (
-    <section className="source-strip" aria-label="平台采集状态">
-      {statuses.map((status) => {
+    <section className="source-status-board" aria-label="平台采集状态">
+      <header className="source-coverage">
+        <div>
+          <small>SOURCE COVERAGE</small>
+          <strong>{currentCount} / 3 平台为最新快照</strong>
+        </div>
+        <p>
+          {statuses.length < 3
+            ? "正在读取三个来源的快照状态。"
+            : retainedCount > 0
+            ? `${retainedCount} 个平台沿用上次可信快照；保留候选并明确标记，不冒充本轮新数据。`
+            : "三个来源均使用最近成功发布的数据。"}
+        </p>
+      </header>
+      <div className="source-strip">
+        {statuses.map((status) => {
         const state = sourceState(status);
-        const retained =
-          status.completion === "blocked" ||
-          status.completion === "failed";
-        const idle = status.completion === "idle";
+        const retained = status.snapshotState === "retained";
+        const idle = status.snapshotState === "none";
         const anomaly =
           status.anomaly.state === "suspect" ? status.anomaly : null;
         return (
@@ -120,9 +149,9 @@ export function SourceStrip({
               </div>
             ) : retained ? (
               <div className="source-card__retained">
-                <span>本轮 0 页</span>
-                <span>保留旧快照 {status.itemCount} 条</span>
-                <span>不参与当前候选</span>
+                <span>本轮返回 {status.observedItemCount} 条</span>
+                <span>可信快照 {status.itemCount} 条</span>
+                <span>继续参与统一排名</span>
               </div>
             ) : idle ? (
               <div className="source-card__retained">
@@ -135,13 +164,30 @@ export function SourceStrip({
                 <span>未参与候选</span>
               </div>
             ) : (
-              <div className="source-card__metrics">
-                <span>{status.pagesScanned} 页</span>
-                <span>{status.itemCount} 商品</span>
-                <span>{status.eligibleCount} 合格</span>
-                <span>{status.candidateCount} 入选</span>
-              </div>
+              <p className="source-card__snapshot-note">
+                {status.stopReason === "quick_window"
+                  ? `本轮 ${status.pagesScanned} 页增量已合并至 ${status.itemCount} 条可信快照`
+                  : `${status.pagesScanned} 页 · ${status.itemCount} 条可信快照`}
+              </p>
             )}
+            {!idle ? (
+              <div className="source-card__funnel" aria-label="数据筛选漏斗">
+                <span><small>平台返回</small><strong>{status.observedItemCount}</strong></span>
+                <i aria-hidden="true">→</i>
+                <span><small>本地合格</small><strong>{status.eligibleCount}</strong></span>
+                <i aria-hidden="true">→</i>
+                <span><small>TOP 30</small><strong>{status.candidateCount}</strong></span>
+              </div>
+            ) : null}
+            <div className="source-card__collection">
+              <span>{status.collection.methodLabel}</span>
+              <small>{status.collection.proofLabel}</small>
+            </div>
+            <div className="source-card__filters" aria-label="平台原生筛选证明">
+              {status.collection.nativeFilters.map((filter) => (
+                <span key={filter}>{filter}</span>
+              ))}
+            </div>
             <div className="source-card__footer">
               <p
                 className={
@@ -173,7 +219,8 @@ export function SourceStrip({
             ) : null}
           </article>
         );
-      })}
+        })}
+      </div>
     </section>
   );
 }

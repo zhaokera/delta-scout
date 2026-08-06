@@ -58,6 +58,8 @@ export interface SourceStatus {
   lastSuccessAt: string | null;
   itemCount: number;
   pagesScanned: number;
+  observedItemCount: number;
+  latestPublished: boolean;
   stopReason: string | null;
   error: string | null;
   stale: boolean;
@@ -108,6 +110,8 @@ interface SourceStatusRow {
   first_detected_at: string | null;
   last_detected_at: string | null;
   anomaly_reason: string | null;
+  latest_observed_item_count: number | null;
+  latest_published: number | null;
 }
 
 export interface ScanMetadata {
@@ -917,14 +921,17 @@ export class ListingRepository {
       | { scope: "all_sources" | "single_source" }
       | undefined;
     if (!runScope) throw new Error("刷新轮次不存在");
-    const candidateSources = new Set<SourceId>(
-      preparedUpdates
+    const candidateSources = new Set<SourceId>([
+      ...[...sourceStatus.values()]
+        .filter(({ lastSuccessAt }) => lastSuccessAt !== null)
+        .map(({ source }) => source),
+      ...preparedUpdates
         .filter(
           ({ published, anomalyState }) =>
             published || anomalyState === "suspect"
         )
         .map(({ original }) => original.source)
-    );
+    ]);
     if (runScope.scope === "single_source") {
       for (const status of sourceStatus.values()) {
         if (status.state === "success" || status.state === "partial") {
@@ -2242,6 +2249,11 @@ export class ListingRepository {
               LIMIT 1
             )
         )
+        AND id NOT IN (
+          SELECT scan_run_id
+          FROM panzhi_browser_jobs
+          WHERE scan_run_id IS NOT NULL
+        )
     `);
   }
 
@@ -2593,7 +2605,25 @@ export class ListingRepository {
                g.confirmation_count,
                g.first_detected_at,
                g.last_detected_at,
-               g.reason AS anomaly_reason
+               g.reason AS anomaly_reason,
+               (
+                 SELECT sr.observed_item_count
+                 FROM scan_source_results sr
+                 JOIN scan_runs r ON r.id = sr.run_id
+                 WHERE sr.source = s.source
+                   AND r.is_baseline = 0
+                 ORDER BY sr.run_id DESC
+                 LIMIT 1
+               ) AS latest_observed_item_count,
+               (
+                 SELECT sr.published
+                 FROM scan_source_results sr
+                 JOIN scan_runs r ON r.id = sr.run_id
+                 WHERE sr.source = s.source
+                   AND r.is_baseline = 0
+                 ORDER BY sr.run_id DESC
+                 LIMIT 1
+               ) AS latest_published
         FROM source_status s
         JOIN source_anomaly_guards g ON g.source = s.source
         ORDER BY s.source
@@ -2629,6 +2659,11 @@ export class ListingRepository {
         lastSuccessAt: row.last_success_at,
         itemCount: row.item_count,
         pagesScanned: row.pages_scanned,
+        observedItemCount:
+          row.latest_observed_item_count ?? row.item_count,
+        latestPublished: row.latest_published === null
+          ? row.last_success_at !== null
+          : row.latest_published === 1,
         stopReason: row.stop_reason,
         error: row.error,
         anomaly,

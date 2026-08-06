@@ -272,6 +272,14 @@ function embeddedDetail(product: Product): ListingDetail {
 export const pxb7Adapter: SourceAdapter = {
   source: "pxb7",
   entryUrl: BASE_URL,
+  quickRefresh: {
+    // The native query is newest-first in the public storefront. A quick
+    // refresh only re-observes the leading window and merges it into the last
+    // complete snapshot; the daily deep refresh remains authoritative for
+    // removals and complete coverage.
+    maxPages: 6,
+    mergePreviousSnapshot: true
+  },
   allowPagesWithoutNewItems: true,
 
   discoverCatalog(html, query) {

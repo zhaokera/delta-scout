@@ -35,6 +35,43 @@ const TERMINAL_STATES: ReadonlySet<JiaoyimaoBrowserRefreshState> =
     "expired"
   ]);
 
+const JIAOYIMAO_VERIFICATION_URL = (() => {
+  const url = new URL(
+    "https://www.jiaoyimao.com/jg2007840/f8845003-c8845004/o1687157900084320/"
+  );
+  url.searchParams.set("rId", "108");
+  url.searchParams.set(
+    "priceCondition",
+    JSON.stringify({
+      price: {
+        conditionList: ["1900,4000"],
+        statConditionList: ["1900-4000"]
+      }
+    })
+  );
+  url.searchParams.set(
+    "searchCondition",
+    JSON.stringify({
+      is_second_real_name: {
+        selectType: 1,
+        conditionList: ["10071"],
+        statConditionList: ["可二次实名"],
+        conditionType: 2
+      },
+      selling_point_7322805066952352771: {
+        selectType: 1,
+        multiSearchCondition: false,
+        conditionList: ["骇爪-维什戴尔", "露娜-黑·天际线"],
+        statConditionList: ["骇爪-维什戴尔", "露娜-黑·天际线"],
+        conditionType: 3
+      }
+    })
+  );
+  url.searchParams.set("enforcePlat", "2");
+  url.searchParams.set("newPage", "true");
+  return url.toString();
+})();
+
 export interface JiaoyimaoBrowserRefreshPanelProps {
   job: JiaoyimaoBrowserRefreshJob | null;
   claimCode: string | null;
@@ -333,6 +370,14 @@ export function JiaoyimaoBrowserRefreshPanel({
         ) : null}
 
         <div className="browser-refresh-panel__actions">
+          {active ? (
+            <a
+              className="browser-refresh-panel__primary"
+              href={JIAOYIMAO_VERIFICATION_URL}
+            >
+              打开交易猫验证页 ↗
+            </a>
+          ) : null}
           {!unknownState && !active ? (
             <button
               className="browser-refresh-panel__primary"

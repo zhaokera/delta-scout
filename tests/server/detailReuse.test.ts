@@ -62,6 +62,46 @@ describe("detail reuse", () => {
     ).toBe(true);
   });
 
+  it("reuses unchanged evidence without requiring display-only fields", () => {
+    const listing = trustedListing(0);
+    const displayFieldsMissing = {
+      ...listing,
+      eligibility: "needs_verification" as const,
+      loginPlatform: "unknown" as const,
+      service: "unknown" as const,
+      recoveryCoverage: null,
+      verificationAt: null,
+      score: null
+    };
+
+    expect(detailReuseMaxAge(displayFieldsMissing)).toBe(
+      6 * 60 * 60 * 1000
+    );
+    expect(canReuseListingDetail(
+      displayFieldsMissing,
+      summary(),
+      new Date("2026-08-02T06:59:59.000Z")
+    )).toBe(true);
+    expect(canReuseListingDetail(
+      displayFieldsMissing,
+      summary(),
+      new Date("2026-08-02T07:00:01.000Z")
+    )).toBe(false);
+  });
+
+  it("uses the local capture time instead of the seller verification time", () => {
+    const listing = {
+      ...trustedListing(55),
+      verificationAt: "2025-01-01T00:00:00.000Z"
+    };
+
+    expect(canReuseListingDetail(
+      listing,
+      summary(),
+      new Date("2026-08-02T06:00:00.000Z")
+    )).toBe(true);
+  });
+
   it("does not reuse evidence after visible card content changes", () => {
     expect(
       canReuseListingDetail(

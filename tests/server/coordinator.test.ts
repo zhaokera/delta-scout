@@ -1605,7 +1605,7 @@ describe("CollectionCoordinator", () => {
     ).toEqual(beforeStatuses);
   });
 
-  it("keeps failed old payloads unscored while scoring other fresh sources", async () => {
+  it("keeps a failed source's last trusted snapshot scored with fresh sources", async () => {
     const repository = new ListingRepository(createDatabase(":memory:"));
     const oldScore = {
       ...makeScore(99, {
@@ -1678,8 +1678,7 @@ describe("CollectionCoordinator", () => {
       lastSuccessAt: oldStatus?.lastSuccessAt
     });
     expect(repository.getListing("jiaoyimao:old")).toMatchObject({
-      score: null,
-      possibleDuplicateKeys: []
+      score: expect.objectContaining({ total: expect.any(Number) })
     });
     expect(
       repository.getListings().find(({ source }) => source === "panzhi")
@@ -1687,6 +1686,153 @@ describe("CollectionCoordinator", () => {
     ).toMatchObject({
       price: 6.107426717645696,
       assets: 13.4
+    });
+  });
+
+  it("merges a bounded quick window and only removes unseen PXB items on deep refresh", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    repository.replaceSourceSnapshot(
+      "pxb7",
+      [1, 2, 3, 4].map((index) =>
+        makeListing({
+          source: "pxb7",
+          key: `pxb7:${index}`,
+          sourceListingId: String(index),
+          url: `https://pxb7.test/detail/${index}`
+        })
+      ),
+      "success",
+      new Date("2026-08-03T00:00:00.000Z"),
+      { pagesScanned: 3, stopReason: "end_of_pages" }
+    );
+    const adapter = fakeAdapter({
+      source: "pxb7",
+      entryUrl: "https://pxb7.test/",
+      quickRefresh: { maxPages: 2, mergePreviousSnapshot: true },
+      discoverCatalog: () => ({
+        kind: "ok",
+        request: { url: "https://pxb7.test/list/1" }
+      }),
+      parseList: (html) => ({
+        kind: "ok",
+        items: (html === "page-one"
+          ? [1, 5]
+          : html === "page-two"
+            ? [2]
+            : [3]
+        ).map((index) =>
+          summaryForSource("pxb7", index, {
+            sourceListingId: String(index),
+            url: `https://pxb7.test/detail/${index}`,
+            embeddedDetail: listingDetail()
+          })
+        )
+      }),
+      nextPage: (html) =>
+        html === "page-one"
+          ? { url: "https://pxb7.test/list/2" }
+          : html === "page-two"
+            ? { url: "https://pxb7.test/list/3" }
+            : null
+    });
+    const fetcher = new RoutingFetcher((request) => {
+      if (request.url === adapter.entryUrl) return ok(request.url, "home");
+      if (request.url.endsWith("/list/1")) return ok(request.url, "page-one");
+      if (request.url.endsWith("/list/2")) return ok(request.url, "page-two");
+      if (request.url.endsWith("/list/3")) return ok(request.url, "page-three");
+      return { kind: "failed", url: request.url, error: "unexpected" };
+    });
+    const coordinator = new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      now: () => new Date("2026-08-04T01:00:00.000Z")
+    });
+    const quickRunId = repository.startScopedScan(
+      "pxb7",
+      new Date("2026-08-04T01:00:00.000Z")
+    );
+
+    expect(
+      await coordinator.refreshSource("pxb7", quickRunId, "quick")
+    ).toBe("success");
+    expect(
+      fetcher.calls.filter(({ url }) => url.includes("/list/"))
+    ).toHaveLength(2);
+    expect(repository.getListings().map(({ key }) => key).sort()).toEqual([
+      "pxb7:1",
+      "pxb7:2",
+      "pxb7:3",
+      "pxb7:4",
+      "pxb7:5"
+    ]);
+    expect(sourceStatus(repository, "pxb7")).toMatchObject({
+      state: "success",
+      itemCount: 5,
+      observedItemCount: 3,
+      pagesScanned: 2,
+      stopReason: "quick_window"
+    });
+    expect(repository.getScanHistory(1)[0].sources[0]).toMatchObject({
+      observedItemCount: 3,
+      published: true,
+      stopReason: "quick_window"
+    });
+
+    const deepRunId = repository.startScopedScan(
+      "pxb7",
+      new Date("2026-08-04T02:00:00.000Z")
+    );
+    expect(
+      await coordinator.refreshSource("pxb7", deepRunId, "deep")
+    ).toBe("success");
+    expect(repository.getListings().map(({ key }) => key).sort()).toEqual([
+      "pxb7:1",
+      "pxb7:2",
+      "pxb7:3",
+      "pxb7:5"
+    ]);
+    expect(repository.getListingHistory("pxb7:4", 50)).toMatchObject({
+      availability: "removed"
+    });
+  });
+
+  it("falls back to a full scan when a quick-merge source has no base snapshot", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const adapter = fakeAdapter({
+      source: "pxb7",
+      entryUrl: "https://pxb7.test/",
+      quickRefresh: { maxPages: 1, mergePreviousSnapshot: true },
+      discoverCatalog: () => ({
+        kind: "ok",
+        request: { url: "https://pxb7.test/list/1" }
+      }),
+      parseList: (html) => ({
+        kind: "ok",
+        items: [summaryForSource("pxb7", html === "first" ? 1 : 2, {
+          embeddedDetail: listingDetail()
+        })]
+      }),
+      nextPage: (html) =>
+        html === "first" ? { url: "https://pxb7.test/list/2" } : null
+    });
+    const fetcher = new RoutingFetcher((request) =>
+      ok(request.url, request.url.endsWith("/list/1") ? "first" : "last")
+    );
+    const runId = repository.startScopedScan("pxb7");
+
+    expect(
+      await new CollectionCoordinator({
+        adapters: [adapter],
+        fetcher,
+        repository
+      }).refreshSource("pxb7", runId, "quick")
+    ).toBe("success");
+    expect(repository.getListings()).toHaveLength(2);
+    expect(sourceStatus(repository, "pxb7")).toMatchObject({
+      pagesScanned: 2,
+      stopReason: "end_of_pages",
+      observedItemCount: 2
     });
   });
 
@@ -2201,6 +2347,54 @@ describe("CollectionCoordinator", () => {
       pagesScanned: 1,
       stopReason: "end_of_pages",
       error: "detail_limit_reached"
+    });
+  });
+
+  it("uses unchanged cached evidence before spending the quick detail budget", async () => {
+    const repository = new ListingRepository(createDatabase(":memory:"));
+    const items = Array.from({ length: 5 }, (_, index) => summary(index + 1));
+    repository.replaceSourceSnapshot(
+      "panzhi",
+      items.slice(0, 4).map((item) =>
+        makeListing({
+          key: `panzhi:${item.sourceListingId}`,
+          sourceListingId: item.sourceListingId,
+          url: item.url,
+          title: item.title,
+          originalDescription: `${item.rawText}\n可信详情证据`,
+          capturedAt: "2026-08-02T00:00:00.000Z",
+          score: makeScore(55)
+        })
+      ),
+      "success"
+    );
+    const adapter = fakeAdapter({
+      parseList: () => ({ kind: "ok", items })
+    });
+    const fetcher = new RoutingFetcher((request) =>
+      ok(request.url, request.url.includes("/detail/") ? "detail" : "list")
+    );
+    const runId = repository.startScan(
+      new Date("2026-08-02T01:00:00.000Z")
+    );
+
+    const state = await new CollectionCoordinator({
+      adapters: [adapter],
+      fetcher,
+      repository,
+      limits: { maxPages: 5, maxSummaries: 8, maxDetails: 2 },
+      now: () => new Date("2026-08-02T01:00:00.000Z")
+    }).refreshSource("panzhi", runId, "quick");
+
+    expect(fetcher.calls.filter(({ url }) => url.includes("/detail/")))
+      .toHaveLength(1);
+    expect(state).toBe("success");
+    expect(sourceStatus(repository)).toMatchObject({
+      state: "success",
+      itemCount: 5,
+      pagesScanned: 1,
+      stopReason: "end_of_pages",
+      error: null
     });
   });
 

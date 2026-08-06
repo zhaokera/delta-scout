@@ -11,7 +11,10 @@ function compactVisibleText(value: string): string {
 }
 
 function evidenceTimestamp(listing: Listing): number {
-  return Date.parse(listing.verificationAt ?? listing.capturedAt);
+  // `verificationAt` is the seller report's displayed verification time, not
+  // the moment this collector fetched the detail page. Cache freshness must be
+  // based on our own observation time; deep refreshes still bypass reuse.
+  return Date.parse(listing.capturedAt);
 }
 
 export function listingDetailFromListing(
@@ -33,7 +36,7 @@ export function listingDetailFromListing(
 
 export function detailReuseMaxAge(listing: Listing): number {
   const score = listing.score?.exactTotal ?? listing.score?.total ?? 0;
-  return score >= 60
+  return score >= 60 || listing.eligibility !== "eligible"
     ? TOP_CANDIDATE_DETAIL_MAX_AGE_MS
     : STABLE_DETAIL_MAX_AGE_MS;
 }
@@ -61,11 +64,7 @@ export function canReuseListingDetail(
     cardText.length >= 4 &&
     storedText.includes(cardText) &&
     listing.parseWarnings.length === 0 &&
-    listing.loginPlatform === "qq" &&
-    listing.service === "official" &&
     listing.secondRealNameAvailable !== null &&
-    listing.recoveryCoverage !== null &&
-    listing.verificationAt !== null &&
     listing.evidence.length > 0
   );
 }

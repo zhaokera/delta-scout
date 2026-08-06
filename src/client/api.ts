@@ -39,6 +39,8 @@ export interface SourceStatusView {
   lastSuccessAt: string | null;
   pagesScanned: number;
   itemCount: number;
+  observedItemCount: number;
+  latestPublished: boolean;
   eligibleCount: number;
   candidateCount: number;
   balancedCandidateCount: number;
@@ -47,6 +49,13 @@ export interface SourceStatusView {
   completion: SourceCompletion;
   error: string | null;
   stale: boolean;
+  snapshotState: "current" | "retained" | "none";
+  collection: {
+    method: "hybrid_browser_bridge" | "browser_snapshot" | "public_api";
+    methodLabel: string;
+    proofLabel: string;
+    nativeFilters: string[];
+  };
   anomaly:
     | { state: "clear" }
     | {

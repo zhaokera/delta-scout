@@ -66,6 +66,10 @@ export interface SourceAdapter {
   source: SourceId;
   entryUrl: string;
   readonly requiresBrowserSnapshot?: boolean;
+  readonly quickRefresh?: {
+    readonly maxPages: number;
+    readonly mergePreviousSnapshot: boolean;
+  };
   readonly strictPaginationProgress?: boolean;
   readonly allowPagesWithoutNewItems?: boolean;
   readonly maxConsecutivePagesWithoutNewItems?: number;

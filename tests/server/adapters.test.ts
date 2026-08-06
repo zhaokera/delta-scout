@@ -115,6 +115,10 @@ describe("pagination progress policy", () => {
     expect(pxb7Adapter.strictPaginationProgress).toBeUndefined();
     expect(jiaoyimaoAdapter.allowPagesWithoutNewItems).toBe(true);
     expect(jiaoyimaoAdapter.maxConsecutivePagesWithoutNewItems).toBe(3);
+    expect(jiaoyimaoAdapter.quickRefresh).toEqual({
+      maxPages: 10,
+      mergePreviousSnapshot: true
+    });
     expect(panzhiAdapter.allowPagesWithoutNewItems).toBe(true);
     expect(panzhiAdapter.requiresBrowserSnapshot).toBe(true);
     expect(pxb7Adapter.allowPagesWithoutNewItems).toBe(true);
