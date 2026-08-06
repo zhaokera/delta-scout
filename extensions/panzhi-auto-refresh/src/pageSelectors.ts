@@ -647,6 +647,41 @@ function emptyFingerprintDiagnostic(root: Document): string {
     ).length;
     return `${elements.length}/${visible}`;
   };
+  const descriptor = (element: HTMLElement | null): string => {
+    if (!element) return "na";
+    const classes = [...element.classList]
+      .filter((token) => /^[A-Za-z0-9_-]{1,40}$/.test(token))
+      .slice(0, 2);
+    return `${element.tagName.toLowerCase()}${
+      classes.length > 0 ? `.${classes.join(".")}` : ""
+    }`;
+  };
+  const blocker = (
+    element: HTMLElement | null,
+    boundary: HTMLElement | null
+  ): string => {
+    if (!element) return "na";
+    let current: HTMLElement | null = element;
+    while (current) {
+      const currentDescriptor = descriptor(current);
+      if (current.hidden) return `h:${currentDescriptor}`;
+      if (current.getAttribute("aria-hidden") === "true") {
+        return `a:${currentDescriptor}`;
+      }
+      const style = current.ownerDocument.defaultView?.getComputedStyle(current);
+      if (current.style.display === "none" || style?.display === "none") {
+        return `d:${currentDescriptor}`;
+      }
+      if (
+        current.style.visibility === "hidden" ||
+        style?.visibility === "hidden" ||
+        style?.visibility === "collapse"
+      ) return `v:${currentDescriptor}`;
+      if (current === boundary) break;
+      current = current.parentElement;
+    }
+    return "none";
+  };
   const goods = [...root.querySelectorAll<HTMLElement>(
     ".goods-list-with-game"
   )];
@@ -658,17 +693,24 @@ function emptyFingerprintDiagnostic(root: Document): string {
     ? [...branch.querySelectorAll<HTMLElement>(".virtual-list")]
     : [];
   const virtual = virtuals.length === 1 ? virtuals[0] : null;
+  const emptyInBranch = branch
+    ? [...branch.querySelectorAll<HTMLElement>(".empty")]
+    : [];
+  const empty = emptyInBranch.length === 1 ? emptyInBranch[0] : null;
   return [
-    `goods=${counts(root, ".goods-list-with-game")}`,
-    `virtual=${branch ? counts(branch, ".virtual-list") : "0/0"}`,
-    `phantom=${virtual ? counts(virtual, ".virtual-list-phantom") : "0/0"}`,
-    `container=${virtual ? counts(virtual, ".virtual-list-container") : "0/0"}`,
-    `emptyVirtual=${virtual ? counts(virtual, ".empty") : "0/0"}`,
-    `emptyBranch=${branch ? counts(branch, ".empty") : "0/0"}`,
-    `cardsBranch=${branch
+    `g=${counts(root, ".goods-list-with-game")}`,
+    `v=${branch ? counts(branch, ".virtual-list") : "0/0"}`,
+    `p=${virtual ? counts(virtual, ".virtual-list-phantom") : "0/0"}`,
+    `c=${virtual ? counts(virtual, ".virtual-list-container") : "0/0"}`,
+    `ev=${virtual ? counts(virtual, ".empty") : "0/0"}`,
+    `eb=${branch ? counts(branch, ".empty") : "0/0"}`,
+    `cb=${branch
       ? branch.querySelectorAll('a[href*="/goodsDetails/"]').length
       : 0}`,
-    `loadingBranch=${branch ? resultLoadingVisible(branch) : false}`
+    `lb=${branch && resultLoadingVisible(branch) ? 1 : 0}`,
+    `vb=${blocker(virtual, branch)}`,
+    `ebl=${blocker(empty, branch)}`,
+    `ep=${descriptor(empty?.parentElement ?? null)}`
   ].join(",");
 }
 

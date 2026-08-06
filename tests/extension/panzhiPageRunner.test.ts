@@ -483,14 +483,34 @@ describe("Panzhi visible-page selectors", () => {
       "classHints=goods-list|loading-state|goods-list-action"
     );
     expect(result.message).toContain(
-      "emptyFingerprint=goods=0/0,virtual=0/0,phantom=0/0," +
-      "container=0/0,emptyVirtual=0/0,emptyBranch=0/0," +
-      "cardsBranch=0,loadingBranch=false"
+      "emptyFingerprint=g=0/0,v=0/0,p=0/0,c=0/0,ev=0/0,eb=0/0," +
+      "cb=0,lb=0,vb=na,ebl=na,ep=na"
     );
     expect(result.message).toContain(
       "samplePaths=/goodsDetails/SA2ONLYONE/6|/goods-details/SA2CHANGED/6"
     );
     expect(result.message).not.toContain("do-not-report");
+  });
+
+  it("reports bounded style blockers for the live hidden empty structure", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithStrictEmpty(root);
+    const branch = root.querySelector<HTMLElement>(".goods-list-with-game")!;
+    const virtual = branch.querySelector<HTMLElement>(".virtual-list")!;
+    const empty = virtual.querySelector<HTMLElement>(".empty")!;
+    branch.append(empty);
+    virtual.style.display = "none";
+    empty.style.display = "none";
+
+    const result = readResultState(root);
+
+    expect(result).toMatchObject({ kind: "failure" });
+    if (result.kind !== "failure") return;
+    expect(result.message).toContain(
+      "emptyFingerprint=g=1/1,v=1/0,p=1/0,c=1/0,ev=0/0,eb=1/0," +
+      "cb=0,lb=0,vb=d:div.virtual-list,ebl=d:div.empty," +
+      "ep=section.goods-list-with-game"
+    );
   });
 
   it("does not borrow selected state from an unrelated sibling input", () => {
