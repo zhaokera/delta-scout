@@ -598,44 +598,23 @@ function resultLoadingVisible(element: HTMLElement): boolean {
     );
 }
 
-function strictEmptyResultContainer(root: Document): HTMLElement | null {
-  const visibility = new WeakMap<Element, boolean>();
-  const branches = [...root.querySelectorAll<HTMLElement>(
-    ".goods-list-with-game"
-  )].filter((element) => isElementVisible(element, visibility));
-  if (branches.length !== 1) return null;
-
-  const branch = branches[0];
-  const virtualLists = [...branch.querySelectorAll<HTMLElement>(
-    ".virtual-list"
-  )];
-  if (
-    virtualLists.length !== 1 ||
-    !isElementVisible(virtualLists[0], visibility)
-  ) return null;
-  const virtualList = virtualLists[0];
-
-  for (const selector of [
-    ".virtual-list-phantom",
-    ".virtual-list-container"
-  ]) {
-    const matches = [...virtualList.querySelectorAll<HTMLElement>(selector)];
-    if (
-      matches.length !== 1 ||
-      !isElementVisible(matches[0], visibility)
-    ) return null;
-  }
-
-  const emptyMarkers = [...virtualList.querySelectorAll<HTMLElement>(".empty")];
-  if (
-    emptyMarkers.length !== 1 ||
-    !isElementVisible(emptyMarkers[0], visibility) ||
-    virtualList.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0
-  ) return null;
-  if (branch.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0) {
+function verifiedZeroCardPage(root: Document): HTMLElement | null {
+  const body = root.body;
+  if (!body || !isElementVisible(body)) return null;
+  if (root.readyState !== "complete") return null;
+  if (locateRequiredControls(root).kind !== "found") return null;
+  if (exactTextElements(root, "三角洲行动").length !== 1) return null;
+  if (detectVerificationBlocker(root).kind !== "clear") return null;
+  if (root.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0) {
     return null;
   }
-  return branch;
+  if (
+    visibleTextContains(
+      root,
+      /加载失败|网络异常|请求失败|服务异常|请稍后重试/
+    )
+  ) return null;
+  return body;
 }
 
 function emptyFingerprintDiagnostic(root: Document): string {
@@ -912,9 +891,9 @@ export function locateResultContainer(
   root: Document
 ): ResultContainer | SelectorFailure {
   const visibility = new WeakMap<Element, boolean>();
-  const strictEmpty = strictEmptyResultContainer(root);
-  if (strictEmpty) {
-    return { kind: "result-container", element: strictEmpty };
+  const zeroCardPage = verifiedZeroCardPage(root);
+  if (zeroCardPage) {
+    return { kind: "result-container", element: zeroCardPage };
   }
   const explicit = new Set(
     [...root.querySelectorAll<HTMLElement>(
@@ -1015,7 +994,7 @@ function scopedVisibleTextContains(root: HTMLElement, pattern: RegExp): boolean 
 export function readResultState(root: Document): ResultState | SelectorFailure {
   const located = locateResultContainer(root);
   if (located.kind === "failure") return located;
-  const structurallyEmptyResult = strictEmptyResultContainer(root);
+  const zeroCardPage = verifiedZeroCardPage(root);
   const anchors = visibleCardAnchors(located.element);
   const visibleCards = new Map<string, string>();
   for (const anchor of anchors) {
@@ -1032,7 +1011,7 @@ export function readResultState(root: Document): ResultState | SelectorFailure {
   const visibleIds = [...visibleCards.keys()];
   const loadingVisible = resultLoadingVisible(located.element);
   const emptyResultVisible =
-    structurallyEmptyResult === located.element && !loadingVisible;
+    zeroCardPage === located.element && !loadingVisible;
   const endMarkerVisible =
     emptyResultVisible ||
     located.element.getAttribute("data-end") === "true" ||
@@ -1125,7 +1104,7 @@ export function extractVisibleCards(
 
   if (items.length === 0) {
     if (
-      strictEmptyResultContainer(root) === located.element &&
+      verifiedZeroCardPage(root) === located.element &&
       !resultLoadingVisible(located.element)
     ) {
       return { kind: "cards", items: [] };

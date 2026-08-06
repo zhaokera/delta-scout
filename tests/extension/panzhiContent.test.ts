@@ -56,6 +56,7 @@ describe("Panzhi content bridge installation", () => {
     document.querySelector("[aria-label='商品列表']")?.remove();
     const firstDelay = deferred<void>();
     let delayCount = 0;
+    let holdFirstRunDelays = true;
     const addListener = vi.fn();
     vi.stubGlobal("chrome", {
       runtime: {
@@ -63,7 +64,7 @@ describe("Panzhi content bridge installation", () => {
           const input = message as { type?: unknown };
           if (input.type === "panzhi-delay-v2") {
             delayCount += 1;
-            return delayCount === 1
+            return holdFirstRunDelays
               ? firstDelay.promise.then(() => true)
               : Promise.resolve(true);
           }
@@ -89,8 +90,9 @@ describe("Panzhi content bridge installation", () => {
       runId: "run-a"
     });
     expect(duplicate).toBe(first);
-    await vi.waitFor(() => expect(delayCount).toBe(1));
+    await vi.waitFor(() => expect(delayCount).toBeGreaterThanOrEqual(1));
 
+    holdFirstRunDelays = false;
     const replacement = listener({
       type: "panzhi-run-v3",
       mode: "quick",

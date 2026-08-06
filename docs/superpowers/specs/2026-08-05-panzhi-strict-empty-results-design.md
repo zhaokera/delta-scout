@@ -1,5 +1,7 @@
 # 盼之严格空结果设计
 
+> 本文最初假设的 `.goods-list-with-game` / `.virtual-list` 指纹经实机诊断确认属于隐藏的游戏选择下拉框，不能作为商品结果证明。最终修正见 [2026-08-06-panzhi-zero-card-proof-correction.md](./2026-08-06-panzhi-zero-card-proof-correction.md)。
+
 日期：2026-08-05
 
 ## 背景与证据

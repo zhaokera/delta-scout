@@ -626,6 +626,33 @@ export class PanzhiBackgroundController {
       }
       throw error;
     }
+    if (
+      result.kind === "failure" &&
+      result.code === "missing_controls" &&
+      this.active
+    ) {
+      const tabId = this.active.stored.tabId;
+      await this.dependencies.tabs.reload(tabId);
+      await this.waitForReadyTab(
+        tabId,
+        await this.dependencies.tabs.get(tabId)
+      );
+      if (!this.active) return;
+      await this.dependencies.focusTab(tabId);
+      try {
+        result = await this.dependencies.runPage(
+          tabId,
+          this.active.stored.mode,
+          this.dependencies.createRunId()
+        );
+      } catch (error) {
+        if (error instanceof PanzhiContentProtocolError) {
+          await this.failActive(`content_protocol_error:${error.message}`);
+          return;
+        }
+        throw error;
+      }
+    }
     await this.handlePageResult(result);
   }
 

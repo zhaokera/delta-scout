@@ -608,7 +608,7 @@ export class PanzhiPageRunner {
         return selectorFailureResult("collecting", {
           kind: "failure",
           code: "structural_drift",
-          message: "Strict Panzhi empty result changed before submission"
+          message: "Verified Panzhi zero-card result changed before submission"
         }, loadActionCount);
       }
     }
@@ -655,7 +655,7 @@ export class PanzhiPageRunner {
         return selectorFailureResult("collecting", {
           kind: "failure",
           code: "structural_drift",
-          message: "Strict Panzhi empty result changed before submission"
+          message: "Verified Panzhi zero-card result changed before submission"
         }, loadActionCount);
       }
     }

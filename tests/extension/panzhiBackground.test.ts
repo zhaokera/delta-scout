@@ -599,6 +599,78 @@ describe("Panzhi MV3 worker lifecycle", () => {
     await pending;
   });
 
+  it("hard reloads and retries once when the reused page is missing controls", async () => {
+    const f = makeFixture();
+    vi.mocked(f.dependencies.runPage)
+      .mockResolvedValueOnce({
+        kind: "failure",
+        stage: "applying_filters",
+        code: "missing_controls",
+        message: "Missing visible field: 特战干员外观"
+      })
+      .mockResolvedValueOnce(snapshotResult());
+
+    await f.controller.tick();
+
+    expect(f.tabs.reload).toHaveBeenCalledOnce();
+    expect(f.tabs.reload).toHaveBeenCalledWith(7);
+    expect(f.dependencies.runPage).toHaveBeenNthCalledWith(
+      1,
+      7,
+      "quick",
+      "run-0001"
+    );
+    expect(f.dependencies.runPage).toHaveBeenNthCalledWith(
+      2,
+      7,
+      "quick",
+      "run-0002"
+    );
+    expect(f.api.submitSnapshot).toHaveBeenCalledOnce();
+    expect(f.getStored()).toBeNull();
+  });
+
+  it("does not reload repeatedly when controls are still missing after recovery", async () => {
+    const f = makeFixture({
+      runnerResult: {
+        kind: "failure",
+        stage: "applying_filters",
+        code: "missing_controls",
+        message: "Missing visible field: 特战干员外观"
+      }
+    });
+
+    await f.controller.tick();
+
+    expect(f.tabs.reload).toHaveBeenCalledOnce();
+    expect(f.dependencies.runPage).toHaveBeenCalledTimes(2);
+    expect(f.api.submitSnapshot).not.toHaveBeenCalled();
+    expect(f.api.updateJobState).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ state: "failed" })
+    );
+  });
+
+  it("does not reload a page whose structure drifted", async () => {
+    const f = makeFixture({
+      runnerResult: {
+        kind: "failure",
+        stage: "collecting",
+        code: "structural_drift",
+        message: "Panzhi result container is ambiguous"
+      }
+    });
+
+    await f.controller.tick();
+
+    expect(f.tabs.reload).not.toHaveBeenCalled();
+    expect(f.dependencies.runPage).toHaveBeenCalledOnce();
+    expect(f.api.updateJobState).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ state: "failed" })
+    );
+  });
+
   it("hard reloads one canonical tab when recovering a non-verification lease", async () => {
     const active = {
       jobId: firstJobId,

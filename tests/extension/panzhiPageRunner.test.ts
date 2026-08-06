@@ -42,6 +42,12 @@ function signalResultCycle(
   }, delayMs);
 }
 
+function replaceLiveResultsWithZeroCards(root: Document): void {
+  const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
+  if (!list) throw new Error("missing fixture list");
+  list.replaceChildren();
+}
+
 function replaceLiveResultsWithStrictEmpty(root: Document): void {
   const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
   if (!list) throw new Error("missing fixture list");
@@ -208,29 +214,34 @@ describe("Panzhi visible-page selectors", () => {
     expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
   });
 
-  it("waits for the SPA result container after the filter controls render", async () => {
+  it("accepts a complete prefiltered zero-card page without a named result container", async () => {
     const root = loadFixture("panzhi-live-filter-page.html");
-    installLiveFilterBehavior(root);
     const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
     expect(list).not.toBeNull();
-    const listMarkup = list!.outerHTML;
     list!.remove();
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    controls.minPrice.value = "1900";
+    controls.maxPrice.value = "4000";
+    for (const control of [
+      controls.qq,
+      controls.secondRealName,
+      ...controls.requiredSkins
+    ]) {
+      control.classList.add("opt-item_active");
+    }
+    controls.allSemantics.closest(".filter-item-checkbox")!.childNodes[0]
+      .textContent = "全部都要有";
     let readinessDelayCount = 0;
 
     const result = await new PanzhiPageRunner(dependencies(root, {
       sleep: async (milliseconds) => {
-        if (milliseconds !== 250) return;
-        readinessDelayCount += 1;
-        if (readinessDelayCount === 1) {
-          root.querySelector("main")?.insertAdjacentHTML(
-            "beforeend",
-            listMarkup
-          );
-        }
+        if (milliseconds === 250) readinessDelayCount += 1;
       }
     })).run("quick");
 
-    expect(readinessDelayCount).toBe(1);
+    expect(readinessDelayCount).toBe(0);
     expect(result.kind).toBe("snapshot");
   });
 
@@ -405,9 +416,10 @@ describe("Panzhi visible-page selectors", () => {
     expect(after.signature).not.toBe(before.signature);
   });
 
-  it("accepts only the exact visible Panzhi virtual-list empty fingerprint", () => {
+  it("accepts complete visible filters with no canonical result cards as empty", () => {
     const root = loadFixture("panzhi-live-filter-page.html");
-    replaceLiveResultsWithStrictEmpty(root);
+    replaceLiveResultsWithZeroCards(root);
+    root.querySelector("[aria-label='商品列表']")?.remove();
 
     expect(readResultState(root)).toEqual({
       kind: "result-state",
@@ -420,26 +432,25 @@ describe("Panzhi visible-page selectors", () => {
     expect(extractVisibleCards(root)).toEqual({ kind: "cards", items: [] });
   });
 
-  it("does not accept generic, ambiguous, hidden, or loading markers as empty", () => {
-    const generic = loadFixture("panzhi-live-filter-page.html");
-    generic.querySelector("[aria-label='商品列表']")?.remove();
-    generic.body.insertAdjacentHTML("beforeend", '<div class="empty"></div>');
-    expect(readResultState(generic)).toMatchObject({ kind: "failure" });
+  it("does not accept zero cards without every required visible filter control", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithZeroCards(root);
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    controls.operatorSkinGroup.remove();
 
-    const duplicate = loadFixture("panzhi-live-filter-page.html");
-    replaceLiveResultsWithStrictEmpty(duplicate);
-    const virtual = duplicate.querySelector<HTMLElement>(".virtual-list");
-    virtual?.parentElement?.append(virtual.cloneNode(true));
-    expect(readResultState(duplicate)).toMatchObject({ kind: "failure" });
+    expect(readResultState(root)).toMatchObject({
+      kind: "failure",
+      code: "missing_controls"
+    });
+    expect(extractVisibleCards(root)).toMatchObject({ kind: "failure" });
+  });
 
-    const hidden = loadFixture("panzhi-live-filter-page.html");
-    replaceLiveResultsWithStrictEmpty(hidden);
-    hidden.querySelector<HTMLElement>(".empty")!.style.display = "none";
-    expect(readResultState(hidden)).toMatchObject({ kind: "failure" });
-
+  it("does not accept loading, failure, or hidden product-link states as empty", () => {
     const loading = loadFixture("panzhi-live-filter-page.html");
-    replaceLiveResultsWithStrictEmpty(loading);
-    loading.querySelector<HTMLElement>(".virtual-list")!
+    replaceLiveResultsWithZeroCards(loading);
+    loading.querySelector<HTMLElement>("[aria-label='商品列表']")!
       .setAttribute("aria-busy", "true");
     expect(readResultState(loading)).toMatchObject({
       kind: "result-state",
@@ -448,6 +459,19 @@ describe("Panzhi visible-page selectors", () => {
       endMarkerVisible: false,
       emptyResultVisible: false
     });
+
+    const failed = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithZeroCards(failed);
+    failed.body.insertAdjacentHTML("beforeend", "<p>网络异常，请稍后重试</p>");
+    expect(readResultState(failed)).toMatchObject({ kind: "failure" });
+
+    const hiddenLink = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithZeroCards(hiddenLink);
+    hiddenLink.body.insertAdjacentHTML(
+      "beforeend",
+      '<a hidden href="/goodsDetails/SA2STALE/6">旧商品</a>'
+    );
+    expect(readResultState(hiddenLink)).toMatchObject({ kind: "failure" });
   });
 
   it("reports bounded result-link diagnostics without query data", () => {
@@ -503,6 +527,10 @@ describe("Panzhi visible-page selectors", () => {
   it("reports bounded style blockers for the live hidden empty structure", () => {
     const root = loadFixture("panzhi-live-filter-page.html");
     replaceLiveResultsWithStrictEmpty(root);
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    controls.operatorSkinGroup.remove();
     const branch = root.querySelector<HTMLElement>(".goods-list-with-game")!;
     const virtual = branch.querySelector<HTMLElement>(".virtual-list")!;
     const empty = virtual.querySelector<HTMLElement>(".empty")!;
@@ -526,6 +554,10 @@ describe("Panzhi visible-page selectors", () => {
   it("reports the bounded visible main-list shape separately from popovers", () => {
     const root = loadFixture("panzhi-live-filter-page.html");
     replaceLiveResultsWithStrictEmpty(root);
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    controls.operatorSkinGroup.remove();
     const branch = root.querySelector<HTMLElement>(".goods-list-with-game")!;
     branch.insertAdjacentHTML("afterbegin", `
       <div class="all_game_list">
@@ -967,9 +999,9 @@ describe("Panzhi page collection runner", () => {
     expect(result.snapshot.items).toHaveLength(60);
   });
 
-  it("submits a strict empty quick result without forcing another load", async () => {
+  it("submits a verified zero-card quick result without forcing another load", async () => {
     const root = loadFixture("panzhi-live-filter-page.html");
-    replaceLiveResultsWithStrictEmpty(root);
+    replaceLiveResultsWithZeroCards(root);
     installLiveFilterBehavior(root);
     const loadMore = vi.fn(async () => signalResultCycle(root));
 
@@ -989,9 +1021,9 @@ describe("Panzhi page collection runner", () => {
     expect(loadMore).not.toHaveBeenCalled();
   });
 
-  it("lets verification blockers take priority over a strict empty result", async () => {
+  it("lets verification blockers take priority over a verified zero-card result", async () => {
     const root = loadFixture("panzhi-live-filter-page.html");
-    replaceLiveResultsWithStrictEmpty(root);
+    replaceLiveResultsWithZeroCards(root);
     root.body.insertAdjacentHTML("beforeend", "<div>请输入验证码</div>");
 
     await expect(new PanzhiPageRunner(dependencies(root)).run("quick"))
@@ -1003,15 +1035,20 @@ describe("Panzhi page collection runner", () => {
       });
   });
 
-  it("fails closed if the strict empty proof changes before submission", async () => {
+  it("fails closed if the zero-card proof changes before submission", async () => {
     const root = loadFixture("panzhi-live-filter-page.html");
-    replaceLiveResultsWithStrictEmpty(root);
+    replaceLiveResultsWithZeroCards(root);
     installLiveFilterBehavior(root);
 
     const result = await new PanzhiPageRunner(dependencies(root, {
       onStage: async (stage) => {
         if (stage === "submitting") {
-          root.querySelector<HTMLElement>(".empty")?.classList.remove("empty");
+          root.body.insertAdjacentHTML(
+            "beforeend",
+            `<a href="/goodsDetails/SA2LATE/6">
+              <h4>迟到商品</h4><span>¥ 2888</span>
+            </a>`
+          );
         }
       }
     })).run("quick");
