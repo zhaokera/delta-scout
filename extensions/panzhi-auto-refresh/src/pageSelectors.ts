@@ -689,6 +689,24 @@ function emptyFingerprintDiagnostic(root: Document): string {
     isElementVisible(element, visibility)
   );
   const branch = visibleGoods.length === 1 ? visibleGoods[0] : null;
+  const rootChildren = branch
+    ? [...branch.children].filter(
+        (element): element is HTMLElement => element instanceof HTMLElement
+      )
+    : [];
+  const visibleRootChildren = rootChildren.filter((element) =>
+    isElementVisible(element, visibility)
+  );
+  const visibleHints = branch
+    ? [...branch.querySelectorAll<HTMLElement>("[class]")]
+        .filter((element) => isElementVisible(element, visibility))
+        .filter((element) => [...element.classList].some((token) =>
+          /(?:goods|game|list|product|result|empty)/i.test(token)
+        ))
+        .map(descriptor)
+        .filter((value, index, values) => values.indexOf(value) === index)
+        .slice(0, 6)
+    : [];
   const virtuals = branch
     ? [...branch.querySelectorAll<HTMLElement>(".virtual-list")]
     : [];
@@ -710,6 +728,13 @@ function emptyFingerprintDiagnostic(root: Document): string {
     : [];
   const empty = emptyInBranch.length === 1 ? emptyInBranch[0] : null;
   return [
+    `g=${counts(root, ".goods-list-with-game")}`,
+    `gp=${descriptor(branch?.parentElement ?? null)}`,
+    `rch=${rootChildren.length}/${visibleRootChildren.length}`,
+    `rk=${rootChildren.map((element) =>
+      `${descriptor(element)}:${blocker(element, branch)}`
+    ).slice(0, 4).join("|") || "none"}`,
+    `vh=${visibleHints.join("|") || "none"}`,
     `ag=${branch ? counts(branch, ".all_game_list") : "0/0"}`,
     `lt=${branch ? counts(branch, ".list_title") : "0/0"}`,
     `gl=${branch ? counts(branch, ".game-list") : "0/0"}`,

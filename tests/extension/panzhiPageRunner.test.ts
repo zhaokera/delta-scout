@@ -483,7 +483,8 @@ describe("Panzhi visible-page selectors", () => {
       "classHints=goods-list|loading-state|goods-list-action"
     );
     expect(result.message).toContain(
-      "emptyFingerprint=ag=0/0,lt=0/0,gl=0/0,gch=0/0,gc=0," +
+      "emptyFingerprint=g=0/0,gp=na,rch=0/0,rk=none,vh=none," +
+      "ag=0/0,lt=0/0,gl=0/0,gch=0/0,gc=0," +
       "glb=na,glp=na,gk=none,pv=0/0,pe=0/0,pvb=na,peb=na"
     );
     expect(result.message).toContain(
@@ -507,7 +508,9 @@ describe("Panzhi visible-page selectors", () => {
     expect(result).toMatchObject({ kind: "failure" });
     if (result.kind !== "failure") return;
     expect(result.message).toContain(
-      "emptyFingerprint=ag=0/0,lt=0/0,gl=0/0,gch=0/0,gc=0," +
+      "emptyFingerprint=g=1/1,gp=main,rch=2/0," +
+      "rk=div.virtual-list:d:div.virtual-list|div.empty:d:div.empty," +
+      "vh=none,ag=0/0,lt=0/0,gl=0/0,gch=0/0,gc=0," +
       "glb=na,glp=na,gk=none,pv=1/0,pe=1/0," +
       "pvb=d:div.virtual-list,peb=d:div.empty"
     );
@@ -532,7 +535,11 @@ describe("Panzhi visible-page selectors", () => {
     expect(result).toMatchObject({ kind: "failure" });
     if (result.kind !== "failure") return;
     expect(result.message).toContain(
-      "emptyFingerprint=ag=1/1,lt=1/1,gl=1/1,gch=1/1,gc=0," +
+      "emptyFingerprint=g=1/1,gp=main,rch=3/2," +
+      "rk=div.all_game_list:none|div.virtual-list:a:div.virtual-list|" +
+      "div.empty:none,vh=div.all_game_list|div.list_title|div.game-list|" +
+      "div.game-empty-state|div.empty,ag=1/1,lt=1/1,gl=1/1," +
+      "gch=1/1,gc=0," +
       "glb=none,glp=div.all_game_list,gk=div.game-empty-state," +
       "pv=1/0,pe=1/1,pvb=a:div.virtual-list,peb=none"
     );
