@@ -605,6 +605,14 @@ function resultLoadingVisible(element: HTMLElement): boolean {
     );
 }
 
+function pageWideLoadingVisible(root: Document): boolean {
+  return Boolean(root.body) &&
+    (
+      resultLoadingVisible(root.body) ||
+      visibleTextContains(root, /正在加载\s*[,，]?\s*请稍后/)
+    );
+}
+
 function pageWideLoadingContainer(root: Document): HTMLElement | null {
   const body = root.body;
   if (!body || !isElementVisible(body)) return null;
@@ -613,7 +621,7 @@ function pageWideLoadingContainer(root: Document): HTMLElement | null {
   if (root.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0) {
     return null;
   }
-  return resultLoadingVisible(body) ? body : null;
+  return pageWideLoadingVisible(root) ? body : null;
 }
 
 function verifiedZeroCardPage(root: Document): HTMLElement | null {
@@ -626,6 +634,7 @@ function verifiedZeroCardPage(root: Document): HTMLElement | null {
   if (root.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0) {
     return null;
   }
+  if (pageWideLoadingVisible(root)) return null;
   if (
     visibleTextContains(
       root,
@@ -1031,7 +1040,9 @@ export function readResultState(root: Document): ResultState | SelectorFailure {
     visibleCards.set(id, JSON.stringify({ id, title, rawText, price }));
   }
   const visibleIds = [...visibleCards.keys()];
-  const loadingVisible = resultLoadingVisible(located.element);
+  const loadingVisible = located.element === root.body
+    ? pageWideLoadingVisible(root)
+    : resultLoadingVisible(located.element);
   const emptyResultVisible =
     zeroCardPage === located.element && !loadingVisible;
   const endMarkerVisible =
@@ -1127,7 +1138,7 @@ export function extractVisibleCards(
   if (items.length === 0) {
     if (
       verifiedZeroCardPage(root) === located.element &&
-      !resultLoadingVisible(located.element)
+      !pageWideLoadingVisible(root)
     ) {
       return { kind: "cards", items: [] };
     }

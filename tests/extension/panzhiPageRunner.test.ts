@@ -514,6 +514,23 @@ describe("Panzhi visible-page selectors", () => {
     });
   });
 
+  it("recognizes the real classless page-wide loading text", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithZeroCards(root);
+    root.querySelector("h1")?.remove();
+    root.body.insertAdjacentHTML(
+      "beforeend",
+      "<div><p>正在加载, 请稍后...</p></div>"
+    );
+
+    expect(readResultState(root)).toMatchObject({
+      kind: "result-state",
+      visibleIds: [],
+      loadingVisible: true,
+      emptyResultVisible: false
+    });
+  });
+
   it("reports bounded result-link diagnostics without query data", () => {
     const root = loadFixture();
     root.body.innerHTML = `<main><section class="goods-list loading-state">
