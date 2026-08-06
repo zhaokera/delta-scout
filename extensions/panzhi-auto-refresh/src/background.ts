@@ -421,6 +421,17 @@ interface PendingSnapshot {
   snapshot: PanzhiPageSnapshot;
 }
 
+function needsPageRecovery(result: PageRunnerResult): boolean {
+  return result.kind === "failure" &&
+    (
+      result.code === "missing_controls" ||
+      (
+        result.stage === "applying_filters" &&
+        result.code === "operation_timeout"
+      )
+    );
+}
+
 const FORWARD_STATE: Readonly<
   Partial<Record<PanzhiAutomationState, readonly PanzhiAutomationState[]>>
 > = {
@@ -626,17 +637,7 @@ export class PanzhiBackgroundController {
       }
       throw error;
     }
-    if (
-      result.kind === "failure" &&
-      (
-        result.code === "missing_controls" ||
-        (
-          result.stage === "applying_filters" &&
-          result.code === "operation_timeout"
-        )
-      ) &&
-      this.active
-    ) {
+    if (needsPageRecovery(result) && this.active) {
       const tabId = this.active.stored.tabId;
       await this.dependencies.tabs.reload(tabId);
       await this.waitForReadyTab(
@@ -657,6 +658,39 @@ export class PanzhiBackgroundController {
           return;
         }
         throw error;
+      }
+    }
+    if (needsPageRecovery(result) && this.active) {
+      const failedTabId = this.active.stored.tabId;
+      const candidates = await this.dependencies.tabs.query({
+        url: "https://www.pzds.com/*"
+      });
+      const alternate = selectPanzhiTab(
+        candidates.filter((candidate) => candidate.id !== failedTabId)
+      );
+      if (alternate?.id !== undefined) {
+        this.active.stored = {
+          ...this.active.stored,
+          tabId: alternate.id
+        };
+        await this.dependencies.storage.write(this.active.stored);
+        await this.ensureValidTab();
+        if (!this.active) return;
+        const alternateTabId = this.active.stored.tabId;
+        await this.dependencies.focusTab(alternateTabId);
+        try {
+          result = await this.dependencies.runPage(
+            alternateTabId,
+            this.active.stored.mode,
+            this.dependencies.createRunId()
+          );
+        } catch (error) {
+          if (error instanceof PanzhiContentProtocolError) {
+            await this.failActive(`content_protocol_error:${error.message}`);
+            return;
+          }
+          throw error;
+        }
       }
     }
     await this.handlePageResult(result);

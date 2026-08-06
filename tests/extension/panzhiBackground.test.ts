@@ -651,6 +651,57 @@ describe("Panzhi MV3 worker lifecycle", () => {
     );
   });
 
+  it("switches once to the best existing alternate tab after reload recovery fails", async () => {
+    const f = makeFixture({
+      existingTabs: [
+        { id: 7, url: canonicalUrl, lastAccessed: 300 },
+        { id: 8, url: canonicalUrl, lastAccessed: 200 },
+        { id: 9, url: canonicalUrl, lastAccessed: 100 }
+      ],
+      runIds: ["run-0001", "run-0002", "run-0003"]
+    });
+    vi.mocked(f.dependencies.runPage)
+      .mockResolvedValueOnce({
+        kind: "failure",
+        stage: "applying_filters",
+        code: "missing_controls",
+        message: "Missing visible field: 特战干员外观"
+      })
+      .mockResolvedValueOnce({
+        kind: "failure",
+        stage: "applying_filters",
+        code: "missing_controls",
+        message: "Missing visible field: 特战干员外观"
+      })
+      .mockResolvedValueOnce(snapshotResult());
+
+    await f.controller.tick();
+
+    expect(f.tabs.reload).toHaveBeenCalledOnce();
+    expect(f.tabs.reload).toHaveBeenCalledWith(7);
+    expect(f.dependencies.runPage).toHaveBeenNthCalledWith(
+      1,
+      7,
+      "quick",
+      "run-0001"
+    );
+    expect(f.dependencies.runPage).toHaveBeenNthCalledWith(
+      2,
+      7,
+      "quick",
+      "run-0002"
+    );
+    expect(f.dependencies.runPage).toHaveBeenNthCalledWith(
+      3,
+      8,
+      "quick",
+      "run-0003"
+    );
+    expect(f.writes).toContainEqual(expect.objectContaining({ tabId: 8 }));
+    expect(f.dependencies.focusTab).toHaveBeenLastCalledWith(8);
+    expect(f.api.submitSnapshot).toHaveBeenCalledOnce();
+  });
+
   it("hard reloads and retries once when filter loading times out", async () => {
     const f = makeFixture();
     vi.mocked(f.dependencies.runPage)
