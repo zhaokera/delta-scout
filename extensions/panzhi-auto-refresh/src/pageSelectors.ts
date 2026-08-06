@@ -825,6 +825,36 @@ function missingResultDiagnostic(
     .filter((label) => statusLabels.has(label))
     .filter((label, index, labels) => labels.indexOf(label) === index)
     .slice(0, 5);
+  const semanticHints = [...root.querySelectorAll<HTMLElement>("body *")]
+    .filter((element) => isElementVisible(element))
+    .filter((element) => ![...element.children].some((child) =>
+      isElementVisible(child) && normalizeVisibleText(child.textContent) !== ""
+    ))
+    .map((element) => normalizeVisibleText(element.textContent))
+    .filter((label) =>
+      label.length > 0 &&
+      label.length <= 40 &&
+      /商品|账号|结果|筛选|暂无|没有|加载|搜索|共.{0,8}(?:条|个)|找到/.test(label)
+    )
+    .map((label) => label.replace(/[;=|]/g, " "))
+    .filter((label, index, labels) => labels.indexOf(label) === index)
+    .slice(0, 8);
+  const structuralHints = [...root.querySelectorAll<HTMLElement>("[class]")]
+    .filter((element) => isElementVisible(element))
+    .filter((element) => [...element.classList].some((token) =>
+      /(?:goods|game|list|product|result|empty|account|item|content|main|wrap|box|filter)/i
+        .test(token)
+    ))
+    .map((element) => {
+      const classes = [...element.classList]
+        .filter((token) => /^[A-Za-z0-9_-]{1,40}$/.test(token))
+        .slice(0, 2);
+      return `${element.tagName.toLowerCase()}${
+        classes.length > 0 ? `.${classes.join(".")}` : ""
+      }`;
+    })
+    .filter((hint, index, hints) => hints.indexOf(hint) === index)
+    .slice(0, 10);
   const classHints = [...root.querySelectorAll<HTMLElement>("[class]")]
     .flatMap((element) => [...element.classList])
     .filter((token) => /(?:goods|product|result|list|loading|empty)/i.test(token))
@@ -866,6 +896,8 @@ function missingResultDiagnostic(
     `explicitCandidates=${explicitCandidates}`,
     `visibilityState=${root.visibilityState}`,
     `readyState=${root.readyState}`,
+    `semanticHints=${semanticHints.join("|") || "none"}`,
+    `structuralHints=${structuralHints.join("|") || "none"}`,
     `emptyFingerprint=${emptyFingerprintDiagnostic(root)}`,
     `iframeCount=${root.querySelectorAll("iframe").length}`,
     `iframeHints=${iframeHints.join("|") || "none"}`,

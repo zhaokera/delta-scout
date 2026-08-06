@@ -33,7 +33,7 @@ describe("Panzhi extension manifest", () => {
     ), "utf8")) as Record<string, unknown>;
 
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("0.2.5");
+    expect(manifest.version).toBe("0.2.6");
     expect(manifest.permissions).toEqual([
       "alarms",
       "tabs",

@@ -480,6 +480,13 @@ describe("Panzhi visible-page selectors", () => {
     expect(result.message).toContain("actionHints=立即筛选");
     expect(result.message).toContain("statusHints=加载失败");
     expect(result.message).toContain(
+      "semanticHints=商品一|商品二|立即筛选|加载失败"
+    );
+    expect(result.message).toContain(
+      "structuralHints=section.goods-list.loading-state|" +
+      "button.goods-list-action"
+    );
+    expect(result.message).toContain(
       "classHints=goods-list|loading-state|goods-list-action"
     );
     expect(result.message).toContain(
