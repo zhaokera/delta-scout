@@ -589,13 +589,31 @@ function visibleCardAnchors(
 function resultLoadingVisible(element: HTMLElement): boolean {
   return element.getAttribute("aria-busy") === "true" ||
     [...element.querySelectorAll<HTMLElement>(
-      '[aria-busy="true"], [data-loading="true"], [role="status"]'
+      [
+        '[aria-busy="true"]',
+        '[data-loading="true"]',
+        '[role="status"]',
+        ".el-loading-mask",
+        ".el-loading-spinner",
+        ".el-loading-text"
+      ].join(",")
     )].some((candidate) =>
       isElementVisible(candidate) &&
       (candidate.getAttribute("aria-busy") === "true" ||
         candidate.getAttribute("data-loading") === "true" ||
         /加载中|正在加载/.test(normalizeVisibleText(candidate.textContent)))
     );
+}
+
+function pageWideLoadingContainer(root: Document): HTMLElement | null {
+  const body = root.body;
+  if (!body || !isElementVisible(body)) return null;
+  if (root.readyState !== "complete") return null;
+  if (locateRequiredControls(root).kind !== "found") return null;
+  if (root.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0) {
+    return null;
+  }
+  return resultLoadingVisible(body) ? body : null;
 }
 
 function verifiedZeroCardPage(root: Document): HTMLElement | null {
@@ -891,6 +909,10 @@ export function locateResultContainer(
   root: Document
 ): ResultContainer | SelectorFailure {
   const visibility = new WeakMap<Element, boolean>();
+  const loadingPage = pageWideLoadingContainer(root);
+  if (loadingPage) {
+    return { kind: "result-container", element: loadingPage };
+  }
   const zeroCardPage = verifiedZeroCardPage(root);
   if (zeroCardPage) {
     return { kind: "result-container", element: zeroCardPage };

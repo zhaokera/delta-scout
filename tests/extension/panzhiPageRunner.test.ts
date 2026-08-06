@@ -474,6 +474,46 @@ describe("Panzhi visible-page selectors", () => {
     expect(readResultState(hiddenLink)).toMatchObject({ kind: "failure" });
   });
 
+  it("recognizes the visible Element UI loading layer before empty proof", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithZeroCards(root);
+    root.body.insertAdjacentHTML("beforeend", `
+      <div class="el-loading-mask">
+        <div class="el-loading-spinner">
+          <p class="el-loading-text">正在加载, 请稍后...</p>
+        </div>
+      </div>
+    `);
+
+    expect(readResultState(root)).toMatchObject({
+      kind: "result-state",
+      visibleIds: [],
+      loadingVisible: true,
+      endMarkerVisible: false,
+      emptyResultVisible: false
+    });
+  });
+
+  it("keeps page-wide loading observable while the game label is incomplete", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    replaceLiveResultsWithZeroCards(root);
+    root.querySelector("h1")?.remove();
+    root.body.insertAdjacentHTML("beforeend", `
+      <div class="el-loading-mask">
+        <div class="el-loading-spinner">
+          <p class="el-loading-text">正在加载, 请稍后...</p>
+        </div>
+      </div>
+    `);
+
+    expect(readResultState(root)).toMatchObject({
+      kind: "result-state",
+      visibleIds: [],
+      loadingVisible: true,
+      emptyResultVisible: false
+    });
+  });
+
   it("reports bounded result-link diagnostics without query data", () => {
     const root = loadFixture();
     root.body.innerHTML = `<main><section class="goods-list loading-state">

@@ -628,7 +628,13 @@ export class PanzhiBackgroundController {
     }
     if (
       result.kind === "failure" &&
-      result.code === "missing_controls" &&
+      (
+        result.code === "missing_controls" ||
+        (
+          result.stage === "applying_filters" &&
+          result.code === "operation_timeout"
+        )
+      ) &&
       this.active
     ) {
       const tabId = this.active.stored.tabId;

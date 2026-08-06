@@ -651,6 +651,24 @@ describe("Panzhi MV3 worker lifecycle", () => {
     );
   });
 
+  it("hard reloads and retries once when filter loading times out", async () => {
+    const f = makeFixture();
+    vi.mocked(f.dependencies.runPage)
+      .mockResolvedValueOnce({
+        kind: "failure",
+        stage: "applying_filters",
+        code: "operation_timeout",
+        message: "Panzhi price range did not settle"
+      })
+      .mockResolvedValueOnce(snapshotResult());
+
+    await f.controller.tick();
+
+    expect(f.tabs.reload).toHaveBeenCalledOnce();
+    expect(f.dependencies.runPage).toHaveBeenCalledTimes(2);
+    expect(f.api.submitSnapshot).toHaveBeenCalledOnce();
+  });
+
   it("does not reload a page whose structure drifted", async () => {
     const f = makeFixture({
       runnerResult: {
