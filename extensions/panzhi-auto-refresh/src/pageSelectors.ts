@@ -186,7 +186,7 @@ function nearbyVisibleText(field: HTMLElement): string {
 }
 
 function smallestGroup(
-  root: Document,
+  root: ParentNode,
   fieldLabel: string,
   requiredLabels: string[],
   requiredPlaceholders: string[] = []
@@ -199,7 +199,10 @@ function smallestGroup(
   const groups = new Set<HTMLElement>();
   for (const field of fieldLabels) {
     let candidate = field.parentElement;
-    while (candidate && candidate !== root.body.parentElement) {
+    while (
+      candidate &&
+      (root === candidate || (root as Node).contains(candidate))
+    ) {
       const hasLabels = requiredLabels.every(
         (label) => exactTextElements(candidate!, label).length === 1
       );
@@ -212,6 +215,7 @@ function smallestGroup(
         groups.add(candidate);
         break;
       }
+      if (candidate === root) break;
       candidate = candidate.parentElement;
     }
   }
@@ -239,6 +243,51 @@ function smallestGroup(
   return smallestGroups[0];
 }
 
+export function visibleFilterSearchInputs(root: ParentNode): HTMLInputElement[] {
+  return [...root.querySelectorAll<HTMLInputElement>(
+    'input[placeholder="搜索筛条件"]'
+  )].filter((input) => isElementVisible(input));
+}
+
+function preferredFilterSurface(
+  root: Document
+): HTMLElement | SelectorFailure | null {
+  const activeSearches = visibleFilterSearchInputs(root).filter(
+    (input) => normalizeVisibleText(input.value) === "特战干员外观"
+  );
+  if (activeSearches.length === 0) return null;
+
+  const surfaces = new Set<HTMLElement>();
+  for (const input of activeSearches) {
+    let candidate = input.parentElement;
+    while (candidate && candidate !== root.body.parentElement) {
+      const hasSingleRequiredField = [
+        "账号类型",
+        "实名情况",
+        "特战干员外观",
+        "价格"
+      ].every((label) => exactTextElements(candidate!, label).length === 1);
+      const hasSinglePriceRange =
+        candidate.querySelectorAll('input[placeholder="最低值"]').length === 1 &&
+        candidate.querySelectorAll('input[placeholder="最高值"]').length === 1;
+      if (hasSingleRequiredField && hasSinglePriceRange) {
+        surfaces.add(candidate);
+        break;
+      }
+      candidate = candidate.parentElement;
+    }
+  }
+
+  if (surfaces.size === 0) return null;
+  if (surfaces.size !== 1) {
+    return failure(
+      "structural_drift",
+      "Ambiguous active Panzhi filter search surface"
+    );
+  }
+  return [...surfaces][0];
+}
+
 function assertOptionalAttribute(
   element: Element,
   attribute: string,
@@ -258,17 +307,21 @@ function assertOptionalAttribute(
 export function locateRequiredControls(
   root: Document
 ): RequiredControls | SelectorFailure {
-  const accountGroup = smallestGroup(root, "账号类型", ["QQ"]);
+  const preferredSurface = preferredFilterSurface(root);
+  if (preferredSurface && "kind" in preferredSurface) return preferredSurface;
+  const controlRoot: ParentNode = preferredSurface ?? root;
+
+  const accountGroup = smallestGroup(controlRoot, "账号类型", ["QQ"]);
   if ("kind" in accountGroup) return accountGroup;
-  const realNameGroup = smallestGroup(root, "实名情况", ["可二次实名"]);
+  const realNameGroup = smallestGroup(controlRoot, "实名情况", ["可二次实名"]);
   if ("kind" in realNameGroup) return realNameGroup;
-  const skinGroup = smallestGroup(root, "特战干员外观", [
+  const skinGroup = smallestGroup(controlRoot, "特战干员外观", [
     PANZHI_REQUIRED_OPERATOR_SKINS[0].label,
     PANZHI_REQUIRED_OPERATOR_SKINS[1].label
   ]);
   if ("kind" in skinGroup) return skinGroup;
   const priceGroup = smallestGroup(
-    root,
+    controlRoot,
     "价格",
     [],
     ["最低值", "最高值"]

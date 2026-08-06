@@ -117,6 +117,35 @@ function installLiveFilterBehavior(
   }
 }
 
+function installSearchableDuplicateFilterSurfaces(root: Document): void {
+  const main = root.querySelector("main");
+  if (!main) throw new Error("missing fixture main");
+  const filters = [...main.querySelectorAll<HTMLElement>(":scope > .filter-item")];
+  if (filters.length !== 4) throw new Error("unexpected fixture filters");
+
+  const firstSurface = root.createElement("section");
+  firstSurface.className = "fixture-filter-surface";
+  firstSurface.innerHTML = '<input placeholder="搜索筛条件" type="text" />';
+  for (const filter of filters) firstSurface.append(filter);
+
+  const secondSurface = firstSurface.cloneNode(true) as HTMLElement;
+  main.querySelector("h1")?.after(firstSurface, secondSurface);
+
+  const skinGroups = [...root.querySelectorAll<HTMLElement>(
+    ".fixture-filter-surface .filter-item"
+  )].filter((group) => group.textContent?.includes("特战干员外观"));
+  for (const group of skinGroups) group.hidden = true;
+
+  for (const input of root.querySelectorAll<HTMLInputElement>(
+    'input[placeholder="搜索筛条件"]'
+  )) {
+    input.addEventListener("input", () => {
+      const showSkin = input.value === "特战干员外观";
+      for (const group of skinGroups) group.hidden = !showSkin;
+    });
+  }
+}
+
 function appendCard(root: Document, id: string): void {
   const list = root.querySelector<HTMLElement>("[aria-label='商品列表']");
   if (!list) throw new Error("missing fixture list");
@@ -196,6 +225,24 @@ describe("Panzhi visible-page selectors", () => {
       kind: "selected-state",
       selected: true
     });
+    expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
+  });
+
+  it("searches for a hidden operator-skin field and scopes duplicate filter surfaces", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installSearchableDuplicateFilterSurfaces(root);
+    installLiveFilterBehavior(root);
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result.kind).toBe("snapshot");
+    const searchInputs = [...root.querySelectorAll<HTMLInputElement>(
+      'input[placeholder="搜索筛条件"]'
+    )];
+    expect(searchInputs.map((input) => input.value)).toEqual([
+      "特战干员外观",
+      ""
+    ]);
     expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
   });
 

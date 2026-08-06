@@ -16,6 +16,7 @@ import {
   locateRequiredControls,
   readResultState,
   selectedState,
+  visibleFilterSearchInputs,
   verifyRequiredFilters,
   type ResultState,
   type SelectorFailure
@@ -31,6 +32,7 @@ const HUMAN_DELAY_MIN_MS = 350;
 const HUMAN_DELAY_MAX_MS = 850;
 const PAGE_READY_POLL_MS = 250;
 const PAGE_READY_MAX_ATTEMPTS = 60;
+const FILTER_SEARCH_MAX_ATTEMPTS = 12;
 
 class RunnerFailure extends Error {
   constructor(
@@ -241,6 +243,8 @@ export class PanzhiPageRunner {
     if (openingStage) return openingStage;
     const blockedBeforeFilters = await this.blockedResult();
     if (blockedBeforeFilters) return blockedBeforeFilters;
+    const prepared = await this.prepareOperatorSkinField();
+    if (prepared) return prepared;
     const ready = await this.waitForPageContract();
     if (ready) return ready;
 
@@ -352,6 +356,58 @@ export class PanzhiPageRunner {
         message: "Panzhi page contract did not become ready"
       }
     );
+  }
+
+  private async prepareOperatorSkinField(): Promise<PageRunnerResult | null> {
+    const initial = locateRequiredControls(this.dependencies.document);
+    if (initial.kind === "found") return null;
+
+    const initialSearches = visibleFilterSearchInputs(
+      this.dependencies.document
+    );
+    if (initialSearches.length === 0) return null;
+    let lastFailure: SelectorFailure = initial;
+
+    for (
+      let candidateIndex = 0;
+      candidateIndex < initialSearches.length;
+      candidateIndex += 1
+    ) {
+      const superseded = this.cancellationResult();
+      if (superseded) return superseded;
+      const searches = visibleFilterSearchInputs(this.dependencies.document);
+      if (candidateIndex >= searches.length) break;
+
+      for (let index = 0; index < searches.length; index += 1) {
+        if (index === candidateIndex) continue;
+        assignNativeInputValue(searches[index], "");
+        dispatchNativeInputEvents(searches[index]);
+      }
+      const target = searches[candidateIndex];
+      assignNativeInputValue(target, "特战干员外观");
+      dispatchNativeInputEvents(target);
+
+      for (
+        let attempt = 0;
+        attempt < FILTER_SEARCH_MAX_ATTEMPTS;
+        attempt += 1
+      ) {
+        const blocked = await this.blockedResult();
+        if (blocked) return blocked;
+        const located = locateRequiredControls(this.dependencies.document);
+        if (located.kind === "found") {
+          const delayed = await this.humanDelay();
+          if (delayed) return delayed;
+          return this.blockedResult();
+        }
+        lastFailure = located;
+        if (attempt < FILTER_SEARCH_MAX_ATTEMPTS - 1) {
+          await this.dependencies.sleep(PAGE_READY_POLL_MS);
+        }
+      }
+    }
+
+    return selectorFailureResult("applying_filters", lastFailure);
   }
 
   private async setPriceRange(): Promise<PageRunnerResult | null> {
