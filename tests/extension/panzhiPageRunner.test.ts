@@ -10,6 +10,7 @@ import {
 import {
   detectVerificationBlocker,
   extractVisibleCards,
+  locateOperatorSearchTypeChooser,
   locateRequiredControls,
   readResultState,
   selectedState,
@@ -117,7 +118,10 @@ function installLiveFilterBehavior(
   }
 }
 
-function installSearchableDuplicateFilterSurfaces(root: Document): void {
+function installSearchableDuplicateFilterSurfaces(
+  root: Document,
+  searchClosed = false
+): HTMLButtonElement | null {
   const main = root.querySelector("main");
   if (!main) throw new Error("missing fixture main");
   const filters = [...main.querySelectorAll<HTMLElement>(":scope > .filter-item")];
@@ -139,11 +143,141 @@ function installSearchableDuplicateFilterSurfaces(root: Document): void {
   for (const input of root.querySelectorAll<HTMLInputElement>(
     'input[placeholder="搜索筛条件"]'
   )) {
+    const surface = input.closest(".fixture-filter-surface");
+    const surfaceSkinGroup = [...(surface?.querySelectorAll<HTMLElement>(
+      ".filter-item"
+    ) ?? [])].find((group) =>
+      group.textContent?.includes("特战干员外观")
+    );
+    if (!surfaceSkinGroup) throw new Error("missing fixture skin group");
     input.addEventListener("input", () => {
       const showSkin = input.value === "特战干员外观";
-      for (const group of skinGroups) group.hidden = !showSkin;
+      surfaceSkinGroup.hidden = !showSkin;
     });
   }
+
+  if (!searchClosed) return null;
+  const opener = root.createElement("button");
+  opener.textContent = "筛选不到？";
+  firstSurface.before(opener);
+  const searchInputs = [...root.querySelectorAll<HTMLInputElement>(
+    'input[placeholder="搜索筛条件"]'
+  )];
+  for (const input of searchInputs) input.hidden = true;
+  opener.addEventListener("click", () => {
+    for (const input of searchInputs) input.hidden = false;
+  });
+  return opener;
+}
+
+function installLazySearchTypeOptions(root: Document): void {
+  for (const chooser of root.querySelectorAll<HTMLElement>(
+    ".filter-item-checkbox"
+  )) {
+    const options = chooser.querySelector<HTMLElement>(".drop-items-wrap");
+    if (!options) throw new Error("missing fixture search-type options");
+    const optionsMarkup = options.outerHTML;
+    options.remove();
+    chooser.addEventListener("click", () => {
+      if (chooser.querySelector(".drop-items-wrap")) return;
+      chooser.insertAdjacentHTML("beforeend", optionsMarkup);
+      for (const option of chooser.querySelectorAll<HTMLElement>(".drop-item")) {
+        option.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const label = option.querySelector("label")?.textContent?.trim();
+          const textNode = [...chooser.childNodes].find(
+            (node) => node.nodeType === 3 && node.textContent?.trim()
+          );
+          if (label && textNode) textNode.textContent = label;
+          signalResultCycle(root);
+        });
+      }
+    });
+  }
+  const closeOptions = (): void => {
+    for (const options of root.querySelectorAll(".drop-items-wrap")) {
+      options.remove();
+    }
+  };
+  for (const option of root.querySelectorAll<HTMLElement>(".opt-item")) {
+    option.addEventListener("click", closeOptions);
+  }
+  for (const input of root.querySelectorAll<HTMLInputElement>(
+    'input[placeholder="最低值"], input[placeholder="最高值"]'
+  )) {
+    input.addEventListener("input", closeOptions);
+  }
+}
+
+function installDetachedSearchTypeChooser(root: Document): HTMLElement {
+  const activeSurface = root.querySelector<HTMLElement>(
+    ".fixture-filter-surface"
+  );
+  const duplicateSurfaces = root.querySelectorAll<HTMLElement>(
+    ".fixture-filter-surface"
+  );
+  for (let index = 1; index < duplicateSurfaces.length; index += 1) {
+    duplicateSurfaces[index].hidden = true;
+  }
+  const sourceChooser = root.querySelector<HTMLElement>(
+    ".fixture-filter-surface .filter-item-checkbox"
+  );
+  if (!activeSurface || !sourceChooser) {
+    throw new Error("missing fixture search-type chooser");
+  }
+  const chooser = sourceChooser.cloneNode(true) as HTMLElement;
+  for (const existing of root.querySelectorAll(".filter-item-checkbox")) {
+    existing.remove();
+  }
+
+  const detachedGroup = root.createElement("div");
+  detachedGroup.className = "filter-item fixture-detached-skin-row";
+  detachedGroup.hidden = true;
+  detachedGroup.innerHTML = `
+    <div class="filter-item-label-name">
+      <span>特战干员外观</span><b>1</b>
+    </div>
+    <div class="filter-item-content">
+      <div class="opt-item"><span>骇爪-维什戴尔</span></div>
+      <div class="opt-item"><span>露娜-黑天际线</span></div>
+      <div class="check-btns"></div>
+    </div>
+  `;
+  detachedGroup.querySelector(".check-btns")?.append(chooser);
+  activeSurface.append(detachedGroup);
+  const activeSearch = activeSurface.querySelector<HTMLInputElement>(
+    'input[placeholder="搜索筛条件"]'
+  );
+  const sourceSkinGroup = [...activeSurface.querySelectorAll<HTMLElement>(
+    ":scope > .filter-item"
+  )].find((group) => group.textContent?.includes("特战干员外观"));
+  if (!activeSearch || !sourceSkinGroup) {
+    throw new Error("missing fixture search popup structure");
+  }
+  const searchPopup = root.createElement("section");
+  searchPopup.className = "fixture-search-popup";
+  activeSurface.prepend(searchPopup);
+  searchPopup.append(activeSearch, sourceSkinGroup);
+  activeSearch.addEventListener("input", () => {
+    detachedGroup.hidden = activeSearch.value !== "特战干员外观";
+  });
+
+  for (const sourceOption of root.querySelectorAll<HTMLElement>(
+    ".fixture-filter-surface .opt-item"
+  )) {
+    const label = sourceOption.textContent?.trim();
+    if (!label) continue;
+    sourceOption.addEventListener("click", () => {
+      for (const detachedOption of detachedGroup.querySelectorAll<HTMLElement>(
+        ".opt-item"
+      )) {
+        if (detachedOption.textContent?.trim() === label) {
+          detachedOption.classList.add("opt-item_active");
+        }
+      }
+    });
+  }
+  return chooser;
 }
 
 function appendCard(root: Document, id: string): void {
@@ -228,6 +362,31 @@ describe("Panzhi visible-page selectors", () => {
     expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
   });
 
+  it("applies operator skins through the category-item controls used by the search popup", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    const skinGroup = [...root.querySelectorAll<HTMLElement>(".filter-item")]
+      .find((group) => group.textContent?.includes("特战干员外观"));
+    if (!skinGroup) throw new Error("missing fixture skin group");
+    for (const option of skinGroup.querySelectorAll<HTMLElement>(".opt-item")) {
+      option.className = "category-item";
+      option.addEventListener("click", () => {
+        option.classList.add("category-item-selected");
+        signalResultCycle(root);
+      });
+    }
+    installLiveFilterBehavior(root);
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result.kind, JSON.stringify(result)).toBe("snapshot");
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    expect(controls.requiredSkins.every((control) =>
+      control.classList.contains("category-item-selected")
+    )).toBe(true);
+  });
+
   it("searches for a hidden operator-skin field and scopes duplicate filter surfaces", async () => {
     const root = loadFixture("panzhi-live-filter-page.html");
     installSearchableDuplicateFilterSurfaces(root);
@@ -244,6 +403,218 @@ describe("Panzhi visible-page selectors", () => {
       ""
     ]);
     expect(verifyRequiredFilters(root)).toEqual({ kind: "verified" });
+  });
+
+  it("keeps one chosen search surface when duplicate inputs synchronize values", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installSearchableDuplicateFilterSurfaces(root);
+    const searchInputs = [...root.querySelectorAll<HTMLInputElement>(
+      'input[placeholder="搜索筛条件"]'
+    )];
+    for (const input of searchInputs) {
+      input.addEventListener("input", () => {
+        for (const other of searchInputs) other.value = input.value;
+      });
+    }
+    installLiveFilterBehavior(root);
+    const surfaces = root.querySelectorAll<HTMLElement>(
+      ".fixture-filter-surface"
+    );
+    const firstClicks = vi.fn();
+    const secondClicks = vi.fn();
+    for (const option of surfaces[0].querySelectorAll<HTMLElement>(".opt-item")) {
+      if (option.textContent?.includes("骇爪-维什戴尔")) {
+        option.addEventListener("click", firstClicks);
+      }
+    }
+    for (const option of surfaces[1].querySelectorAll<HTMLElement>(".opt-item")) {
+      if (option.textContent?.includes("骇爪-维什戴尔")) {
+        option.addEventListener("click", secondClicks);
+      }
+    }
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result.kind, JSON.stringify(result)).toBe("snapshot");
+    expect(firstClicks).toHaveBeenCalledOnce();
+    expect(secondClicks).not.toHaveBeenCalled();
+  });
+
+  it("keeps classless background loading observable with a chosen synchronized search input", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installSearchableDuplicateFilterSurfaces(root);
+    const searchInputs = [...root.querySelectorAll<HTMLInputElement>(
+      'input[placeholder="搜索筛条件"]'
+    )];
+    for (const input of searchInputs) {
+      input.value = "特战干员外观";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    root.querySelector("[aria-label='商品列表']")?.remove();
+    const loading = root.createElement("div");
+    loading.textContent = "正在加载, 请稍后...";
+    root.body.append(loading);
+
+    const state = readResultState(root, searchInputs[0]);
+
+    expect(state.kind).toBe("result-state");
+    if (state.kind !== "result-state") return;
+    expect(state.loadingVisible).toBe(true);
+  });
+
+  it("opens the missing-filter search before looking for operator skins", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    const opener = installSearchableDuplicateFilterSurfaces(root, true);
+    installLiveFilterBehavior(root);
+    const clicks = vi.fn();
+    opener?.addEventListener("click", clicks);
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result.kind).toBe("snapshot");
+    expect(clicks).toHaveBeenCalledOnce();
+  });
+
+  it("opens lazy operator-skin conjunction options before selecting all", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installSearchableDuplicateFilterSurfaces(root, true);
+    installLazySearchTypeOptions(root);
+    installLiveFilterBehavior(root);
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result.kind).toBe("snapshot");
+    const controls = locateRequiredControls(root);
+    expect(controls.kind).toBe("found");
+    if (controls.kind !== "found") return;
+    expect(selectedState(controls.allSemantics)).toEqual({
+      kind: "selected-state",
+      selected: true
+    });
+  });
+
+  it("resolves the operator conjunction from the main row outside the search popup", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installSearchableDuplicateFilterSurfaces(root, true);
+    const chooser = installDetachedSearchTypeChooser(root);
+    installLazySearchTypeOptions(root);
+    installLiveFilterBehavior(root);
+    const clicks = vi.fn();
+    chooser.addEventListener("click", clicks);
+    root.querySelector<HTMLButtonElement>("button")?.click();
+    const activeSearch = root.querySelector<HTMLInputElement>(
+      'input[placeholder="搜索筛条件"]'
+    );
+    if (!activeSearch) throw new Error("missing fixture search input");
+    activeSearch.value = "特战干员外观";
+    activeSearch.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(locateOperatorSearchTypeChooser(root)).toBe(chooser);
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect({
+      searchValue: activeSearch.value,
+      detachedHidden: chooser.closest<HTMLElement>(
+        ".fixture-detached-skin-row"
+      )?.hidden,
+      chooserConnected: chooser.isConnected
+    }).toEqual({
+      searchValue: "特战干员外观",
+      detachedHidden: false,
+      chooserConnected: true
+    });
+    expect(
+      locateOperatorSearchTypeChooser(root),
+      chooser.outerHTML
+    ).toBe(chooser);
+    expect(result.kind, JSON.stringify(result)).toBe("snapshot");
+    expect(clicks).toHaveBeenCalledOnce();
+  });
+
+  it("selects transient operator skins before a price action closes the search popup", async () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    const sourceSkinGroup = [...root.querySelectorAll<HTMLElement>(
+      "main > .filter-item"
+    )].find((group) => group.textContent?.includes("特战干员外观"));
+    if (!sourceSkinGroup) throw new Error("missing fixture skin group");
+    const mirroredSkinGroup = sourceSkinGroup.cloneNode(true) as HTMLElement;
+    mirroredSkinGroup.hidden = true;
+    sourceSkinGroup.after(mirroredSkinGroup);
+    const actions: string[] = [];
+    for (const option of sourceSkinGroup.querySelectorAll<HTMLElement>(".opt-item")) {
+      const label = option.textContent?.trim();
+      if (label === "骇爪-维什戴尔" || label === "露娜-黑天际线") {
+        option.addEventListener("click", () => {
+          actions.push(label);
+          for (const mirrored of mirroredSkinGroup.querySelectorAll<HTMLElement>(
+            ".opt-item"
+          )) {
+            if (mirrored.textContent?.trim() === label) {
+              mirrored.classList.add("opt-item_active");
+            }
+          }
+        });
+      }
+    }
+    for (const option of sourceSkinGroup.querySelectorAll<HTMLElement>(
+      ".drop-item"
+    )) {
+      option.addEventListener("click", () => {
+        const label = option.querySelector("label")?.textContent?.trim();
+        const chooser = mirroredSkinGroup.querySelector<HTMLElement>(
+          ".filter-item-checkbox"
+        );
+        const textNode = [...(chooser?.childNodes ?? [])].find(
+          (node) => node.nodeType === 3 && node.textContent?.trim()
+        );
+        if (label && textNode) textNode.textContent = label;
+      });
+    }
+    for (const input of root.querySelectorAll<HTMLInputElement>(
+      'input[placeholder="最低值"], input[placeholder="最高值"]'
+    )) {
+      input.addEventListener("input", () => {
+        if (!actions.includes("价格")) actions.push("价格");
+        sourceSkinGroup.hidden = true;
+        mirroredSkinGroup.hidden = false;
+      });
+    }
+    installLiveFilterBehavior(root);
+
+    const result = await new PanzhiPageRunner(dependencies(root)).run("quick");
+
+    expect(result.kind, JSON.stringify(result)).toBe("snapshot");
+    expect(actions.slice(0, 3)).toEqual([
+      "骇爪-维什戴尔",
+      "露娜-黑天际线",
+      "价格"
+    ]);
+  });
+
+  it("reports bounded nearby text when the operator conjunction chooser drifts", () => {
+    const root = loadFixture("panzhi-live-filter-page.html");
+    installSearchableDuplicateFilterSurfaces(root);
+    const searches = [...root.querySelectorAll<HTMLInputElement>(
+      'input[placeholder="搜索筛条件"]'
+    )];
+    searches[0].value = "特战干员外观";
+    searches[0].dispatchEvent(new Event("input", { bubbles: true }));
+    const activeSurface = searches[0].closest(".fixture-filter-surface");
+    const chooser = activeSurface?.querySelector<HTMLElement>(
+      ".filter-item-checkbox"
+    );
+    expect(chooser).not.toBeNull();
+    chooser!.className = "fixture-changed-conjunction";
+    chooser!.replaceChildren("任意一个");
+
+    expect(locateOperatorSearchTypeChooser(root)).toEqual({
+      kind: "failure",
+      code: "missing_controls",
+      message:
+        "Missing operator skin conjunction chooser; nearby=" +
+        "特战干员外观 | 红狼-蚀金玫瑰 | 露娜-黑天际线 | " +
+        "骇爪-维什戴尔 | 任意一个"
+    });
   });
 
   it("allows the live price fields to defer their result refresh to the next filter action", async () => {
@@ -1182,7 +1553,26 @@ describe("Panzhi page collection runner", () => {
     expect(result.snapshot.observedUniqueCount).toBe(2);
   });
 
-  it("does not count unrelated load mutations as no-growth observations", async () => {
+  it("treats two completely quiet bottom scrolls as no-growth observations", async () => {
+    const root = loadFixture();
+    installFilterBehavior(root);
+    let loads = 0;
+    const result = await new PanzhiPageRunner(dependencies(root, {
+      mutationTimeoutMs: 5,
+      loadMore: async () => {
+        loads += 1;
+      }
+    })).run("deep");
+
+    expect(loads).toBe(2);
+    expect(result.kind).toBe("snapshot");
+    if (result.kind !== "snapshot") return;
+    expect(result.snapshot.loadActionCount).toBe(3);
+    expect(result.snapshot.stopReason).toBe("no_growth_twice");
+    expect(result.snapshot.observedUniqueCount).toBe(2);
+  });
+
+  it("ignores unrelated DOM noise across two result no-growth observations", async () => {
     const root = loadFixture();
     installFilterBehavior(root);
     let loads = 0;
@@ -1193,14 +1583,12 @@ describe("Panzhi page collection runner", () => {
       }
     })).run("deep");
 
-    expect(loads).toBe(1);
-    expect(result).toMatchObject({
-      kind: "failure",
-      code: "operation_timeout",
-      stage: "collecting",
-      loadActionCount: 2
-    });
-    expect(result).not.toHaveProperty("snapshot");
+    expect(loads).toBe(2);
+    expect(result.kind).toBe("snapshot");
+    if (result.kind !== "snapshot") return;
+    expect(result.snapshot.loadActionCount).toBe(3);
+    expect(result.snapshot.stopReason).toBe("no_growth_twice");
+    expect(result.snapshot.observedUniqueCount).toBe(2);
   });
 
   it("fails closed at the deep load cap rather than claiming a natural end", async () => {

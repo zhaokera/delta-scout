@@ -67,6 +67,7 @@ const SELECTION_ATTRIBUTES = [
 
 const SELECTED_CLASS_TOKENS = new Set([
   "active",
+  "category-item-selected",
   "checked",
   "is-active",
   "is-checked",
@@ -130,7 +131,7 @@ function uniqueTextControl(
 ): HTMLElement | SelectorFailure {
   const matches = new Set(
     exactTextElements(root, label).map((element) =>
-      element.closest<HTMLElement>(".opt-item") ?? element)
+      element.closest<HTMLElement>(".opt-item, .category-item") ?? element)
   );
   if (matches.size === 0) {
     return failure("missing_controls", `Missing visible control: ${label}`);
@@ -146,9 +147,11 @@ function uniqueSearchTypeControl(
   label: string
 ): HTMLElement | SelectorFailure {
   const matches = new Set<HTMLElement>();
-  for (const chooser of root.querySelectorAll<HTMLElement>(
-    ".filter-item-checkbox"
-  )) {
+  const choosers = [
+    ...(root.matches(".filter-item-checkbox") ? [root] : []),
+    ...root.querySelectorAll<HTMLElement>(".filter-item-checkbox")
+  ];
+  for (const chooser of choosers) {
     if (!isElementVisible(chooser)) continue;
     for (const option of chooser.querySelectorAll<HTMLElement>(".drop-item")) {
       const optionLabel = option.querySelector("label");
@@ -249,16 +252,45 @@ export function visibleFilterSearchInputs(root: ParentNode): HTMLInputElement[] 
   )].filter((input) => isElementVisible(input));
 }
 
+export function locateMissingFilterSearchOpener(
+  root: ParentNode
+): HTMLElement | SelectorFailure {
+  const candidates = new Set(
+    exactTextElements(root, "筛选不到？").map((element) =>
+      element.closest<HTMLElement>(".empty-btn, button, [role='button']") ??
+      element
+    )
+  );
+  if (candidates.size === 0) {
+    return failure(
+      "missing_controls",
+      "Missing visible control: 筛选不到？"
+    );
+  }
+  if (candidates.size !== 1) {
+    return failure(
+      "structural_drift",
+      "Ambiguous visible control: 筛选不到？"
+    );
+  }
+  return [...candidates][0];
+}
+
 function preferredFilterSurface(
-  root: Document
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
 ): HTMLElement | SelectorFailure | null {
   const activeSearches = visibleFilterSearchInputs(root).filter(
     (input) => normalizeVisibleText(input.value) === "特战干员外观"
   );
   if (activeSearches.length === 0) return null;
+  const searches = preferredSearchInput &&
+    activeSearches.includes(preferredSearchInput)
+    ? [preferredSearchInput]
+    : activeSearches;
 
   const surfaces = new Set<HTMLElement>();
-  for (const input of activeSearches) {
+  for (const input of searches) {
     let candidate = input.parentElement;
     while (candidate && candidate !== root.body.parentElement) {
       const hasSingleRequiredField = [
@@ -288,6 +320,109 @@ function preferredFilterSurface(
   return [...surfaces][0];
 }
 
+function preferredOperatorSkinSurface(
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
+): HTMLElement | SelectorFailure | null {
+  const visibleSearches = visibleFilterSearchInputs(root);
+  const activeSearches = visibleSearches.filter(
+    (input) => normalizeVisibleText(input.value) === "特战干员外观"
+  );
+  if (activeSearches.length === 0) return null;
+  const searches = preferredSearchInput &&
+    activeSearches.includes(preferredSearchInput)
+    ? [preferredSearchInput]
+    : activeSearches;
+
+  const surfaces = new Set<HTMLElement>();
+  for (const input of searches) {
+    let candidate = input.parentElement;
+    while (candidate && candidate !== root.body.parentElement) {
+      const hasSingleSkinField =
+        exactTextElements(candidate, "特战干员外观").length === 1;
+      const hasRequiredSkins = PANZHI_REQUIRED_OPERATOR_SKINS.every(
+        ({ label }) => exactTextElements(candidate!, label).length > 0
+      );
+      if (hasSingleSkinField && hasRequiredSkins) {
+        surfaces.add(candidate);
+        break;
+      }
+      candidate = candidate.parentElement;
+    }
+  }
+
+  if (surfaces.size === 0) return null;
+  if (surfaces.size !== 1) {
+    return failure(
+      "structural_drift",
+      "Ambiguous active Panzhi operator-skin search surface"
+    );
+  }
+  return [...surfaces][0];
+}
+
+export function locateOperatorSearchTypeChooser(
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
+): HTMLElement | SelectorFailure {
+  const preferredSurface = preferredOperatorSkinSurface(
+    root,
+    preferredSearchInput
+  );
+  if (preferredSurface && "kind" in preferredSurface) return preferredSurface;
+  const controlRoot: ParentNode = preferredSurface ?? root;
+  const skinGroup = smallestGroup(controlRoot, "特战干员外观", [
+    PANZHI_REQUIRED_OPERATOR_SKINS[0].label,
+    PANZHI_REQUIRED_OPERATOR_SKINS[1].label
+  ]);
+
+  if (!("kind" in skinGroup)) {
+    const scopedChoosers = [...skinGroup.querySelectorAll<HTMLElement>(
+      ".filter-item-checkbox"
+    )].filter((chooser) => isElementVisible(chooser));
+    if (scopedChoosers.length === 1) return scopedChoosers[0];
+    if (scopedChoosers.length > 1) {
+      return failure(
+        "structural_drift",
+        "Ambiguous operator skin conjunction chooser"
+      );
+    }
+  }
+
+  const detachedChoosers = new Set<HTMLElement>();
+  for (const row of root.querySelectorAll<HTMLElement>(".filter-item")) {
+    if (!isElementVisible(row)) continue;
+    const rowText = normalizeVisibleText(row.textContent);
+    if (!rowText.includes("特战干员外观")) continue;
+    if (!PANZHI_REQUIRED_OPERATOR_SKINS.every(({ label }) =>
+      exactTextElements(row, label).length > 0
+    )) continue;
+    for (const chooser of row.querySelectorAll<HTMLElement>(
+      ".filter-item-checkbox"
+    )) {
+      if (isElementVisible(chooser)) detachedChoosers.add(chooser);
+    }
+  }
+  if (detachedChoosers.size === 1) return [...detachedChoosers][0];
+  if (detachedChoosers.size > 1) {
+    return failure(
+      "structural_drift",
+      "Ambiguous operator skin conjunction chooser"
+    );
+  }
+
+  if ("kind" in skinGroup) return skinGroup;
+  const fallback = uniqueTextControl(skinGroup, "有一个就行");
+  if (!("kind" in fallback)) return fallback;
+  const fieldLabel = exactTextElements(skinGroup, "特战干员外观")[0];
+  const nearby = fieldLabel ? nearbyVisibleText(fieldLabel) : "";
+  return failure(
+    fallback.code,
+    "Missing operator skin conjunction chooser" +
+      (nearby ? `; nearby=${nearby}` : "")
+  );
+}
+
 function assertOptionalAttribute(
   element: Element,
   attribute: string,
@@ -305,17 +440,26 @@ function assertOptionalAttribute(
 }
 
 export function locateRequiredControls(
-  root: Document
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
 ): RequiredControls | SelectorFailure {
-  const preferredSurface = preferredFilterSurface(root);
+  const preferredSurface = preferredFilterSurface(root, preferredSearchInput);
   if (preferredSurface && "kind" in preferredSurface) return preferredSurface;
   const controlRoot: ParentNode = preferredSurface ?? root;
+  const preferredSkinSurface = preferredOperatorSkinSurface(
+    root,
+    preferredSearchInput
+  );
+  if (preferredSkinSurface && "kind" in preferredSkinSurface) {
+    return preferredSkinSurface;
+  }
+  const skinControlRoot: ParentNode = preferredSkinSurface ?? controlRoot;
 
   const accountGroup = smallestGroup(controlRoot, "账号类型", ["QQ"]);
   if ("kind" in accountGroup) return accountGroup;
   const realNameGroup = smallestGroup(controlRoot, "实名情况", ["可二次实名"]);
   if ("kind" in realNameGroup) return realNameGroup;
-  const skinGroup = smallestGroup(controlRoot, "特战干员外观", [
+  const skinGroup = smallestGroup(skinControlRoot, "特战干员外观", [
     PANZHI_REQUIRED_OPERATOR_SKINS[0].label,
     PANZHI_REQUIRED_OPERATOR_SKINS[1].label
   ]);
@@ -356,8 +500,33 @@ export function locateRequiredControls(
     PANZHI_REQUIRED_OPERATOR_SKINS[1].label
   );
   if ("kind" in secondSkin) return secondSkin;
-  const allSemantics = uniqueSearchTypeControl(skinGroup, "全部都要有");
-  if ("kind" in allSemantics) return allSemantics;
+  const allSemanticsResult = uniqueSearchTypeControl(
+    skinGroup,
+    "全部都要有"
+  );
+  let allSemantics: HTMLElement;
+  if ("kind" in allSemanticsResult) {
+    if (allSemanticsResult.code === "structural_drift") {
+      return allSemanticsResult;
+    }
+    const chooser = locateOperatorSearchTypeChooser(root, preferredSearchInput);
+    if ("kind" in chooser) return chooser;
+    const detachedAllSemantics = uniqueSearchTypeControl(
+      chooser,
+      "全部都要有"
+    );
+    if (
+      "kind" in detachedAllSemantics &&
+      detachedAllSemantics.code === "structural_drift"
+    ) {
+      return detachedAllSemantics;
+    }
+    allSemantics = "kind" in detachedAllSemantics
+      ? chooser
+      : detachedAllSemantics;
+  } else {
+    allSemantics = allSemanticsResult;
+  }
 
   for (const [element, expected] of [
     [firstSkin, PANZHI_REQUIRED_OPERATOR_SKINS[0]],
@@ -427,6 +596,7 @@ function isSelectableInput(element: Element): element is HTMLInputElement {
 function interactiveCarrier(element: HTMLElement): HTMLElement | null {
   const selector = [
     ".opt-item",
+    ".category-item",
     ".drop-item",
     "button",
     "label",
@@ -460,6 +630,16 @@ function searchTypeSelectionEvidence(element: HTMLElement): boolean | null {
   const current = chooser ? directText(chooser) : "";
   const expected = normalizeVisibleText(label?.textContent);
   return current && expected ? current === expected : null;
+}
+
+function searchTypeChooserSelectionEvidence(
+  element: HTMLElement
+): boolean | null {
+  if (!element.matches(".filter-item-checkbox")) return null;
+  const current = directText(element);
+  if (current === "全部都要有") return true;
+  if (current === "有一个就行") return false;
+  return null;
 }
 
 function associatedInputs(
@@ -527,6 +707,8 @@ export function selectedState(element: HTMLElement): SelectedStateResult {
   }
   const searchTypeState = searchTypeSelectionEvidence(element);
   if (searchTypeState !== null) evidence.push(searchTypeState);
+  const chooserState = searchTypeChooserSelectionEvidence(element);
+  if (chooserState !== null) evidence.push(chooserState);
   if (inputs.length === 1) evidence.push(inputs[0].checked);
   if (new Set(evidence).size > 1) {
     return failure("structural_drift", "Filter selected-state evidence conflicts");
@@ -537,12 +719,13 @@ export function selectedState(element: HTMLElement): SelectedStateResult {
 }
 
 export function verifyRequiredFilters(
-  root: Document
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
 ): VerifiedFilters | SelectorFailure {
   if (exactTextElements(root, "三角洲行动").length === 0) {
     return failure("missing_controls", "Missing Panzhi game label: 三角洲行动");
   }
-  const controls = locateRequiredControls(root);
+  const controls = locateRequiredControls(root, preferredSearchInput);
   if (controls.kind === "failure") return controls;
 
   if (controls.minPrice.value !== "1900" || controls.maxPrice.value !== "4000") {
@@ -666,22 +849,32 @@ function pageWideLoadingVisible(root: Document): boolean {
     );
 }
 
-function pageWideLoadingContainer(root: Document): HTMLElement | null {
+function pageWideLoadingContainer(
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
+): HTMLElement | null {
   const body = root.body;
   if (!body || !isElementVisible(body)) return null;
   if (root.readyState !== "complete") return null;
-  if (locateRequiredControls(root).kind !== "found") return null;
+  if (
+    locateRequiredControls(root, preferredSearchInput).kind !== "found"
+  ) return null;
   if (root.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0) {
     return null;
   }
   return pageWideLoadingVisible(root) ? body : null;
 }
 
-function verifiedZeroCardPage(root: Document): HTMLElement | null {
+function verifiedZeroCardPage(
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
+): HTMLElement | null {
   const body = root.body;
   if (!body || !isElementVisible(body)) return null;
   if (root.readyState !== "complete") return null;
-  if (locateRequiredControls(root).kind !== "found") return null;
+  if (
+    locateRequiredControls(root, preferredSearchInput).kind !== "found"
+  ) return null;
   if (exactTextElements(root, "三角洲行动").length !== 1) return null;
   if (detectVerificationBlocker(root).kind !== "clear") return null;
   if (root.querySelectorAll('a[href*="/goodsDetails/"]').length !== 0) {
@@ -968,14 +1161,15 @@ function missingResultDiagnostic(
 }
 
 export function locateResultContainer(
-  root: Document
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
 ): ResultContainer | SelectorFailure {
   const visibility = new WeakMap<Element, boolean>();
-  const loadingPage = pageWideLoadingContainer(root);
+  const loadingPage = pageWideLoadingContainer(root, preferredSearchInput);
   if (loadingPage) {
     return { kind: "result-container", element: loadingPage };
   }
-  const zeroCardPage = verifiedZeroCardPage(root);
+  const zeroCardPage = verifiedZeroCardPage(root, preferredSearchInput);
   if (zeroCardPage) {
     return { kind: "result-container", element: zeroCardPage };
   }
@@ -1075,10 +1269,13 @@ function scopedVisibleTextContains(root: HTMLElement, pattern: RegExp): boolean 
   });
 }
 
-export function readResultState(root: Document): ResultState | SelectorFailure {
-  const located = locateResultContainer(root);
+export function readResultState(
+  root: Document,
+  preferredSearchInput: HTMLInputElement | null = null
+): ResultState | SelectorFailure {
+  const located = locateResultContainer(root, preferredSearchInput);
   if (located.kind === "failure") return located;
-  const zeroCardPage = verifiedZeroCardPage(root);
+  const zeroCardPage = verifiedZeroCardPage(root, preferredSearchInput);
   const anchors = visibleCardAnchors(located.element);
   const visibleCards = new Map<string, string>();
   for (const anchor of anchors) {

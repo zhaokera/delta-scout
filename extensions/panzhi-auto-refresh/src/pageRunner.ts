@@ -13,6 +13,8 @@ import {
 import {
   detectVerificationBlocker,
   extractVisibleCards,
+  locateMissingFilterSearchOpener,
+  locateOperatorSearchTypeChooser,
   locateRequiredControls,
   readResultState,
   selectedState,
@@ -90,10 +92,12 @@ function observeActionUntilResultsSettle(
   settlementDelay: (milliseconds: number) => Promise<void>,
   allowExistingEndMarker = false,
   allowStableInitialState = false,
-  isCurrentRun: () => boolean = () => true
+  isCurrentRun: () => boolean = () => true,
+  preferredSearchInput: HTMLInputElement | null = null,
+  allowQuietNoChangeAtTimeout = false
 ): Promise<SettlementOutcome> {
   if (!isCurrentRun()) return Promise.resolve({ kind: "superseded" });
-  const initial = readResultState(root);
+  const initial = readResultState(root, preferredSearchInput);
   if (initial.kind === "failure") {
     return Promise.resolve({ kind: "failure", failure: initial });
   }
@@ -108,6 +112,8 @@ function observeActionUntilResultsSettle(
     let stabilityGeneration = 0;
     let stabilityPending = false;
     let observer: MutationObserver | null = null;
+    let actionCompleted = false;
+    let observedResultStateChange = false;
     let current: ResultState = initial;
     let sawLoading = initial.loadingVisible;
     let completionWindowStarted = false;
@@ -134,7 +140,36 @@ function observeActionUntilResultsSettle(
             return;
           }
           const blocker = detectVerificationBlocker(root);
-          finish(blocker.kind === "blocked" ? blocker : { kind: "timeout" });
+          if (blocker.kind === "blocked") {
+            finish(blocker);
+            return;
+          }
+          if (
+            allowQuietNoChangeAtTimeout &&
+            actionCompleted &&
+            !observedResultStateChange
+          ) {
+            const ready = readReady();
+            if (ready.kind === "failure") {
+              finish({ kind: "failure", failure: ready });
+              return;
+            }
+            const finalState = readResultState(root, preferredSearchInput);
+            if (finalState.kind === "failure") {
+              finish({ kind: "failure", failure: finalState });
+              return;
+            }
+            if (
+              ready.ready &&
+              !finalState.loadingVisible &&
+              finalState.signature === initial.signature &&
+              finalState.endMarkerVisible === initial.endMarkerVisible
+            ) {
+              finish({ kind: "settled" });
+              return;
+            }
+          }
+          finish({ kind: "timeout" });
         },
         (error: unknown) => {
           if (!finished && generation === timeoutGeneration) {
@@ -159,7 +194,7 @@ function observeActionUntilResultsSettle(
         finish({ kind: "failure", failure: ready });
         return;
       }
-      const next = readResultState(root);
+      const next = readResultState(root, preferredSearchInput);
       if (next.kind === "failure") {
         finish({ kind: "failure", failure: next });
         return;
@@ -168,6 +203,7 @@ function observeActionUntilResultsSettle(
         next.signature !== current.signature ||
         next.loadingVisible !== current.loadingVisible ||
         next.endMarkerVisible !== current.endMarkerVisible;
+      if (changed) observedResultStateChange = true;
       if (next.loadingVisible) sawLoading = true;
       if (
         next.signature !== initial.signature ||
@@ -227,7 +263,10 @@ function observeActionUntilResultsSettle(
         }
         return action();
       })
-      .then(evaluate)
+      .then(() => {
+        actionCompleted = true;
+        evaluate();
+      })
       .catch((error: unknown) => finish({ kind: "action-error", error }));
   });
 }
@@ -235,6 +274,7 @@ function observeActionUntilResultsSettle(
 export class PanzhiPageRunner {
   private currentStage: "applying_filters" | "collecting" | "submitting" =
     "applying_filters";
+  private operatorSearchInput: HTMLInputElement | null = null;
 
   constructor(private readonly dependencies: PageRunnerDependencies) {}
 
@@ -329,8 +369,11 @@ export class PanzhiPageRunner {
     for (let attempt = 0; attempt < PAGE_READY_MAX_ATTEMPTS; attempt += 1) {
       const blocked = await this.blockedResult();
       if (blocked) return blocked;
-      const controls = locateRequiredControls(this.dependencies.document);
-      const results = readResultState(this.dependencies.document);
+      const controls = this.locateControls();
+      const results = readResultState(
+        this.dependencies.document,
+        this.operatorSearchInput
+      );
       if (controls.kind === "found" && results.kind === "result-state") {
         return null;
       }
@@ -359,13 +402,41 @@ export class PanzhiPageRunner {
   }
 
   private async prepareOperatorSkinField(): Promise<PageRunnerResult | null> {
-    const initial = locateRequiredControls(this.dependencies.document);
+    const initial = this.locateControls();
     if (initial.kind === "found") return null;
 
-    const initialSearches = visibleFilterSearchInputs(
+    let initialSearches = visibleFilterSearchInputs(
       this.dependencies.document
     );
-    if (initialSearches.length === 0) return null;
+    if (initialSearches.length === 0) {
+      const opener = locateMissingFilterSearchOpener(
+        this.dependencies.document
+      );
+      if ("kind" in opener) {
+        return opener.code === "structural_drift"
+          ? selectorFailureResult("applying_filters", opener)
+          : null;
+      }
+      opener.click();
+      for (
+        let attempt = 0;
+        attempt < FILTER_SEARCH_MAX_ATTEMPTS;
+        attempt += 1
+      ) {
+        const blocked = await this.blockedResult();
+        if (blocked) return blocked;
+        initialSearches = visibleFilterSearchInputs(
+          this.dependencies.document
+        );
+        if (initialSearches.length > 0) break;
+        if (attempt < FILTER_SEARCH_MAX_ATTEMPTS - 1) {
+          await this.dependencies.sleep(PAGE_READY_POLL_MS);
+        }
+      }
+      if (initialSearches.length === 0) {
+        return selectorFailureResult("applying_filters", initial);
+      }
+    }
     let lastFailure: SelectorFailure = initial;
 
     for (
@@ -394,8 +465,12 @@ export class PanzhiPageRunner {
       ) {
         const blocked = await this.blockedResult();
         if (blocked) return blocked;
-        const located = locateRequiredControls(this.dependencies.document);
+        const located = locateRequiredControls(
+          this.dependencies.document,
+          target
+        );
         if (located.kind === "found") {
+          this.operatorSearchInput = target;
           const delayed = await this.humanDelay();
           if (delayed) return delayed;
           return this.blockedResult();
@@ -410,11 +485,10 @@ export class PanzhiPageRunner {
     return selectorFailureResult("applying_filters", lastFailure);
   }
 
-  private async setPriceRange(): Promise<PageRunnerResult | null> {
-    const controls = locateRequiredControls(this.dependencies.document);
-    if (controls.kind === "failure") {
-      return selectorFailureResult("applying_filters", controls);
-    }
+  private async setPriceRange(controls: {
+    minPrice: HTMLInputElement;
+    maxPrice: HTMLInputElement;
+  }): Promise<PageRunnerResult | null> {
     if (
       controls.minPrice.value === "1900" &&
       controls.maxPrice.value === "4000"
@@ -430,22 +504,27 @@ export class PanzhiPageRunner {
         dispatchNativeInputEvents(controls.maxPrice);
       },
       () => {
-        const latest = locateRequiredControls(this.dependencies.document);
-        return latest.kind === "failure"
-          ? latest
-          : {
-              kind: "ready-state",
-              ready:
-                latest.minPrice.value === "1900" &&
-                latest.maxPrice.value === "4000"
-            };
+        if (!controls.minPrice.isConnected || !controls.maxPrice.isConnected) {
+          return {
+            kind: "failure" as const,
+            code: "missing_controls" as const,
+            message: "Panzhi price controls detached during selection"
+          };
+        }
+        return {
+          kind: "ready-state",
+          ready:
+            controls.minPrice.value === "1900" &&
+            controls.maxPrice.value === "4000"
+        };
       },
       this.dependencies.mutationTimeoutMs,
       this.dependencies.resultStabilityMs,
       this.dependencies.settlementDelay,
       false,
       true,
-      this.dependencies.isCurrentRun
+      this.dependencies.isCurrentRun,
+      this.operatorSearchInput
     );
     if (outcome.kind === "superseded") return this.supersededResult();
     if (outcome.kind === "blocked") {
@@ -478,7 +557,8 @@ export class PanzhiPageRunner {
   }
 
   private async selectControl(
-    resolve: () => HTMLElement | SelectorFailure
+    resolve: () => HTMLElement | SelectorFailure,
+    description: string
   ): Promise<PageRunnerResult | null> {
     const control = resolve();
     if ("kind" in control) {
@@ -489,7 +569,10 @@ export class PanzhiPageRunner {
       return selectorFailureResult("applying_filters", current);
     }
     if (current.kind === "selected-state" && current.selected) return null;
-    const resultBeforeSelection = readResultState(this.dependencies.document);
+    const resultBeforeSelection = readResultState(
+      this.dependencies.document,
+      this.operatorSearchInput
+    );
     if (resultBeforeSelection.kind === "failure") {
       return selectorFailureResult("applying_filters", resultBeforeSelection);
     }
@@ -512,7 +595,8 @@ export class PanzhiPageRunner {
       this.dependencies.settlementDelay,
       false,
       resultBeforeSelection.emptyResultVisible,
-      this.dependencies.isCurrentRun
+      this.dependencies.isCurrentRun,
+      this.operatorSearchInput
     );
     if (outcome.kind === "superseded") return this.supersededResult();
     if (outcome.kind === "blocked") {
@@ -528,7 +612,7 @@ export class PanzhiPageRunner {
         code: "operation_timeout",
         message: outcome.error instanceof Error
           ? outcome.error.message
-          : "Panzhi filter action failed"
+          : `Panzhi filter action failed: ${description}`
       };
     }
     if (outcome.kind === "timeout") {
@@ -536,12 +620,71 @@ export class PanzhiPageRunner {
         kind: "failure",
         stage: "applying_filters",
         code: "operation_timeout",
-        message: "Panzhi filter did not become selected"
+        message: `Panzhi filter did not become selected: ${description}`
       };
     }
     const delayed = await this.humanDelay();
     if (delayed) return delayed;
     return this.blockedResult();
+  }
+
+  private async selectAllSemantics(): Promise<PageRunnerResult | null> {
+    const controls = this.locateControls();
+    if (controls.kind === "failure") {
+      return selectorFailureResult("applying_filters", controls);
+    }
+    const current = selectedState(controls.allSemantics);
+    if (current.kind === "failure") {
+      return selectorFailureResult("applying_filters", current);
+    }
+    if (current.kind === "selected-state" && current.selected) return null;
+    if (!controls.allSemantics.matches(".filter-item-checkbox")) {
+      return this.selectControl(
+        this.control((latest) => latest.allSemantics),
+        "operator skin conjunction"
+      );
+    }
+
+    const chooser = locateOperatorSearchTypeChooser(
+      this.dependencies.document,
+      this.operatorSearchInput
+    );
+    if ("kind" in chooser) {
+      return selectorFailureResult("applying_filters", chooser);
+    }
+    chooser.click();
+    for (
+      let attempt = 0;
+      attempt < FILTER_SEARCH_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const blocked = await this.blockedResult();
+      if (blocked) return blocked;
+      const latest = this.locateControls();
+      if (
+        latest.kind === "found" &&
+        latest.allSemantics.matches(".drop-item")
+      ) {
+        return this.selectControl(
+          this.control((next) => next.allSemantics),
+          "operator skin conjunction: 全部都要有"
+        );
+      }
+      if (
+        latest.kind === "failure" &&
+        latest.code === "structural_drift"
+      ) {
+        return selectorFailureResult("applying_filters", latest);
+      }
+      if (attempt < FILTER_SEARCH_MAX_ATTEMPTS - 1) {
+        await this.dependencies.sleep(PAGE_READY_POLL_MS);
+      }
+    }
+    return selectorFailureResult("applying_filters", {
+      kind: "failure",
+      code: "missing_controls",
+      message: "Missing visible control: 全部都要有"
+    });
   }
 
   private control(
@@ -553,24 +696,56 @@ export class PanzhiPageRunner {
     ) => HTMLElement
   ): () => HTMLElement | SelectorFailure {
     return () => {
-      const controls = locateRequiredControls(this.dependencies.document);
+      const controls = this.locateControls();
       return controls.kind === "failure" ? controls : pick(controls);
     };
   }
 
+  private locateControls(): ReturnType<typeof locateRequiredControls> {
+    return locateRequiredControls(
+      this.dependencies.document,
+      this.operatorSearchInput
+    );
+  }
+
+  private knownControl(
+    control: HTMLElement,
+    description: string
+  ): () => HTMLElement | SelectorFailure {
+    return () => control.isConnected
+      ? control
+      : {
+          kind: "failure",
+          code: "missing_controls",
+          message: `${description} detached during selection`
+        };
+  }
+
   private async applyRequiredFilters(): Promise<PageRunnerResult | null> {
-    const initial = locateRequiredControls(this.dependencies.document);
+    const initial = this.locateControls();
     if (initial.kind === "failure") {
       return selectorFailureResult("applying_filters", initial);
     }
 
     const operations: Array<() => Promise<PageRunnerResult | null>> = [
-      () => this.setPriceRange(),
-      () => this.selectControl(this.control((controls) => controls.qq)),
-      () => this.selectControl(this.control((controls) => controls.secondRealName)),
-      () => this.selectControl(this.control((controls) => controls.requiredSkins[0])),
-      () => this.selectControl(this.control((controls) => controls.requiredSkins[1])),
-      () => this.selectControl(this.control((controls) => controls.allSemantics))
+      () => this.selectControl(
+        this.control((controls) => controls.requiredSkins[0]),
+        PANZHI_REQUIRED_OPERATOR_SKINS[0].label
+      ),
+      () => this.selectControl(
+        this.control((controls) => controls.requiredSkins[1]),
+        PANZHI_REQUIRED_OPERATOR_SKINS[1].label
+      ),
+      () => this.selectAllSemantics(),
+      () => this.setPriceRange(initial),
+      () => this.selectControl(
+        this.knownControl(initial.qq, "QQ control"),
+        "QQ"
+      ),
+      () => this.selectControl(
+        this.knownControl(initial.secondRealName, "Real-name control"),
+        "可二次实名"
+      )
     ];
     for (const operation of operations) {
       const blocked = await this.blockedResult();
@@ -579,7 +754,10 @@ export class PanzhiPageRunner {
       if (result) return result;
     }
 
-    const verified = verifyRequiredFilters(this.dependencies.document);
+    const verified = verifyRequiredFilters(
+      this.dependencies.document,
+      this.operatorSearchInput
+    );
     if (verified.kind === "failure") {
       return selectorFailureResult("applying_filters", verified);
     }
@@ -592,7 +770,8 @@ export class PanzhiPageRunner {
       this.dependencies.settlementDelay,
       false,
       true,
-      this.dependencies.isCurrentRun
+      this.dependencies.isCurrentRun,
+      this.operatorSearchInput
     );
     if (stable.kind === "superseded") return this.supersededResult();
     if (stable.kind === "blocked") {
@@ -616,7 +795,10 @@ export class PanzhiPageRunner {
     collected: Map<string, PanzhiSnapshotItem>,
     maxCards: number
   ): SelectorFailure | null {
-    const verified = verifyRequiredFilters(this.dependencies.document);
+    const verified = verifyRequiredFilters(
+      this.dependencies.document,
+      this.operatorSearchInput
+    );
     if (verified.kind === "failure") return verified;
     const extracted = extractVisibleCards(this.dependencies.document);
     if (extracted.kind === "failure") return extracted;
@@ -638,7 +820,10 @@ export class PanzhiPageRunner {
   ): Promise<PageRunnerResult> {
     const blockedBeforeSnapshot = await this.blockedResult();
     if (blockedBeforeSnapshot) return blockedBeforeSnapshot;
-    const finalVerification = verifyRequiredFilters(this.dependencies.document);
+    const finalVerification = verifyRequiredFilters(
+      this.dependencies.document,
+      this.operatorSearchInput
+    );
     if (finalVerification.kind === "failure") {
       return selectorFailureResult(
         "collecting",
@@ -656,7 +841,10 @@ export class PanzhiPageRunner {
       };
     }
     if (stopReason === "empty_result") {
-      const emptyState = readResultState(this.dependencies.document);
+      const emptyState = readResultState(
+        this.dependencies.document,
+        this.operatorSearchInput
+      );
       if (emptyState.kind === "failure") {
         return selectorFailureResult("collecting", emptyState, loadActionCount);
       }
@@ -699,7 +887,10 @@ export class PanzhiPageRunner {
     const blockedAfterSubmittingStage = await this.blockedResult();
     if (blockedAfterSubmittingStage) return blockedAfterSubmittingStage;
     if (stopReason === "empty_result") {
-      const finalEmptyState = readResultState(this.dependencies.document);
+      const finalEmptyState = readResultState(
+        this.dependencies.document,
+        this.operatorSearchInput
+      );
       if (finalEmptyState.kind === "failure") {
         return selectorFailureResult(
           "collecting",
@@ -744,7 +935,10 @@ export class PanzhiPageRunner {
     if (initialFailure) {
       return selectorFailureResult("collecting", initialFailure, loadActionCount);
     }
-    const initialState = readResultState(this.dependencies.document);
+    const initialState = readResultState(
+      this.dependencies.document,
+      this.operatorSearchInput
+    );
     if (initialState.kind === "failure") {
       return selectorFailureResult("collecting", initialState, loadActionCount);
     }
@@ -777,7 +971,9 @@ export class PanzhiPageRunner {
         this.dependencies.settlementDelay,
         true,
         false,
-        this.dependencies.isCurrentRun
+        this.dependencies.isCurrentRun,
+        this.operatorSearchInput,
+        true
       );
       if (outcome.kind === "superseded") {
         return this.supersededResult();
@@ -800,7 +996,7 @@ export class PanzhiPageRunner {
           code: "operation_timeout",
           message: error instanceof Error
             ? error.message
-            : "Panzhi results did not produce a complete load observation",
+            : `Panzhi results did not produce a complete load observation at action ${attemptedActionCount}`,
           loadActionCount: attemptedActionCount
         };
       }
